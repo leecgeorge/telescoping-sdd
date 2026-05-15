@@ -1,0 +1,266 @@
+{
+  "tree": {
+    "entries": [
+      {
+        "path": ".claude-plugin",
+        "type": "dir"
+      },
+      {
+        "path": ".claude-plugin/plugin.json",
+        "size": 283,
+        "type": "file"
+      },
+      {
+        "path": "agents",
+        "type": "dir"
+      },
+      {
+        "path": "scripts",
+        "type": "dir"
+      },
+      {
+        "path": "scripts/archive_pass.py",
+        "size": 14654,
+        "type": "file"
+      },
+      {
+        "path": "scripts/blueprint_common.py",
+        "size": 9677,
+        "type": "file"
+      },
+      {
+        "path": "scripts/capture_marketplace_layout.py",
+        "size": 5522,
+        "type": "file"
+      },
+      {
+        "path": "scripts/check_marketplace_layout_freshness.py",
+        "size": 3034,
+        "type": "file"
+      },
+      {
+        "path": "scripts/run_t7_spike.sh",
+        "size": 3209,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests",
+        "type": "dir"
+      },
+      {
+        "path": "scripts/tests/_fixture_contract.py",
+        "size": 4989,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures",
+        "type": "dir"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants",
+        "type": "dir"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/FIXTURE_MANIFEST.json",
+        "size": 1585,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/crlf_bom_eol.md",
+        "size": 341,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/crlf_bom_noeol.md",
+        "size": 339,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/crlf_nobom_eol.md",
+        "size": 338,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/crlf_nobom_noeol.md",
+        "size": 336,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/lf_bom_eol.md",
+        "size": 329,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/lf_bom_noeol.md",
+        "size": 328,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/lf_nobom_eol.md",
+        "size": 326,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/line_ending_variants/lf_nobom_noeol.md",
+        "size": 325,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/fixtures/observed_marketplace_layout.json",
+        "size": 5323,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/test_archive_pass.py",
+        "size": 2945,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/test_blueprint_common.py",
+        "size": 9117,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/test_check_marketplace_layout_freshness.py",
+        "size": 2110,
+        "type": "file"
+      },
+      {
+        "path": "scripts/tests/test_fixture_manifests_consistent.py",
+        "size": 4261,
+        "type": "file"
+      },
+      {
+        "path": "skills",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint/SKILL.md",
+        "size": 45951,
+        "type": "file"
+      },
+      {
+        "path": "skills/project-blueprint/references",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint/references/architecture-template.md",
+        "size": 5058,
+        "type": "file"
+      },
+      {
+        "path": "skills/project-blueprint/references/plan-template.md",
+        "size": 4076,
+        "type": "file"
+      },
+      {
+        "path": "skills/project-blueprint/references/scope-template.md",
+        "size": 2645,
+        "type": "file"
+      },
+      {
+        "path": "skills/project-blueprint/references/workflow-overview.md",
+        "size": 3952,
+        "type": "file"
+      },
+      {
+        "path": "skills/project-blueprint/scripts",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint/scripts/tests",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint/scripts/tests/fixtures",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint/scripts/tests/fixtures/blueprint_dir",
+        "type": "dir"
+      },
+      {
+        "path": "skills/project-blueprint/scripts/tests/test_validate_blueprint.py",
+        "size": 4781,
+        "type": "file"
+      },
+      {
+        "path": "skills/project-blueprint/scripts/validate_blueprint.py",
+        "size": 23281,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev",
+        "type": "dir"
+      },
+      {
+        "path": "skills/spec-driven-dev/SKILL.md",
+        "size": 50161,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references",
+        "type": "dir"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/design-template-java.md",
+        "size": 5270,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/design-template-python.md",
+        "size": 5091,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/spec-template-java.md",
+        "size": 3279,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/spec-template-python.md",
+        "size": 3092,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/spec-template.md",
+        "size": 271,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/tasks-template-java.md",
+        "size": 4571,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/tasks-template-python.md",
+        "size": 4310,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/tasks-template.md",
+        "size": 274,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/references/workflow-overview.md",
+        "size": 2937,
+        "type": "file"
+      },
+      {
+        "path": "skills/spec-driven-dev/scripts",
+        "type": "dir"
+      },
+      {
+        "path": "skills/spec-driven-dev/scripts/validate_spec.py",
+        "size": 29236,
+        "type": "file"
+      }
+    ]
+  },
+  "version_dir_name": "1.0.0"
+}

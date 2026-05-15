@@ -1,0 +1,78 @@
+# Phase 3: Implementation Plan
+
+Drafts `blueprint/PLAN.md` — features, dependencies, MVP, milestones. Requires approved `blueprint/SCOPE.md` and `blueprint/ARCHITECTURE.md` as upstream context. This is the last blueprint phase — concerns cannot be deferred forward.
+
+## Drafting
+
+Delegate drafting to the `telescoping-sdd:project-plan-analyst` subagent via the Agent tool (`subagent_type: telescoping-sdd:project-plan-analyst`).
+
+When invoking the agent, provide:
+- The template path: `references/plan-template.md`
+- The required sections (below) — the agent must produce exactly these
+- The approved `blueprint/SCOPE.md` and `blueprint/ARCHITECTURE.md` as authoritative upstream context
+- A clear instruction that each feature (F1, F2, etc.) must be described at enough detail to serve as input to a spec-driven development workflow
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `PLAN.md`
+- A clear instruction to reproduce the template's exact formatting for structural sections — in particular: feature checklists must use `- [ ] F1:` checkbox format, Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to feature development` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
+
+Required sections:
+- **Feature Breakdown** — All features with descriptions and acceptance criteria, identified as F1, F2, etc.
+- **MVP Definition** — Which features are in MVP vs. later phases
+- **Feature Dependencies** — Dependency graph showing which features depend on which
+- **Implementation Order** — Sequenced build order with rationale
+- **Milestones** — Features grouped into delivery milestones
+
+Each feature (F1, F2, etc.) should be described at enough detail to serve as input to a spec-driven development workflow for individual feature implementation.
+
+After the agent returns the draft, write it to `blueprint/PLAN.md` and perform the self-review yourself before presenting it to the user.
+
+## Plan Self-Review
+
+Review the PLAN.md you just wrote, checking for:
+
+1. **Inconsistencies** — Do feature dependencies form a valid DAG (no circular dependencies)? Does the implementation order respect the dependency graph? Do milestones contain all their listed features?
+2. **Inaccuracies** — Do feature descriptions match the components defined in the architecture? Are acceptance criteria testable and specific? Does the MVP definition align with the stated goals?
+3. **Gaps** — Does every architectural component have at least one feature that builds or uses it? Are there missing features needed to deliver the MVP? Does every feature have acceptance criteria?
+
+For each issue found:
+- **Fix it directly** if the correct resolution is clear (e.g., a missing dependency, a feature that references a non-existent component, an incomplete acceptance criterion)
+- **Stop and ask the user** if the resolution requires a judgment call (e.g., which features belong in MVP, how to split a large feature)
+
+If any issues were fixed, repeat the self-review on the updated plan — fixes can introduce new issues. If a pass finds no issues, stop immediately. Do not exceed 5 review passes total.
+
+## Scope-Architecture-Plan Consistency Check
+
+After the plan self-review is complete, cross-reference PLAN.md against both SCOPE.md and ARCHITECTURE.md:
+
+1. **Goal coverage** — Every goal in SCOPE.md must be achievable by the features in the plan. Flag any goals with no corresponding feature.
+2. **Component coverage** — Every component in ARCHITECTURE.md must have at least one feature that builds or exercises it.
+3. **Constraint compliance** — The implementation order and milestones must respect scope constraints (timeline, team size, etc.).
+4. **MVP alignment** — The MVP feature set must be sufficient to meet the core goals and success criteria from the scope.
+5. **Dependency consistency** — Feature dependencies should align with the component interactions defined in the architecture.
+
+For each issue found:
+- **Fix it directly** in PLAN.md if the scope and architecture are clearly authoritative (e.g., a missing feature for an uncovered goal, a dependency that contradicts the architecture)
+- **Stop and ask the user** if the conflict is ambiguous (e.g., whether a goal is sufficiently covered by existing features, or how to prioritize features within constraints)
+
+## Plan Panel Review
+
+After the scope-architecture-plan consistency check is complete, run the plan panel against `blueprint/PLAN.md` following the loop described in `references/panel-review.md`.
+
+Panelists: `delivery-manager`, `critic`, `simplifier`.
+
+Pass the current PLAN.md and the approved SCOPE.md and ARCHITECTURE.md. This is the last blueprint phase — concerns cannot be deferred forward. Concerns that would warrant deferral should instead be handled as `Addressed` in PLAN.md, `Sealed` (user-directed), or `Accepted as risk` (with explicit user sign-off and `Defense:` text in Notes).
+
+## Validation and approval
+
+After the panel review is complete, run validation:
+
+```bash
+python <script-path>/validate_blueprint.py blueprint/
+```
+
+**Stop and ask the user to review PLAN.md before proceeding.**
+
+When the user approves, run:
+
+```bash
+python <script-path>/validate_blueprint.py blueprint/ --approve plan
+```

@@ -1,0 +1,19 @@
+{
+  "name": "neonghost-marketplace",
+  "owner": {
+    "name": "Lee George"
+  },
+  "metadata": {
+    "description": "Telescoping Spec-Driven Development plugin for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "telescoping-sdd",
+      "source": "./telescoping-sdd",
+      "description": "Telescoping Spec-Driven Development: project-blueprint (project tier) + spec-driven-dev (feature tier)",
+      "version": "1.0.0",
+      "license": "MIT",
+      "repository": "https://github.com/leecgeorge/telescoping-sdd.git"
+    }
+  ]
+}

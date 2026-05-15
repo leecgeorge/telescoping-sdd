@@ -1,0 +1,116 @@
+---
+name: project-blueprint
+description: Guides project planning from scope through architecture to implementation plan. Use when user says "plan a project", "create a blueprint", "project blueprint", "scope a project", "architect a project", or "plan a new project". Walks through three phases — Scope, Architecture, Implementation Plan — with human review gates between each phase.
+metadata:
+  status: stable
+---
+
+# Project Blueprint
+
+> **Status: Stable** — ready for day-to-day use.
+
+A structured workflow that produces project planning documents before any feature development begins. Defines what the project is, how it's structured, and what order to build it in.
+
+## Overview
+
+Every project blueprint follows three phases. **Always get user approval before moving to the next phase.**
+
+1. **Scope** — Define what we're building and why (`SCOPE.md`) — drafted by the `telescoping-sdd:project-spec-analyst` agent
+2. **Architecture** — Design how it fits together (`ARCHITECTURE.md`) — drafted by the `telescoping-sdd:project-architecture-analyst` agent
+3. **Implementation Plan** — Break it into features and sequence them (`PLAN.md`) — drafted by the `telescoping-sdd:project-plan-analyst` agent
+
+All blueprint documents live in `blueprint/` at the project root.
+
+Read `references/workflow-overview.md` for a quick-reference diagram of the full process.
+
+### Path placeholders
+
+The commands in this skill reference two distinct script roots:
+
+* `<script-path>` resolves to the skill's own `scripts/` directory — under the plugin install root at `skills/project-blueprint/scripts/` (e.g., `~/.claude/plugins/cache/<marketplace>/telescoping-sdd/<version>/skills/project-blueprint/scripts/` for marketplace installs, or `<plugin-dir>/skills/project-blueprint/scripts/` for `--plugin-dir` dev mode).
+* `<shared-script-path>` resolves to `telescoping-sdd/scripts/` — the plugin-wide shared scripts directory, sibling of `telescoping-sdd/skills/`. `<shared-script-path>/archive_pass.py` is the cross-skill panel-archiving tool shared with `spec-driven-dev`.
+
+Running `validate_blueprint.py` is optional — the workflow functions without it, and the panel-review step already catches most issues the validator would. Running `archive_pass.py` is **required** between panel passes — it maintains `### Trajectory`, promotes `### Sealed dispositions`, and clears `### Latest pass detail` so the next pass starts cleanly.
+
+### Phase shape (same every phase)
+
+Each phase delegates document drafting to a specialist subagent via the Agent tool. The agent produces a draft and self-reviews it before returning (up to 5 passes — fixing issues it can resolve, flagging others with `[TBD]`). After the agent returns, you (the calling Claude) perform your own review, run any cross-document consistency check, then invoke a three-persona **panel review** to stress-test the artifact for blind-spot and quality issues. The panel runs a review loop (auto-fix or ask the user, up to 5 passes). When the panel exits — i.e., a pass returns zero HIGH-severity concerns — run validation and present the document to the user. The agent catches internal issues; the panel catches blind-spot and quality issues; you catch cross-document and conversation-context issues.
+
+**The shared panel-review machinery — the loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract for `## Panel Review`, and when to skip the panel — lives in `references/panel-review.md`. Read that reference before running any phase's panel.**
+
+## Phase 1: Scope
+
+Output: `blueprint/SCOPE.md`. Drafted by `telescoping-sdd:project-spec-analyst`.
+
+Required sections: Problem Statement, Target Users, Goals, Non-Goals, Constraints, Success Criteria.
+
+Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`.
+
+**Read `references/phase-scope.md` for the full Phase 1 workflow — drafting, self-review, panel, validation, and approval.**
+
+## Phase 2: Architecture
+
+Output: `blueprint/ARCHITECTURE.md`. Drafted by `telescoping-sdd:project-architecture-analyst`. Requires approved `SCOPE.md`.
+
+Required sections: System Overview, Components, Component Interactions, Technology Choices, Data Architecture, External Dependencies, Risks.
+
+Panelists: `telescoping-sdd:architect`, `telescoping-sdd:ops-reviewer`, `telescoping-sdd:security-reviewer`.
+
+**Read `references/phase-architecture.md` for the full Phase 2 workflow — drafting, self-review, scope-architecture consistency check, panel, validation, and approval.**
+
+## Phase 3: Implementation Plan
+
+Output: `blueprint/PLAN.md`. Drafted by `telescoping-sdd:project-plan-analyst`. Requires approved `SCOPE.md` and `ARCHITECTURE.md`.
+
+Required sections: Feature Breakdown, MVP Definition, Feature Dependencies, Implementation Order, Milestones.
+
+Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
+
+**Read `references/phase-plan.md` for the full Phase 3 workflow — drafting, self-review, scope-architecture-plan consistency check, panel, validation, and approval. This is the last blueprint phase; concerns cannot be deferred forward.**
+
+## Validation Rules
+
+Before any document can be approved, it must pass validation:
+
+1. **All required sections present** — Every section listed for the phase must exist in the document, including `## Panel Review`
+2. **No unresolved items** — No `[TBD]`, `TODO`, `FIXME`, `???`, unchecked open questions (`- [ ] Q1:`), or panel concerns still in `User input needed` disposition
+3. **No empty sections** — Each section must contain substantive content (including `## Panel Review` — populated `### Trajectory`, plus any `### Sealed dispositions` and `### Latest pass detail` rows produced during panel cycles)
+4. **Previous phase approved** — Architecture requires approved scope; Plan requires approved architecture
+5. **Hash integrity** — If a document is edited after approval, the hash is invalidated
+
+## Handoff to Feature Development
+
+Once the implementation plan is approved, each feature (F1, F2, etc.) in PLAN.md is ready to be developed using the spec-driven-dev workflow. Follow the implementation order defined in PLAN.md:
+
+1. Pick the next feature from the implementation order
+2. Use `/spec-driven-dev` to create a spec, plan, and tasks for that feature
+3. Implement the feature
+4. Move to the next feature
+
+The blueprint documents remain the source of truth for project direction. If scope changes, update SCOPE.md first and cascade changes through ARCHITECTURE.md and PLAN.md.
+
+## Entering the Workflow Mid-Stream
+
+Users may already have some artifacts:
+- If SCOPE.md exists, validate it, then proceed to Architecture (including architecture self-review, scope-architecture consistency check, and architecture panel review)
+- If ARCHITECTURE.md exists, validate it against SCOPE.md, then proceed to Implementation Plan (including plan self-review, scope-architecture-plan consistency check, and plan panel review)
+- If PLAN.md exists, the blueprint is complete — suggest spec-driven-dev for feature implementation
+- Always validate existing artifacts before building on them
+- If validation fails on an existing artifact, fix the missing sections (including `## Panel Review`) with the user before proceeding. If the Panel Review section is missing, run the corresponding panel before continuing.
+
+## Re-Approval After Edits
+
+If a document is edited after approval, its content hash will no longer match and downstream phases will fail validation. To recover:
+1. Re-validate the edited document to ensure it still has all required sections
+2. Re-run `--approve` on the edited document to generate a new hash
+3. Cascade changes forward — if a scope change affects the architecture or plan, update those documents and re-approve them too
+
+## See also
+
+- `references/panel-review.md` — the shared panel-review loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract, and panel-skip rules. Read before running any phase's panel.
+- `references/strict-bar-prompts.md` — per-phase prompt additions for strict-bar passes. Loaded only when a strict-bar pass runs.
+- `references/phase-scope.md`, `references/phase-architecture.md`, `references/phase-plan.md` — full per-phase workflows.
+- `references/workflow-overview.md` — quick-reference diagram of the full process.
+- `references/scope-template.md`, `references/architecture-template.md`, `references/plan-template.md` — document templates the drafting agents must follow exactly.
+- `references/examples.md` — end-to-end walkthroughs for common entry points (new project, resuming, plan-only, blueprint complete).
+- `references/troubleshooting.md` — failure modes and recovery (validation failures, scope drift, panel non-convergence, etc.).

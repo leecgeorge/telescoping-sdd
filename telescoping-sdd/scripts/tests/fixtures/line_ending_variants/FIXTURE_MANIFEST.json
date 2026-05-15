@@ -1,0 +1,26 @@
+{
+  "_kind": "static",
+  "_note": "expected_hashes_read_text_utf8 is computed from read_text(encoding=\"utf-8\"), which performs universal-newline translation. CRLF fixtures hash identically to LF fixtures by design \u2014 this matches validate_blueprint.read_file behavior.",
+  "_origin": "synthetic \u2014 8 files covering every combination of line ending (LF/CRLF), byte-order mark (BOM/noBOM), and trailing newline (EOL/noEOL).",
+  "_purpose": "Anchors test_hash_frozen_fixture_matrix \u2014 verifies compute_content_hash is stable across line-ending and BOM variants.",
+  "expected_hashes_read_text_utf8": {
+    "crlf_bom_eol.md": "b879a8d5052992f8",
+    "crlf_bom_noeol.md": "b879a8d5052992f8",
+    "crlf_nobom_eol.md": "78169f147ee27de6",
+    "crlf_nobom_noeol.md": "78169f147ee27de6",
+    "lf_bom_eol.md": "b879a8d5052992f8",
+    "lf_bom_noeol.md": "b879a8d5052992f8",
+    "lf_nobom_eol.md": "78169f147ee27de6",
+    "lf_nobom_noeol.md": "78169f147ee27de6"
+  },
+  "files": {
+    "crlf_bom_eol.md": "8c87f6e09ea7bf4d0cab6000d9e2e7c915f74636560fd6a6484dc9bca38cd0fd",
+    "crlf_bom_noeol.md": "0b8e3367080c2292e146c83904d32778fc2aefc4ff3844e17dfec76da04de4b0",
+    "crlf_nobom_eol.md": "4b1406ea9188ed08aa906b2c6e755179ae9e5746cc7ebfff3d12dcde10a9d528",
+    "crlf_nobom_noeol.md": "9a55dd111cd237838a48bbf55e551a1939f10dc5fb0116d476168ac6d444497e",
+    "lf_bom_eol.md": "40d9a4e10a127a2f0a4a6c8dcbee746242b2f9244e4b3402323a1f9ae5ee5d40",
+    "lf_bom_noeol.md": "b879a8d5052992f8493c1f7adaf560bff095f4f810e59344e8081d56c383ec11",
+    "lf_nobom_eol.md": "3deb3b9b86e40da453c8d1f51c325e4576d804036137e80c791dd1d5607165d8",
+    "lf_nobom_noeol.md": "78169f147ee27de60a8a5a7ee9544548851bd45b35a22a357f6da4b0539afa05"
+  }
+}
