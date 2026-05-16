@@ -31,7 +31,7 @@ The commands in this skill reference two distinct script roots:
 * `<script-path>` resolves to the skill's own `scripts/` directory — under the plugin install root at `skills/spec-driven-dev/scripts/` (e.g., `~/.claude/plugins/cache/<marketplace>/telescoping-sdd/<version>/skills/spec-driven-dev/scripts/` for marketplace installs, or `<plugin-dir>/skills/spec-driven-dev/scripts/` for `--plugin-dir` dev mode).
 * `<shared-script-path>` resolves to `telescoping-sdd/scripts/` — the plugin-wide shared scripts directory, sibling of `telescoping-sdd/skills/`. `<shared-script-path>/archive_pass.py` is the cross-skill panel-archiving tool shared with `project-blueprint`.
 
-Running `validate_spec.py` is optional — the workflow functions without it, and the panel-review step already catches most issues the validator would. Running `archive_pass.py` is **required** between panel passes — it maintains `### Trajectory`, promotes `### Sealed dispositions`, and clears `### Latest pass detail` so the next pass starts cleanly.
+Running `validate_spec.py` is **optional for fresh artifacts** (the panel-review step already catches most issues the validator would) **but required when entering or resuming a workflow with existing approved artifacts** — it detects post-approval edits made outside the current session that would otherwise leave the chain silently out of sync. (Edits Claude makes mid-session don't need the validator to detect them — Claude already knows it edited the file. Both flows feed into the same handling — see "Re-Approval After Edits.") Running `archive_pass.py` is **required** between panel passes — it maintains `### Trajectory`, promotes `### Sealed dispositions`, and clears `### Latest pass detail` so the next pass starts cleanly.
 
 ### Phase shape (Phases 1–3)
 
@@ -111,25 +111,21 @@ After completing all tasks, do a final check:
 - All tests pass
 - All acceptance criteria from spec.md are met
 - All tasks in tasks.md are checked off and all summary table statuses are `Done` (or `Skipped` for invalidated tasks)
+- **Re-stamp `tasks.md` once**: first run `python <script-path>/validate_spec.py specs/<feature-name>/` and confirm structural validity (no `[TBD]`, no `TODO`/`FIXME` leaked into task descriptions, all required sections present, `## Panel Review` populated). If any structural check fails, halt and fix before re-stamping — re-stamping a structurally broken `tasks.md` would silently approve known-bad content. Once structural checks pass, run `python <script-path>/validate_spec.py specs/<feature-name>/ --approve tasks`. This is the completion re-stamp called out in `references/hash-and-cascade.md` (intro paragraph: Phase 4 cadence) — it refreshes the hash that's been stale since the first tick. No cascade follows (tasks.md has no downstream).
+
+<!-- The two sections below mention a Phase 4 carve-out / Phase 4 exception that is intentional asymmetry vs project-blueprint/SKILL.md. spec-driven-dev has a Phase 4 (Implement) where tasks.md is edited continuously; project-blueprint has no analogous phase. Do not "sync" these pointer paragraphs by removing the Phase 4 references — the full asymmetry rationale lives in references/hash-and-cascade.md (intro paragraph). -->
 
 ## Entering the Workflow Mid-Stream
 
-Users may already have some artifacts:
-- If spec.md exists, validate it, then proceed to Design (including design self-review, spec-design consistency check, and design panel review)
-- If design.md exists, validate it against spec.md, then proceed to Tasks (including tasks self-review, spec-design-tasks consistency check, and tasks panel review)
-- If tasks.md exists, validate it against spec.md and design.md, then proceed to Implement
-- Always validate existing artifacts before building on them
-- If validation fails on an existing artifact, fix the missing sections (including `## Panel Review`) with the user before proceeding. If the Panel Review section is missing, run the corresponding panel before continuing.
+If users already have artifacts (spec.md, design.md, and/or tasks.md), validate them before doing any phase work. The procedure — structural-validity check, auto-restamp on stale hashes, halt-and-ask on unchecked boxes, the Phase 4 carve-out for mid-Phase-4 resumption, then routing to the right phase — lives in **`references/hash-and-cascade.md` § "Entering the Workflow Mid-Stream"**. Read it before resuming.
 
 ## Re-Approval After Edits
 
-If a document is edited after approval, its content hash will no longer match and downstream phases will fail validation. To recover:
-1. Re-validate the edited document to ensure it still has all required sections
-2. Re-run `--approve` on the edited document to generate a new hash
-3. Cascade changes forward — if a spec change affects the design or tasks, update those documents and re-approve them too
+When an approved document is edited (by Claude at the user's request, by the user directly, or via a `git` operation), the response is automatic: verify structural validity, re-stamp the edited document silently, then run the consistency-check cascade against approved downstream artifacts. **Do not prompt for permission to re-stamp** — the user has already authorized the edit by making it. The cascade is where genuine decisions surface; the hash refresh itself is bookkeeping. **Phase 4 (Implement) has an exception**: normal task-tick edits to `tasks.md` do not trigger this flow (re-stamping after every tick would be noise) — see the Phase 4 cadence in the intro of `references/hash-and-cascade.md`. The full flow — structural-validity precondition, halt-on-substantive-divergence behavior, resolution paths (revise or accept) — lives in **`references/hash-and-cascade.md` § "Re-Approval After Edits"**.
 
 ## See also
 
+- `references/hash-and-cascade.md` — full hash-handling flow: mid-stream entry, re-approval after edits, the cascade, the halt-on-substantive-divergence rule, and the Phase 4 (Implement) cadence. Read this whenever an approved document changes.
 - `references/panel-review.md` — the shared panel-review loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract, and panel-skip rules. Read before running any phase's panel.
 - `references/strict-bar-prompts.md` — per-phase prompt additions for strict-bar passes. Loaded only when a strict-bar pass runs.
 - `references/phase-specify.md`, `references/phase-design.md`, `references/phase-tasks.md` — full per-phase workflows.

@@ -62,4 +62,4 @@ When the user approves, run:
 python <script-path>/validate_blueprint.py blueprint/ --approve scope
 ```
 
-This marks the scope as approved with a content hash. If the scope is edited after approval, the hash will no longer match and the architecture phase will fail validation until the scope is re-approved.
+This marks the scope as approved with a content hash. If the scope is edited after approval, the hash will no longer match — the skill detects this on next entry (or immediately, if Claude made the edit) and triggers the auto-cascade flow described in `hash-and-cascade.md` § "Re-Approval After Edits": structural validity is checked, the hash is re-stamped silently, and the consistency check ripples downstream. Cosmetic edits proceed without interruption; substantive edits halt at the consistency-check boundary so the user can decide whether to revise the downstream artifacts.
