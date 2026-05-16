@@ -115,6 +115,39 @@ def test_strict_bar_stamps_trajectory_notes(tmp_path):
     assert "strict-bar pass; converged (0 HIGH)" in text
 
 
+def test_normal_pass_marks_convergence(tmp_path):
+    """A NORMAL pass with zero HIGH concerns gets 'converged (0 HIGH)' in Notes."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | pragmatist | minor thing | Addressed | fixed |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    assert "converged (0 HIGH)" in text
+
+
+def test_normal_pass_with_highs_not_marked_converged(tmp_path):
+    """A NORMAL pass with HIGH concerns is NOT marked as converged."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [HIGH] | devils-advocate | real concern | Addressed | fixed in §2 |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    assert "converged" not in text
+
+
+def test_cross_check_with_zero_highs_also_marks_convergence(tmp_path):
+    """A --cross-check pass with zero HIGH concerns is marked converged too."""
+    artifact = _artifact_with_latest(tmp_path, "")
+    proc = _run_archive_pass([str(artifact), "--cross-check"])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    assert "cross-check pass (excluded from cap); converged (0 HIGH)" in text
+
+
 def test_cross_check_stamped_and_records_empty_latest(tmp_path):
     """--cross-check stamps the Notes column and still records a row when
     Latest pass detail is empty (a clean cross-check produces no concerns)."""
