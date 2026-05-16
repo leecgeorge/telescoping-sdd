@@ -30,7 +30,7 @@ The commands in this skill reference two distinct script roots:
 * `<script-path>` resolves to the skill's own `scripts/` directory — under the plugin install root at `skills/project-blueprint/scripts/` (e.g., `~/.claude/plugins/cache/<marketplace>/telescoping-sdd/<version>/skills/project-blueprint/scripts/` for marketplace installs, or `<plugin-dir>/skills/project-blueprint/scripts/` for `--plugin-dir` dev mode).
 * `<shared-script-path>` resolves to `telescoping-sdd/scripts/` — the plugin-wide shared scripts directory, sibling of `telescoping-sdd/skills/`. `<shared-script-path>/archive_pass.py` is the cross-skill panel-archiving tool shared with `spec-driven-dev`.
 
-Running `validate_blueprint.py` is optional — the workflow functions without it, and the panel-review step already catches most issues the validator would. Running `archive_pass.py` is **required** between panel passes — it maintains `### Trajectory`, promotes `### Sealed dispositions`, and clears `### Latest pass detail` so the next pass starts cleanly.
+Running `validate_blueprint.py` is **optional for fresh artifacts** (the panel-review step already catches most issues the validator would) **but required when entering or resuming a workflow with existing approved artifacts** — it detects post-approval edits made outside the current session that would otherwise leave the chain silently out of sync. (Edits Claude makes mid-session don't need the validator to detect them — Claude already knows it edited the file. Both flows feed into the same handling — see "Re-Approval After Edits.") Running `archive_pass.py` is **required** between panel passes — it maintains `### Trajectory`, promotes `### Sealed dispositions`, and clears `### Latest pass detail` so the next pass starts cleanly.
 
 ### Phase shape (same every phase)
 
@@ -91,22 +91,15 @@ The blueprint documents remain the source of truth for project direction. If sco
 
 ## Entering the Workflow Mid-Stream
 
-Users may already have some artifacts:
-- If SCOPE.md exists, validate it, then proceed to Architecture (including architecture self-review, scope-architecture consistency check, and architecture panel review)
-- If ARCHITECTURE.md exists, validate it against SCOPE.md, then proceed to Implementation Plan (including plan self-review, scope-architecture-plan consistency check, and plan panel review)
-- If PLAN.md exists, the blueprint is complete — suggest spec-driven-dev for feature implementation
-- Always validate existing artifacts before building on them
-- If validation fails on an existing artifact, fix the missing sections (including `## Panel Review`) with the user before proceeding. If the Panel Review section is missing, run the corresponding panel before continuing.
+If users already have artifacts (SCOPE.md, ARCHITECTURE.md, and/or PLAN.md), validate them before doing any phase work. The procedure — structural-validity check, auto-restamp on stale hashes, halt-and-ask on unchecked boxes, then routing to the right phase — lives in **`references/hash-and-cascade.md` § "Entering the Workflow Mid-Stream"**. Read it before resuming.
 
 ## Re-Approval After Edits
 
-If a document is edited after approval, its content hash will no longer match and downstream phases will fail validation. To recover:
-1. Re-validate the edited document to ensure it still has all required sections
-2. Re-run `--approve` on the edited document to generate a new hash
-3. Cascade changes forward — if a scope change affects the architecture or plan, update those documents and re-approve them too
+When an approved document is edited (by Claude at the user's request, by the user directly, or via a `git` operation), the response is automatic: verify structural validity, re-stamp the edited document silently, then run the consistency-check cascade against approved downstream artifacts. **Do not prompt for permission to re-stamp** — the user has already authorized the edit by making it. The cascade is where genuine decisions surface; the hash refresh itself is bookkeeping. The full flow — structural-validity precondition, halt-on-substantive-divergence behavior, resolution paths (revise or accept) — lives in **`references/hash-and-cascade.md` § "Re-Approval After Edits"**.
 
 ## See also
 
+- `references/hash-and-cascade.md` — full hash-handling flow: mid-stream entry, re-approval after edits, the cascade, and the halt-on-substantive-divergence rule. Read this whenever an approved document changes.
 - `references/panel-review.md` — the shared panel-review loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract, and panel-skip rules. Read before running any phase's panel.
 - `references/strict-bar-prompts.md` — per-phase prompt additions for strict-bar passes. Loaded only when a strict-bar pass runs.
 - `references/phase-scope.md`, `references/phase-architecture.md`, `references/phase-plan.md` — full per-phase workflows.

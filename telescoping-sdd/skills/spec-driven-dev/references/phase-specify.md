@@ -66,4 +66,4 @@ When the user approves, run:
 python <script-path>/validate_spec.py specs/<feature-name>/ --approve spec
 ```
 
-This marks the spec as approved with a content hash. If the spec is edited after approval, the hash will no longer match and the design phase will fail validation until the spec is re-approved.
+This marks the spec as approved with a content hash. If the spec is edited after approval, the hash will no longer match — the skill detects this on next entry (or immediately, if Claude made the edit) and triggers the auto-cascade flow described in `hash-and-cascade.md` § "Re-Approval After Edits": structural validity is checked, the hash is re-stamped silently, and the consistency check ripples downstream. Cosmetic edits proceed without interruption; substantive edits halt at the consistency-check boundary so the user can decide whether to revise the downstream artifacts.

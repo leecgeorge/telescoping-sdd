@@ -13,7 +13,7 @@
 ## Requirements change mid-implementation
 
 - **Cause:** New information or feedback during development
-- **Solution:** Update spec.md first, then cascade changes through design.md and tasks.md. Do not modify code without updating the spec chain. Re-approve each updated document before continuing.
+- **Solution:** Edit spec.md first — do not modify code without updating the spec chain. The auto-cascade handles re-stamp and the downstream consistency checks — see `hash-and-cascade.md`.
 
 ## Spec keeps changing before the design is written
 
@@ -23,12 +23,12 @@
 ## Design flaw discovered mid-implementation
 
 - **Cause:** The design made an assumption that turned out wrong
-- **Solution:** Stop implementation. Update design.md with the corrected design, re-approve it, then update tasks.md to reflect the new approach. Set the Status of any invalidated tasks to `Skipped` in the summary table and check off their checkboxes, then create replacement tasks.
+- **Solution:** Stop implementation. Edit design.md — the auto-cascade surfaces the tasks.md mismatch (see `hash-and-cascade.md`). When revising tasks.md, mark invalidated tasks as `Skipped` in the summary table, check off their boxes, then add replacement tasks.
 
 ## Tests pass but acceptance criteria feel wrong
 
 - **Cause:** Acceptance criteria in the spec don't fully capture the intended behavior
-- **Solution:** Go back to spec.md and refine the GIVEN/WHEN/THEN blocks. The tests are only as good as the criteria they encode. Update spec, re-approve, cascade to tasks.
+- **Solution:** Refine the GIVEN/WHEN/THEN blocks in spec.md — the tests are only as good as the criteria they encode. The auto-cascade ripples the change to tasks.md (see `hash-and-cascade.md`); substantive changes will surface as divergence and prompt task/test revision.
 
 ## Validator shows warnings but no failures
 

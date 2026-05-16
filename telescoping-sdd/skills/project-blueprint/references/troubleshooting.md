@@ -8,7 +8,7 @@
 ## Architecture doesn't align with scope
 
 - **Cause:** Scope was too vague or architecture introduces unscoped concerns
-- **Solution:** Go back to SCOPE.md. Either tighten the scope or add missing goals. Re-approve scope before continuing.
+- **Solution:** Edit SCOPE.md (tighten or add missing goals). The auto-cascade handles re-stamp and the Scope-Architecture consistency check — see `hash-and-cascade.md`.
 
 ## Features are too large for spec-driven-dev
 
@@ -23,7 +23,7 @@
 ## Risk discovered during architecture that invalidates scope
 
 - **Cause:** Technical feasibility issue found during architecture design
-- **Solution:** Go back to SCOPE.md, adjust goals or constraints to reflect the reality, re-approve, then revise the architecture.
+- **Solution:** Edit SCOPE.md to reflect the new reality. The auto-cascade handles re-stamp and surfaces the architectural divergence — see `hash-and-cascade.md`.
 
 ## Validator shows warnings but no failures
 
