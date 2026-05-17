@@ -16,11 +16,15 @@ templates under `telescoping-sdd/skills/*/references/`.
 `references/strict-bar-prompts.md`). They process Latest pass detail exactly
 like a normal archive but additionally stamp the `### Trajectory` Notes column
 so the trajectory records which mode the pass ran in:
-  - `--strict-bar`  → Notes `strict-bar pass` (plus `; converged (0 HIGH)` when
-    the pass had zero HIGHs). A strict-bar pass counts toward the 5-pass cap.
+  - `--strict-bar`  → Notes `strict-bar pass`. A strict-bar pass counts toward
+    the 5-pass cap.
   - `--cross-check` → Notes `cross-check pass (excluded from cap)`. A
     cross-check pass is exit ceremony and does NOT count toward the cap; the
     synthesizer excludes cross-check-noted rows when counting passes.
+Independent of mode, a pass with zero HIGH-severity concerns is marked
+`converged (0 HIGH)` in Notes. The marker is appended to any mode tag (e.g.
+`strict-bar pass; converged (0 HIGH)`) and is documentation-of-fact for the
+trajectory — the loop's exit decision still reads the HIGHs column directly.
 With either flag, an empty Latest pass detail still produces a trajectory row
 (all counts zero) so the mode pass is recorded. The flags are mutually
 exclusive with each other and with `--skip`.
@@ -475,13 +479,15 @@ def main():
             if r["Disposition"].split("→")[0].strip() == "Halt and re-scope"
         ]
         notes = format_halt_notes(halt_rows)
+        tag_parts = []
         if args.strict_bar:
-            tag = "strict-bar pass"
-            if highs == 0:
-                tag += "; converged (0 HIGH)"
-            notes = tag if notes == "—" else f"{tag}; {notes}"
+            tag_parts.append("strict-bar pass")
         elif args.cross_check:
-            tag = "cross-check pass (excluded from cap)"
+            tag_parts.append("cross-check pass (excluded from cap)")
+        if highs == 0:
+            tag_parts.append("converged (0 HIGH)")
+        if tag_parts:
+            tag = "; ".join(tag_parts)
             notes = tag if notes == "—" else f"{tag}; {notes}"
         new_traj_row = {
             "Pass": str(next_pass),
