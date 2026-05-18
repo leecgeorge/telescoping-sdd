@@ -57,3 +57,38 @@ Resolution has two paths:
 5. **If no, skip the panel** and re-enter this flow at step 1 (cascading further downstream if applicable).
 
 **Net effect.** Cosmetic edits ripple silently — one re-stamp note, one consistency-verified note per downstream. Substantive edits halt exactly where they matter. Downstreams never get re-stamped just because an upstream changed.
+
+
+## Deferred Dispositions: Staleness and First Re-Entry
+
+This section documents two operator-facing behaviours of the `### Deferred dispositions` mechanism: staleness cleanup when downstream artifacts have absorbed a deferred concern, and natural-fill behaviour when re-entering a legacy artifact that predates the feature.
+
+### Staleness cleanup (operator-driven, pre-dispatch advisory)
+
+**When**: Re-entering an approved artifact for a new panel-review loop (loop re-entry, mid-stream amendment, convergence-test re-run, etc.). Apply this advisory BEFORE step 1 of the panel loop (before dispatching panelists).
+
+**What to check**: Each `[DEF-NN]` entry in `### Deferred dispositions` has a `→ <TARGET.md>` clause. Compare the entry's title and rationale against the current state of `<TARGET.md>`. If the downstream artifact has visibly absorbed the concern (a section, requirement, task, or feature now addresses it), the `[DEF-NN]` entry is **stale**.
+
+**What to do with stale entries**: Ask the user — remove the entry, or annotate it inline as `(absorbed — resolved in <TARGET.md> §X.Y)`. No automation enforces this; the synthesizer is the verification agent. Removal keeps the suppression list lean; annotation preserves audit trail.
+
+**Why pre-dispatch**: A stale `[DEF-NN]` entry that's no longer load-bearing still suppresses re-raises in the panelist prompt. If new evidence arises that would warrant a fresh concern in the same area, the stale entry can cause the panel to suppress it inappropriately. Cleaning up before dispatch keeps the suppression list aligned with actual current state.
+
+### Natural fill on first re-entry (legacy artifacts predating this feature)
+
+**Scenario**: An artifact approved before the deferred-dispositions feature landed is being re-entered for a new panel pass. It does NOT contain a `### Deferred dispositions` sub-section (the section was added by this feature).
+
+**What happens automatically**:
+
+1. `archive_pass.py` detects the missing section on first archive (any flag: normal, `--skip`, `--strict-bar`, `--cross-check`, `--dry-run`) and auto-inserts the empty `### Deferred dispositions` header between `### Sealed dispositions` and `### Latest pass detail`. This is a **cosmetic edit** (no semantic content), handled by the existing auto-re-stamp flow described above — no operator prompt fires.
+
+2. The first panel pass after re-entry lacks a populated suppression list. If panelists re-raise concerns that were previously disposed `Deferred` (whose `[DEF-NN]` entries vanished under the pre-feature behaviour), the synthesizer disposes them normally — `Deferred → <TARGET>` with a fresh `Routed because:` rationale — and `archive_pass.py` promotes them into the freshly-inserted section with `[DEF-01]`, `[DEF-02]`, etc.
+
+3. Subsequent passes have the populated list and suppress re-raises correctly per the marker-based discipline.
+
+**Operator escape hatch (optional)**: Operators with a reconstructed list of prior deferrals (from memory, notes, or downstream artifacts) can paste them directly into `### Deferred dispositions` BEFORE the first re-entry archive. The entry format is:
+
+```
+- `[DEF-NN]` **<title>** → <TARGET.md> (pass <N>) — Routed because: <rationale>.
+```
+
+`NN` is sequential, zero-padded to two digits. `<TARGET.md>` is a plain markdown filename (no path-traversal segments). `<rationale>` is one sentence.

@@ -98,6 +98,39 @@ SEAL_PAT = re.compile(
 )
 SEPARATOR_PAT = re.compile(r"^\|[\s\-|:]+\|\s*$")
 
+# Deferred-dispositions feature (R1, R2, R5, R7) — see specs/deferred-dispositions/
+H_DEFERRED = "### Deferred dispositions"
+DEFERRED_REDISPOSITION_PREFIX = "Defense: already routed to "
+TERMINAL_FILENAMES = frozenset({"PLAN.md", "tasks.md", "tasks-python.md", "tasks-java.md"})
+TERMINAL_HTML_MARKER = "<!-- terminal-phase: brownfield-scope -->"
+PANEL_SECTION_ORDER = [H_TRAJECTORY, H_SEALED, H_DEFERRED, H_LATEST]
+
+DEF_PAT = re.compile(
+    r"^-\s+`\[DEF-(\d+)\]`\s+\*\*(.+?)\*\*\s+→\s+(\S+)\s+\(pass\s+(\d+)\)\s+—\s+Routed because:\s+(.+)$"
+)
+MARKER_STRICT_PAT = re.compile(r"^Defense: rerouted \[DEF-(\d{2})\]\.?\s*$")
+MARKER_WIDE_PAT = re.compile(r"^\s*[Dd]efense:\s*[Rr]e-?routed\b")
+TARGET_PAT = re.compile(
+    r"^(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*\.md$"
+)
+
+
+def _is_terminal(content: str, path: Path, explicit_flag: bool) -> bool:
+    """Return True if the artifact is a terminal-phase artifact.
+
+    Priority order (per design AD1, I2):
+      1. explicit_flag (--terminal was passed on CLI)
+      2. path.name in TERMINAL_FILENAMES (case-sensitive registry)
+      3. TERMINAL_HTML_MARKER in content (brownfield SCOPE.md backstop)
+    """
+    if explicit_flag:
+        return True
+    if path.name in TERMINAL_FILENAMES:
+        return True
+    if TERMINAL_HTML_MARKER in content:
+        return True
+    return False
+
 
 class FormatViolation(Exception):
     def __init__(self, message, line_num=None):
@@ -180,6 +213,51 @@ def parse_seals(lines, start, end):
                 "line_idx": i,
             })
     return entries
+
+
+def parse_defs(lines, start, end):
+    """Parse [DEF-NN] entries from `### Deferred dispositions`.
+
+    Mirrors parse_seals(). Emits stderr WARN on non-matching non-blank/non-comment
+    lines within section bounds (per design I1 contract + security LOW-6).
+    """
+    entries = []
+    for i in range(start, end):
+        line = lines[i]
+        stripped = line.rstrip()
+        m = DEF_PAT.match(stripped)
+        if m:
+            entries.append({
+                "id": int(m.group(1)),
+                "title": m.group(2),
+                "target": m.group(3),
+                "pass_n": int(m.group(4)),
+                "rationale": m.group(5).strip(),
+                "line_idx": i,
+            })
+        elif stripped and not stripped.startswith("<!--") and stripped.startswith("- "):
+            # Looks like an entry-shaped line but doesn't match — warn (don't exit).
+            print(
+                f"warning: line {i + 1} in '### Deferred dispositions' does not "
+                f"match expected [DEF-NN] format and was skipped: "
+                f"{repr(stripped[:80])}. Check the entry shape; this entry will "
+                f"not be referenceable by marker expansion.",
+                file=sys.stderr,
+            )
+    return entries
+
+
+def next_def_id(def_entries):
+    """Return the next sequential [DEF-NN] ID (max + 1, or 1 if empty)."""
+    return max((e["id"] for e in def_entries), default=0) + 1
+
+
+def lookup_def(def_entries, def_id):
+    """Return the def_entry with the given id, or None if not found."""
+    for e in def_entries:
+        if e["id"] == def_id:
+            return e
+    return None
 
 
 def validate_row(row, line_num):
@@ -306,7 +384,7 @@ def _is_normal_pass_row(row):
     return True
 
 
-def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args):
+def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args, rerouted_def_count=0):
     """Return an advisory string if the strict-bar trigger condition is met.
 
     Trigger fires when, looking at the last two NORMAL-mode trajectory rows
@@ -323,10 +401,22 @@ def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args):
            of Deferred-downstream, since Phase 3 has no further blueprint
            phase to defer to). Per blueprint-strict.md.
 
+    T7 (R7 refinement): rerouted_def_count counts re-routed-deferral rows in
+    the current pass (rows expanded from `Defense: rerouted [DEF-NN]` markers
+    by archive_pass.py at archive time). These rows are disposed `Sealed` but
+    represent re-raised deferrals — the trigger counts them additively toward
+    pooled_deferred so R5's marker-based discipline doesn't silently blind
+    the strict-bar signal. rerouted_def_count defaults to 0 to preserve
+    backward-compat with existing callers.
+
+    Terminal archives (--terminal) suppress the trigger entirely.
+
     Detection runs only when the current pass is NORMAL mode (not --strict-bar,
     --cross-check, or --skip); strict-bar can only be entered from NORMAL.
     """
     if args.strict_bar or args.cross_check or args.skip:
+        return None
+    if getattr(args, "terminal", False):
         return None
     if not _is_normal_pass_row(current_pass_row):
         return None
@@ -390,7 +480,10 @@ def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args):
         curr_sealed = int(current_pass_row["Sealed"])
     except (KeyError, ValueError):
         return None
-    pooled_deferred = prev_deferred + curr_deferred
+    # T7 (R7): rerouted_def_count is ADDITIVE to curr_deferred. A single row
+    # has a single disposition (Deferred OR Sealed, never both), so the two
+    # counts are disjoint per pass. See design I7 mixed-pass worked example.
+    pooled_deferred = prev_deferred + curr_deferred + rerouted_def_count
     pooled_total = (
         prev_addressed + curr_addressed
         + prev_deferred + curr_deferred
@@ -494,6 +587,12 @@ def main():
              "[upstream]-tagged rows as halt votes, and Phase 3 uses "
              "[detail]-tag accumulation for the strict-bar signal.",
     )
+    parser.add_argument(
+        "--terminal", action="store_true",
+        help="Mark this archive as a terminal-phase artifact (PLAN.md, brownfield "
+             "SCOPE.md, tasks.md). Suppresses ### Deferred dispositions auto-insert "
+             "and promotion; rejects Deferred-disposed rows in Latest.",
+    )
     args = parser.parse_args()
 
     if sum(bool(x) for x in (args.skip, args.strict_bar, args.cross_check)) > 1:
@@ -507,6 +606,16 @@ def main():
     if not art.is_file():
         print(f"error: artifact not found: {art}", file=sys.stderr)
         sys.exit(EXIT_OLD_FORMAT_OR_MISSING)
+
+    if art.name in TERMINAL_FILENAMES and not args.terminal:
+        print(
+            f"error: '{art.name}' is in the TERMINAL_FILENAMES registry "
+            f"(case-sensitive: PLAN.md, tasks.md, tasks-python.md, tasks-java.md). "
+            f"Archive with --terminal. Note: the registry is case-sensitive — "
+            f"'plan.md' does NOT match; rename to canonical case if needed.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_FORMAT_VIOLATION)
 
     content = art.read_text()
     lines = content.splitlines()
@@ -532,6 +641,35 @@ def main():
     s_start, s_end = sealed
     l_start, l_end = latest
 
+    # T4 (R1, R2): auto-insert ### Deferred dispositions on legacy non-terminal
+    # artifacts. Idempotent — no-op if section already present. Skipped under
+    # --terminal (terminal artifacts must not carry the section per R1) and
+    # under --check (validation-only mode, no writes). Per design C3, the
+    # inserted block is `[blank, header, blank]` placed at l_start (before the
+    # ### Latest pass detail heading); l_start/l_end shift by +3, other indices
+    # unaffected because the insert lands below them in file order.
+    is_terminal = _is_terminal(content, art, args.terminal)
+    deferred = find_section(lines, H_DEFERRED, p_start + 1, p_end)
+    auto_inserted = False
+    if deferred is None and not is_terminal and not args.check:
+        lines = lines[:l_start] + ["", H_DEFERRED, ""] + lines[l_start:]
+        l_start += 3
+        l_end += 3
+        p_end += 3
+        auto_inserted = True
+
+    # T5 (R2): re-find ### Deferred dispositions section post-auto-insert and
+    # parse existing [DEF-NN] entries for promotion ID continuity. Skipped for
+    # terminal artifacts (they don't have the section).
+    def_entries = []
+    d_start = None
+    d_end = None
+    if not is_terminal:
+        deferred_post = find_section(lines, H_DEFERRED, p_start + 1, p_end)
+        if deferred_post is not None:
+            d_start, d_end = deferred_post
+            def_entries = parse_defs(lines, d_start, d_end)
+
     latest_rows, latest_table = parse_table(lines, l_start, l_end)
     traj_rows, traj_table = parse_table(lines, t_start, traj[1])
     seal_entries = parse_seals(lines, s_start, s_end)
@@ -553,6 +691,24 @@ def main():
         print(f"OK: format valid; {len(latest_rows)} row(s) in Latest pass detail.")
         sys.exit(EXIT_OK)
 
+    # T5 (R2): terminal-Deferred-forbidden check. Terminal artifacts must not
+    # carry Deferred-disposed rows in Latest (per R1 + spec § terminal phase).
+    if is_terminal:
+        forbidden = [
+            r for r in latest_rows
+            if r.get("Disposition", "").split("→")[0].strip() == "Deferred"
+        ]
+        if forbidden:
+            r = forbidden[0]
+            concern = r.get("Concern", "")[:80]
+            print(
+                f"error: Terminal-phase archive: Deferred disposition is forbidden. "
+                f"Row: Severity={r.get('Severity', '')} Source={r.get('Source', '')} "
+                f"Concern={concern}. Remove or re-dispose before archiving with --terminal.",
+                file=sys.stderr,
+            )
+            sys.exit(EXIT_FORMAT_VIOLATION)
+
     unresolved = [
         r for r in latest_rows
         if r.get("Disposition", "").split("→")[0].strip() == "User input needed"
@@ -572,6 +728,7 @@ def main():
     next_seal = max(seal_ids, default=0) + 1
 
     new_seals = []
+    new_defs = []  # T5: Deferred-row promotions (parallel to new_seals)
     if args.skip:
         if latest_rows:
             print(
@@ -597,6 +754,10 @@ def main():
                 "warning: Latest pass detail is empty; nothing to archive.",
                 file=sys.stderr,
             )
+            if auto_inserted:
+                # T4: write the auto-inserted section even when there's no archive work
+                new_content = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+                write_or_diff(art, content, new_content, args.dry_run)
             sys.exit(EXIT_OK)
         highs = sum(1 for r in latest_rows if "[HIGH]" in r["Severity"])
         regressions = sum(1 for r in latest_rows if "[REGRESSION]" in r["Severity"])
@@ -656,11 +817,58 @@ def main():
             "Sealed": str(sealed_count),
             "Notes": notes,
         }
+        # Phase-1 row classification (T5 + T6): single iteration over latest_rows
+        # building both new_seals (for Sealed/Accepted-as-risk rows) and new_defs
+        # (for Deferred rows). T6 marker-expansion logic lives in the Sealed branch.
+        next_def = next_def_id(def_entries)
         for r in latest_rows:
             d = r["Disposition"].split("→")[0].strip()
             if d in ("Sealed", "Accepted as risk"):
                 title = derive_title(r["Concern"])
-                defense = extract_defense(r["Notes"])
+                notes_field = r.get("Notes", "")
+                rerouted_def = False
+                # T6 (C5, R5, R7): marker classification — strict first, then
+                # wide near-miss. Strict match expands to canonical Defense via
+                # DEFERRED_REDISPOSITION_PREFIX (R7 single source of truth).
+                m_strict = MARKER_STRICT_PAT.match(notes_field)
+                if m_strict:
+                    def_id_int = int(m_strict.group(1))
+                    def_lookup = lookup_def(def_entries, def_id_int)
+                    if def_lookup is None:
+                        print(
+                            f"error: Row in Latest pass detail references "
+                            f"[DEF-{def_id_int:02d}] in marker "
+                            f"'Defense: rerouted [DEF-{def_id_int:02d}]' but no "
+                            f"matching [DEF-{def_id_int:02d}] entry exists in "
+                            f"### Deferred dispositions. Check the DEF ID or "
+                            f"add the entry manually.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(EXIT_FORMAT_VIOLATION)
+                    target = def_lookup["target"]
+                    # Canonical text uses DEFERRED_REDISPOSITION_PREFIX as the
+                    # write-side anchor that R7's trigger reads back.
+                    defense = (
+                        f"already routed to {target} as [DEF-{def_id_int:02d}]; "
+                        f"no new evidence presented this pass"
+                    )
+                    rerouted_def = True
+                elif MARKER_WIDE_PAT.search(notes_field):
+                    notes_excerpt = notes_field[:80]
+                    print(
+                        f"error: Row in Latest pass detail has Notes resembling "
+                        f"the re-routed-deferral marker but does not match the "
+                        f"strict format '^Defense: rerouted \\[DEF-NN\\]$' "
+                        f"(where NN is the zero-padded 2-digit ID, case-sensitive "
+                        f"'Defense: rerouted', no hyphen in 'rerouted'). "
+                        f"Found: {repr(notes_excerpt)}. Did you mean "
+                        f"'Defense: rerouted [DEF-NN]'? See panel-review.md "
+                        f"step 3 for the marker contract.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(EXIT_FORMAT_VIOLATION)
+                else:
+                    defense = extract_defense(notes_field)
                 disp_label = "user-directed" if d == "Sealed" else "accepted-as-risk"
                 new_seals.append({
                     "id": next_seal,
@@ -668,8 +876,48 @@ def main():
                     "pass": next_pass,
                     "disposition": disp_label,
                     "defense": defense,
+                    "rerouted_def": rerouted_def,
                 })
                 next_seal += 1
+            elif d == "Deferred":
+                # T5 (R2): validate Routed because: presence
+                notes_field = r.get("Notes", "")
+                if "Routed because:" not in notes_field:
+                    concern = r.get("Concern", "")[:80]
+                    print(
+                        f"error: Row in Latest pass detail has Disposition "
+                        f"'{r['Disposition']}' but Notes lacks required "
+                        f"'Routed because: <reason>' prefix. Offending row: "
+                        f"Severity={r.get('Severity', '')} Source={r.get('Source', '')} "
+                        f"Concern={concern}. Add 'Routed because:' to Notes and retry.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(EXIT_FORMAT_VIOLATION)
+                # T5 (R2): extract and validate target shape
+                disposition_str = r["Disposition"]
+                target = disposition_str.split("→", 1)[1].strip() if "→" in disposition_str else ""
+                if not TARGET_PAT.match(target):
+                    print(
+                        f"error: Row in Latest pass detail has Disposition "
+                        f"'{disposition_str}' with target '{target}' that does not "
+                        f"match the required filename shape '^[A-Za-z0-9._/-]+\\.md$' "
+                        f"(no traversal segments). Targets must be plain markdown "
+                        f"filenames (e.g., 'tasks.md', 'PLAN.md', 'subdir/tasks.md'). "
+                        f"Fix the disposition and retry.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(EXIT_FORMAT_VIOLATION)
+                # T5: queue for promotion
+                title = derive_title(r["Concern"])
+                rationale = notes_field.split("Routed because:", 1)[1].strip().rstrip(".")
+                new_defs.append({
+                    "id": next_def,
+                    "title": title,
+                    "target": target,
+                    "pass_n": next_pass,
+                    "rationale": rationale,
+                })
+                next_def += 1
         latest_to_clear = True
 
     new_traj_block = render_table(TRAJECTORY_COLS, traj_rows + [new_traj_row])
@@ -679,6 +927,14 @@ def main():
         new_sealed_lines.append(
             f"- `[SEAL-{s['id']:02d}]` **{s['title']}** "
             f"(pass {s['pass']}, {s['disposition']}) — Defense: {s['defense']}."
+        )
+
+    # T5 (R2): build Deferred-section entry lines
+    new_def_lines = [lines[e["line_idx"]] for e in def_entries]
+    for dd in new_defs:
+        new_def_lines.append(
+            f"- `[DEF-{dd['id']:02d}]` **{dd['title']}** "
+            f"→ {dd['target']} (pass {dd['pass_n']}) — Routed because: {dd['rationale']}."
         )
 
     new_latest_block = render_table(LATEST_COLS, [])
@@ -702,6 +958,16 @@ def main():
             block = [""] + new_sealed_lines
             new_lines = new_lines[:s_start + 1] + block + new_lines[s_start + 1:]
 
+    # T5 (R2): write Deferred-section promotions
+    if new_defs and d_start is not None:
+        if def_entries:
+            first_def = def_entries[0]["line_idx"]
+            last_def = def_entries[-1]["line_idx"] + 1
+            new_lines = replace_block(new_lines, first_def, last_def, new_def_lines)
+        else:
+            block = [""] + new_def_lines
+            new_lines = new_lines[:d_start + 1] + block + new_lines[d_start + 1:]
+
     if traj_table is not None:
         h, _, _, last = traj_table
         new_lines = replace_block(new_lines, h, last, new_traj_block)
@@ -712,7 +978,11 @@ def main():
     new_content = "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
     write_or_diff(art, content, new_content, args.dry_run)
 
-    advisory = detect_strict_bar_signal(traj_rows, new_traj_row, args)
+    # T7 (R7): count rerouted-deferral rows from this pass for trigger refinement
+    rerouted_def_count = sum(1 for s in new_seals if s.get("rerouted_def", False))
+    advisory = detect_strict_bar_signal(
+        traj_rows, new_traj_row, args, rerouted_def_count=rerouted_def_count
+    )
     if advisory:
         print(advisory)
 

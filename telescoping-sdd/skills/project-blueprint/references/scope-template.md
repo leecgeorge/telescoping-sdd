@@ -80,6 +80,10 @@ Use this template when creating `SCOPE.md` for a new project blueprint.
 
 ### Sealed dispositions
 
+### Deferred dispositions
+
+<!-- Auto-populated by archive_pass.py when a Deferred-disposed row is promoted; remains empty until first deferral. -->
+
 ### Latest pass detail
 
 | Severity | Source | Concern | Disposition | Notes |
