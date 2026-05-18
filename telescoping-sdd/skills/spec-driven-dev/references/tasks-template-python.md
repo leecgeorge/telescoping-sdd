@@ -110,6 +110,8 @@ Use this template when creating `tasks.md` for a Python project after an approve
 
 ## Panel Review
 
+
+<!-- Terminal Phase: must NOT contain a ### Deferred dispositions sub-section. archive_pass.py rejects --terminal archives with Deferred rows; validate_blueprint.py hard-fails for PLAN.md specifically. -->
 <!-- Populated by the skill across panel-review passes. archive_pass.py manages
      Trajectory and Sealed dispositions automatically; the synthesizer populates
      Latest pass detail per pass.

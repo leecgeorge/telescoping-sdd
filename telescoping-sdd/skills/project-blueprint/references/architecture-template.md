@@ -130,6 +130,10 @@ User Input ──> Validation ──> Processing ──> Storage
 
 ### Sealed dispositions
 
+### Deferred dispositions
+
+<!-- Auto-populated by archive_pass.py when a Deferred-disposed row is promoted; remains empty until first deferral. -->
+
 ### Latest pass detail
 
 | Severity | Source | Concern | Disposition | Notes |

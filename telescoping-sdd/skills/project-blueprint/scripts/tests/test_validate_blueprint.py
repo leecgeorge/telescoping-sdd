@@ -315,3 +315,109 @@ def test_validate_blueprint_post_r0_full_cli(tmp_path):
         f"Hash diverged between load modes: --plugin-dir={stamped_a}, "
         f"marketplace={stamped_b}"
     )
+
+
+# ============================================================================
+# PLAN.md '### Deferred dispositions' hard-fail check
+# ============================================================================
+
+def _make_minimal_plan_dir(tmp_path, plan_extra: str = "") -> Path:
+    """Create a minimal blueprint/ dir with PLAN.md (and an empty ARCHITECTURE.md
+    approval shim so check_previous_phase_approved doesn't block validation).
+    """
+    blueprint_dir = tmp_path / "blueprint"
+    blueprint_dir.mkdir()
+    # Minimal approved SCOPE.md + ARCHITECTURE.md (just enough for the previous-phase check)
+    for name in ("SCOPE.md", "ARCHITECTURE.md"):
+        (blueprint_dir / name).write_text(
+            f"# {name[:-3]}\n\n## Approval\n- [x] Approved\n- **Content Hash:** `abc123`\n",
+            encoding="utf-8",
+        )
+    plan_body = (
+        "# PLAN\n\n"
+        "## Feature Breakdown\n### F1: feature\n\n"
+        "## MVP Definition\n\n"
+        "## Feature Dependencies\n\n"
+        "## Implementation Order\n\n"
+        "## Milestones\n\n"
+        "## Panel Review\n\n"
+        f"{plan_extra}"
+        "## Approval\n- [ ] Approved\n- **Content Hash:** `pending`\n"
+    )
+    (blueprint_dir / "PLAN.md").write_text(plan_body, encoding="utf-8")
+    return blueprint_dir
+
+
+def test_validate_plan_fails_on_deferred_dispositions_section(tmp_path):
+    """PLAN.md containing `### Deferred dispositions` triggers a FAIL result."""
+    vb = _load_validate_blueprint()
+    blueprint_dir = _make_minimal_plan_dir(
+        tmp_path, plan_extra="### Deferred dispositions\n\n",
+    )
+    result = vb.validate_plan(blueprint_dir)
+    failed_checks = [c for c in result.checks if c[1] == "FAIL"]
+    # The specific check we added must have failed
+    deferred_failures = [
+        c for c in failed_checks
+        if "Deferred dispositions" in c[0]
+    ]
+    assert deferred_failures, f"expected deferred-section FAIL; got: {failed_checks}"
+
+
+def test_validate_plan_passes_without_deferred_dispositions_section(tmp_path):
+    """PLAN.md without the section produces no deferred-section FAIL."""
+    vb = _load_validate_blueprint()
+    blueprint_dir = _make_minimal_plan_dir(tmp_path, plan_extra="")
+    result = vb.validate_plan(blueprint_dir)
+    deferred_failures = [
+        c for c in result.checks
+        if "Deferred dispositions" in c[0] and c[1] == "FAIL"
+    ]
+    assert not deferred_failures, (
+        f"expected no deferred-section FAIL; got: {deferred_failures}"
+    )
+
+
+def test_validate_plan_fails_only_on_line_anchored_heading(tmp_path):
+    """The string inside a fenced code block does NOT trigger the FAIL —
+    line-anchored regex correctly rejects non-heading occurrences."""
+    vb = _load_validate_blueprint()
+    plan_extra = (
+        "Example format:\n\n"
+        "```\n"
+        "### Deferred dispositions\n"
+        "```\n\n"
+    )
+    blueprint_dir = _make_minimal_plan_dir(tmp_path, plan_extra=plan_extra)
+    result = vb.validate_plan(blueprint_dir)
+    deferred_failures = [
+        c for c in result.checks
+        if "Deferred dispositions" in c[0] and c[1] == "FAIL"
+    ]
+    # Fenced code blocks contain the literal text as a line starting with
+    # "### " too. The line-anchored regex (?m)^### Deferred dispositions\s*$
+    # still matches it — known limitation. If a stronger guard is needed,
+    # use a markdown-AST-aware check.
+    assert deferred_failures, "Fenced-block headings still match line-anchored regex"
+
+
+def test_validate_plan_fails_on_crlf_terminated_heading(tmp_path):
+    """`### Deferred dispositions\\r\\n` (CRLF) triggers the FAIL — `\\s*$`
+    correctly consumes `\\r` since `\\r` is in `\\s`."""
+    vb = _load_validate_blueprint()
+    blueprint_dir = _make_minimal_plan_dir(tmp_path, plan_extra="")
+    # Overwrite PLAN.md with CRLF line endings, with the heading present
+    plan = blueprint_dir / "PLAN.md"
+    body = plan.read_text(encoding="utf-8")
+    body = body.replace(
+        "## Panel Review\n",
+        "## Panel Review\n\n### Deferred dispositions\r\n",
+    )
+    # Write back as bytes to preserve the CRLF
+    plan.write_bytes(body.encode("utf-8"))
+    result = vb.validate_plan(blueprint_dir)
+    deferred_failures = [
+        c for c in result.checks
+        if "Deferred dispositions" in c[0] and c[1] == "FAIL"
+    ]
+    assert deferred_failures, "CRLF-terminated heading must still trigger FAIL"

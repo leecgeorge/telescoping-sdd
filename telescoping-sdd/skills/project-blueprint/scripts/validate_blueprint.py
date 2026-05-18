@@ -1414,6 +1414,20 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
     if content is None:
         return result
 
+    # Deferred-dispositions prohibition. PLAN.md is the terminal Phase-3 artifact
+    # and must not carry a ### Deferred dispositions sub-section. Use line-anchored
+    # regex to reject only heading-position matches; this avoids false positives on
+    # fenced code blocks or HTML comments that mention the heading string. This
+    # check is placed before any CFC code is invoked.
+    if re.search(r"(?m)^### Deferred dispositions\s*$", content):
+        result.add(
+            "PLAN.md does not contain '### Deferred dispositions'",
+            False,
+            "PLAN.md must not contain a '### Deferred dispositions' sub-section — "
+            "terminal Phase-3 artifacts route via '[contract]'/'[detail]'/'[upstream]' "
+            "tags instead. Remove the section to proceed.",
+        )
+
     # Check all required sections exist
     for section in PLAN_REQUIRED_SECTIONS:
         result.add(
