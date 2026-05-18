@@ -13,8 +13,11 @@ When invoking the agent, provide:
 - The required sections (below) — the agent must produce exactly these
 - The approved `specs/<feature-name>/spec.md` as authoritative upstream context
 - A clear instruction that the design must address every requirement and respect every boundary from the spec
+- If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, pass its contents (or at minimum the CFC entries naming this feature in their Participating features). The agent's CFC obligation (below) requires this input.
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `design.md` that fits into the existing codebase (the agent will read the repo to ground file paths and integration points)
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
+
+**CFC obligation.** For every `### CFC-N` in `blueprint/PLAN.md`'s Cross-Feature Contracts section that names this feature in its Participating features, the design must demonstrably honor the contract — code paths described in Architecture Decisions / Component Design / Interfaces / Error Handling must not contradict the CFC's `Contract` clause or its `Per-feature AC`. If this feature is named (as the bare token `F<n>` verbatim, word-boundary) in the CFC's `Enforcement` prose, the design must additionally specify how the verifying artifact named in Enforcement (ArchUnit rule, CI workflow, integration test, etc.) will be implemented and where it lives in the codebase (concrete file paths in File Structure, sequencing in Implementation Sequence). If the design cannot honor a binding CFC for this feature, the agent surfaces a candidate `Halt and re-scope` for the design panel rather than silently dropping the obligation.
 
 Required sections:
 - **Goals and Non-Goals** — What is in scope and what is explicitly excluded

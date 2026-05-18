@@ -13,8 +13,14 @@ When invoking the agent, provide:
 - The required sections (below) — the agent must produce exactly these
 - Everything the user has told you about the feature so far
 - Any prior artifacts in `specs/<feature-name>/` if the user is resuming mid-stream
+- The PLAN feature identifier for this feature (`F<n>`), if this feature originated from a `blueprint/PLAN.md`'s Feature Breakdown. If the feature is standalone (no upstream PLAN), pass `n/a`. The agent writes this verbatim into the `**PLAN feature identifier:**` line at the top of the spec.
+- If `blueprint/PLAN.md` exists at the project root, also pass the contents of its `## Cross-Feature Contracts` section (if any). The agent's CFC binding obligation (below) requires this input.
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `spec.md` (not a partial or diff)
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Success Criteria must use `- [ ]` checkboxes (not numbered lists), Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
+
+**CFC binding obligation.** If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, the agent must read it. For every `### CFC-N` whose `**Participating features:**` list includes this feature's identifier (`F<n>`), the spec's acceptance criteria must contain the corresponding `**Per-feature AC:**` line tagged `[CFC-N]` on a THEN line. Specifically, append the bracketed tag to the THEN clause that materially implements the contract: `THEN <assertion> [CFC-N]`. Verbatim copying is preferred; non-substantive editing for tense/voice agreement is permitted, but substantive rewording is not — the panel will surface it as a mismatch.
+
+If the agent believes a CFC's `Per-feature AC` is wrong for this feature (the Participating-features list is mistaken, the AC text is unworkable as written, the Enforcement is infeasible), the agent must NOT edit the AC text locally. Instead, surface the concern as a candidate `Halt and re-scope` for the spec panel — the CFC lives in PLAN and must be revised at PLAN level via project-blueprint's amendment workflow, not silently dropped from the feature.
 
 Required sections:
 - **Objective** — One paragraph on what and why

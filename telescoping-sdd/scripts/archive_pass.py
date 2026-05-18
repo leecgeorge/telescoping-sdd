@@ -30,8 +30,28 @@ With either flag, an empty Latest pass detail still produces a trajectory row
 exclusive with each other and with `--skip`.
 
 Usage:
-    archive_pass.py <artifact-path> [--skip <reason>] [--strict-bar]
-                    [--cross-check] [--dry-run] [--check]
+    archive_pass.py <artifact-path> --phase {1,2,3} [--skip <reason>]
+                    [--strict-bar] [--cross-check] [--dry-run] [--check]
+
+`--phase` is required. It drives phase-dependent trigger logic:
+  - Phase 1: unchanged (no [upstream] route; existing Deferred-driven
+    strict-bar signal).
+  - Phase 2: [upstream]-tagged rows in Latest count as halt votes alongside
+    "Halt and re-scope" dispositions; strict-bar signal unchanged from
+    Deferred → DOWNSTREAM accumulation.
+  - Phase 3: [upstream] auto-routes to halt votes (as Phase 2); strict-bar
+    signal switches to [detail]-tag accumulation (Phase 3's analogue of
+    Deferred-downstream, since Phase 3 has no further blueprint phase).
+
+For Phases 2 and 3, a `tags=dXuYcZ` substring is added to the trajectory
+Notes column at archive time, recording the count of [detail]/[upstream]/
+[contract]-tagged rows in the just-archived Latest. Tag counting is
+restricted to HIGH-severity rows from panelist sources (not [SELF-CHECK]
+rows); MED/LOW rows and [SELF-CHECK] entries are not counted regardless
+of any tag prefix they may carry, since tags are a panel-routing mechanism
+for HIGH-severity findings only. The strict-bar signal detector parses
+this substring across consecutive rows (since Latest is cleared after
+each archive).
 
 Exit codes:
     0  success (empty Latest is a no-op unless --strict-bar/--cross-check)
@@ -205,12 +225,74 @@ def extract_defense(notes):
     return notes.strip()
 
 
+# --- Tag handling for Phases 2 and 3 (per blueprint-strict.md) -----------
+# Panelists prefix each HIGH finding's Concern with [contract] / [detail] /
+# [upstream]. Phase 1 doesn't use these tags; Phases 2 and 3 do.
+
+TAG_NAMES = ("detail", "upstream", "contract")
+
+
+def _starts_with_tag(concern, tag):
+    """True if Concern text starts with the given tag like '[upstream]'."""
+    return concern.lstrip().startswith(tag)
+
+
+def _is_panel_tagged_high(row):
+    """True if the row is a HIGH-severity panel-raised row eligible for
+    tag-based trigger routing. Tags are a panel mechanism for routing
+    halt-and-rescope and strict-bar triggers — they apply to HIGH rows
+    raised by panelists. [SELF-CHECK] rows describe synthesizer regressions
+    (a/b/c/d categories) and are exempt from the tag mechanism. MED/LOW
+    rows are also exempt — they don't block convergence so they don't
+    need routing.
+    """
+    if "[HIGH]" not in row.get("Severity", ""):
+        return False
+    if "[SELF-CHECK]" in row.get("Source", ""):
+        return False
+    return True
+
+
+def count_tags(rows):
+    """Return {"detail": N, "upstream": N, "contract": N} for the given rows.
+    Counts only HIGH-severity, panelist-sourced rows whose Concern starts
+    with the tag (per _is_panel_tagged_high).
+    """
+    return {
+        tag: sum(
+            1 for r in rows
+            if _is_panel_tagged_high(r)
+            and _starts_with_tag(r.get("Concern", ""), f"[{tag}]")
+        )
+        for tag in TAG_NAMES
+    }
+
+
+def format_tag_summary(counts):
+    """Render counts as compact 'd5u0c2' string for the Notes prefix."""
+    return f"d{counts['detail']}u{counts['upstream']}c{counts['contract']}"
+
+
+def parse_tag_summary(notes):
+    """Parse 'tags=d5u0c2' substring from Notes. Returns dict or None."""
+    m = re.search(r"tags=d(\d+)u(\d+)c(\d+)", notes)
+    if not m:
+        return None
+    return {
+        "detail": int(m.group(1)),
+        "upstream": int(m.group(2)),
+        "contract": int(m.group(3)),
+    }
+
+
 def _is_normal_pass_row(row):
     """A trajectory row is NORMAL if its Notes don't indicate a mode pass or skip.
 
     Strict-bar and cross-check passes carry distinctive Notes substrings; skipped
     passes start with 'skipped'. Halt votes are NORMAL passes that happen to have
-    voted halt and are kept in the population.
+    voted halt and are kept in the population. Elided-summary rows written by
+    `blueprint_common.trim_trajectory_table` on approval are bookkeeping, not a
+    real pass; their Notes contain `earlier passes elided`.
     """
     notes = row.get("Notes", "").lower()
     if "strict-bar pass" in notes:
@@ -218,6 +300,8 @@ def _is_normal_pass_row(row):
     if "cross-check pass" in notes:
         return False
     if notes.startswith("skipped"):
+        return False
+    if "earlier passes elided" in notes:
         return False
     return True
 
@@ -228,11 +312,16 @@ def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args):
     Trigger fires when, looking at the last two NORMAL-mode trajectory rows
     (the just-archived row plus the most recent prior NORMAL row):
 
-      1. HIGH delta (current - previous) >= -1  — i.e. HIGH-count is NOT
+      1. HIGH delta (current - previous) >= -1 — i.e. HIGH-count is NOT
          meaningfully dropping. A drop of 2 or more is real convergence and
          strict-bar shouldn't fire there.
-      2. Pooled deferred ratio across those two rows > 0.5 — the panel is
-         mostly producing downstream-deferred work, not this-phase fixes.
+      2. Phase-dependent ratio condition:
+         - Phase 1 and 2: pooled Deferred ratio > 0.5 (the panel is mostly
+           producing downstream-deferred work, not this-phase fixes).
+         - Phase 3: pooled [detail]-tag ratio > 0.5 (the panel is mostly
+           producing single-feature SDD-cycle concerns — the Phase-3 analogue
+           of Deferred-downstream, since Phase 3 has no further blueprint
+           phase to defer to). Per blueprint-strict.md.
 
     Detection runs only when the current pass is NORMAL mode (not --strict-bar,
     --cross-check, or --skip); strict-bar can only be entered from NORMAL.
@@ -248,6 +337,51 @@ def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args):
     try:
         prev_high = int(prev["HIGHs"])
         curr_high = int(current_pass_row["HIGHs"])
+    except (KeyError, ValueError):
+        return None
+    delta = curr_high - prev_high
+    if delta < -1:
+        return None
+
+    if args.phase == 3:
+        # Phase 3: drive on [detail] tag accumulation. Numerator: count of
+        # [detail] tags across two passes (parsed from the tags=dXuYcZ Notes
+        # substring stashed at archive time). Denominator: total disposed
+        # concerns across two passes (Addressed + Deferred + Sealed columns —
+        # symmetric with Phase 1/2's pooled_total formulation). Per
+        # blueprint-strict.md pseudo-code: detail_pct = detail_count / len(disposed).
+        prev_tags = parse_tag_summary(prev.get("Notes", ""))
+        curr_tags = parse_tag_summary(current_pass_row.get("Notes", ""))
+        if prev_tags is None or curr_tags is None:
+            return None
+        pooled_detail = prev_tags["detail"] + curr_tags["detail"]
+        try:
+            prev_total = (
+                int(prev["Addressed"]) + int(prev["Deferred"]) + int(prev["Sealed"])
+            )
+            curr_total = (
+                int(current_pass_row["Addressed"])
+                + int(current_pass_row["Deferred"])
+                + int(current_pass_row["Sealed"])
+            )
+        except (KeyError, ValueError):
+            return None
+        pooled_total = prev_total + curr_total
+        if pooled_total == 0:
+            return None
+        ratio = pooled_detail / pooled_total
+        if ratio <= 0.5:
+            return None
+        return (
+            f"STRICT-BAR-SIGNAL: trigger conditions met "
+            f"(HIGH delta {delta:+d} across last two NORMAL passes; "
+            f"{int(round(ratio * 100))}% of disposed concerns tagged [detail]). "
+            f"Ask the user whether to run the next pass with --strict-bar."
+        )
+
+    # Phase 1 and 2: existing behavior — driven by Deferred → DOWNSTREAM
+    # accumulation in the trajectory's count columns.
+    try:
         prev_addressed = int(prev["Addressed"])
         curr_addressed = int(current_pass_row["Addressed"])
         prev_deferred = int(prev["Deferred"])
@@ -255,9 +389,6 @@ def detect_strict_bar_signal(prior_traj_rows, current_pass_row, args):
         prev_sealed = int(prev["Sealed"])
         curr_sealed = int(current_pass_row["Sealed"])
     except (KeyError, ValueError):
-        return None
-    delta = curr_high - prev_high
-    if delta < -1:
         return None
     pooled_deferred = prev_deferred + curr_deferred
     pooled_total = (
@@ -355,6 +486,13 @@ def main():
     parser.add_argument(
         "--check", action="store_true",
         help="Validate format contract only; do not archive",
+    )
+    parser.add_argument(
+        "--phase", type=int, choices=[1, 2, 3], required=True,
+        help="Phase number (1=first artifact, 2=middle, 3=terminal). "
+             "Drives phase-dependent trigger logic — Phase 2/3 count "
+             "[upstream]-tagged rows as halt votes, and Phase 3 uses "
+             "[detail]-tag accumulation for the strict-bar signal.",
     )
     args = parser.parse_args()
 
@@ -478,6 +616,20 @@ def main():
             r for r in latest_rows
             if r["Disposition"].split("→")[0].strip() == "Halt and re-scope"
         ]
+        # Phases 2 and 3: [upstream]-tagged HIGH panel rows auto-route to
+        # halt votes alongside explicit "Halt and re-scope" dispositions.
+        # Phase 1 has no upstream artifact to halt back to, so [upstream]
+        # doesn't apply. MED/LOW rows and [SELF-CHECK] rows are excluded
+        # from auto-routing (see _is_panel_tagged_high).
+        if args.phase in (2, 3):
+            upstream_rows = [
+                r for r in latest_rows
+                if _is_panel_tagged_high(r)
+                and _starts_with_tag(r.get("Concern", ""), "[upstream]")
+            ]
+            for r in upstream_rows:
+                if r not in halt_rows:
+                    halt_rows.append(r)
         notes = format_halt_notes(halt_rows)
         tag_parts = []
         if args.strict_bar:
@@ -486,6 +638,11 @@ def main():
             tag_parts.append("cross-check pass (excluded from cap)")
         if highs == 0:
             tag_parts.append("converged (0 HIGH)")
+        # Stash tag counts for Phase 2/3 so detect_strict_bar_signal can read
+        # them across passes (Latest is cleared after each archive).
+        if args.phase in (2, 3):
+            tag_counts = count_tags(latest_rows)
+            tag_parts.append(f"tags={format_tag_summary(tag_counts)}")
         if tag_parts:
             tag = "; ".join(tag_parts)
             notes = tag if notes == "—" else f"{tag}; {notes}"

@@ -274,3 +274,107 @@ def validate_panel_review(
         panel_ran,
         missing_msg if not panel_ran else "",
     )
+
+
+# ---------------------------------------------------------------------------
+# Trajectory-table trim (called from approve_document on both producer and
+# consumer validators)
+# ---------------------------------------------------------------------------
+
+TRAJECTORY_HEADER = "### Trajectory"
+TRAJECTORY_SEP_RE = re.compile(r"^\|[\s\-|:]+\|\s*$")
+TRAJECTORY_ELIDED_NOTES_RE = re.compile(r"^(\d+) earlier passes elided$")
+TRAJECTORY_KEEP_DEFAULT = 15
+
+
+def _trajectory_row_notes(row_line: str) -> str:
+    """Return the Notes (last) cell of a trajectory row, stripped."""
+    inner = row_line.strip().strip("|")
+    cells = [c.strip() for c in inner.split("|")]
+    return cells[-1] if cells else ""
+
+
+def trim_trajectory_table(content: str, keep: int = TRAJECTORY_KEEP_DEFAULT) -> str:
+    """Trim the `### Trajectory` table to the latest `keep` data rows.
+
+    Rows older than the latest `keep` are replaced with a single elided
+    summary row at the top of the data section:
+
+      | … | … | — | — | — | — | — | N earlier passes elided |
+
+    Re-approval merging: if an elided row is already present at the top
+    of the data section, its count is parsed out and added to the count
+    of newly-elided rows, then the merged elided row replaces the prior one.
+
+    The function is a no-op when:
+      - There is no `### Trajectory` heading.
+      - The section contains no markdown table (header + separator + rows).
+      - There are at most `keep` real data rows (an existing elided row
+        is not counted as a data row — it's bookkeeping).
+
+    Called from `approve_document` in both `validate_blueprint.py` and
+    `validate_spec.py` so that successful approvals bound trajectory growth
+    on long-lived docs without losing the audit-trail headline (the elided
+    row preserves the elided pass count).
+    """
+    lines = content.split("\n")
+
+    header_idx = None
+    for i, line in enumerate(lines):
+        if line.rstrip() == TRAJECTORY_HEADER:
+            header_idx = i
+            break
+    if header_idx is None:
+        return content
+
+    section_end = len(lines)
+    for j in range(header_idx + 1, len(lines)):
+        stripped = lines[j].lstrip()
+        if stripped.startswith("#"):
+            hashes = len(stripped) - len(stripped.lstrip("#"))
+            if hashes <= 3:
+                section_end = j
+                break
+
+    table_header_idx = None
+    for j in range(header_idx + 1, section_end):
+        s = lines[j].strip()
+        if s.startswith("|") and s.endswith("|"):
+            table_header_idx = j
+            break
+    if table_header_idx is None or table_header_idx + 1 >= section_end:
+        return content
+    if not TRAJECTORY_SEP_RE.match(lines[table_header_idx + 1]):
+        return content
+
+    sep_idx = table_header_idx + 1
+    data_start = sep_idx + 1
+    data_end = data_start
+    while data_end < section_end:
+        s = lines[data_end].strip()
+        if not (s.startswith("|") and s.endswith("|")):
+            break
+        data_end += 1
+
+    existing_elided_count = 0
+    data_first = data_start
+    if data_first < data_end:
+        first_notes = _trajectory_row_notes(lines[data_first])
+        m = TRAJECTORY_ELIDED_NOTES_RE.match(first_notes)
+        if m:
+            existing_elided_count = int(m.group(1))
+            data_first += 1
+
+    real_data_count = data_end - data_first
+    if real_data_count <= keep:
+        return content
+
+    to_elide = real_data_count - keep
+    new_elided_count = existing_elided_count + to_elide
+    elided_row = (
+        f"| … | … | — | — | — | — | — | {new_elided_count} earlier passes elided |"
+    )
+    kept_rows = lines[data_end - keep:data_end]
+    new_data_block = [elided_row, *kept_rows]
+    new_lines = lines[:data_start] + new_data_block + lines[data_end:]
+    return "\n".join(new_lines)

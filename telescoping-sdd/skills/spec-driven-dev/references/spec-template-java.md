@@ -6,6 +6,8 @@ Use this template when creating `spec.md` for a Java project.
 
 # Feature: [Feature Name]
 
+**PLAN feature identifier:** `F<n>` (matches the feature entry in `blueprint/PLAN.md`'s Feature Breakdown — e.g. `F1`, `F11`). If no upstream PLAN exists, write `n/a`.
+
 ## Objective
 
 [One paragraph describing what this feature does and why it's needed.]

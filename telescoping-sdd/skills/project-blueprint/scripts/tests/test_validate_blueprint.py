@@ -240,6 +240,7 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     dst_scripts = synth_root / "scripts"
     dst_scripts.mkdir(exist_ok=True)
     shutil.copy2(src_scripts / "blueprint_common.py", dst_scripts / "blueprint_common.py")
+    shutil.copy2(src_scripts / "cfc_parser.py", dst_scripts / "cfc_parser.py")
 
     src_validator = (
         _REPO_ROOT / "telescoping-sdd" / "skills" / "project-blueprint" / "scripts"
