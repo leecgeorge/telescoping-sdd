@@ -21,10 +21,32 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Optional
+
+# Locate shared helpers at telescoping-sdd/scripts/ — sibling of telescoping-sdd/skills/.
+_SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
+sys.path.append(str(_SHARED_SCRIPTS))
+
+from blueprint_common import (  # noqa: E402
+    Severity,
+    ValidationResult,
+    compute_content_hash,
+    content_for_hashing,
+    trim_trajectory_table,
+)
+from cfc_parser import (  # noqa: E402
+    CFC_HEADER_PATTERN as CFC_HEADER_RE,
+    CFC_TAG_PATTERN as CFC_TAG_RE,
+    FEATURE_ID_WORD_PATTERN as FEATURE_ID_WORD_RE,
+    extract_cfc_section,
+    extract_cfc_tags,
+    find_misplaced_cfc_tags,
+    parse_cfc_entries,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -185,61 +207,9 @@ def get_profile(language: str) -> dict:
     return LANGUAGE_PROFILES.get(language, LANGUAGE_PROFILES["python"])
 
 
-# ---------------------------------------------------------------------------
-# Validation result with severity levels
-# ---------------------------------------------------------------------------
-
-class Severity:
-    FAIL = "FAIL"
-    WARN = "WARN"
-    PASS = "PASS"
-
-
-class ValidationResult:
-    def __init__(self):
-        self.checks: list[tuple[str, str, str]] = []  # (name, severity, detail)
-
-    def add(self, name: str, passed: bool, detail: str = "", warn_only: bool = False):
-        """Add a check result.
-
-        Args:
-            name: Description of the check.
-            passed: Whether the check passed.
-            detail: Additional detail for failures/warnings.
-            warn_only: If True, a failure is recorded as WARN instead of FAIL.
-        """
-        if passed:
-            self.checks.append((name, Severity.PASS, detail))
-        elif warn_only:
-            self.checks.append((name, Severity.WARN, detail))
-        else:
-            self.checks.append((name, Severity.FAIL, detail))
-
-    @property
-    def passed(self) -> bool:
-        """True if no FAIL-level checks exist (warnings are OK)."""
-        return all(sev != Severity.FAIL for _, sev, _ in self.checks)
-
-    @property
-    def has_warnings(self) -> bool:
-        return any(sev == Severity.WARN for _, sev, _ in self.checks)
-
-    def summary(self) -> str:
-        lines = []
-        for name, severity, detail in self.checks:
-            line = f"  [{severity}] {name}"
-            if detail:
-                line += f" — {detail}"
-            lines.append(line)
-        return "\n".join(lines)
-
-    def to_dict(self) -> list[dict]:
-        """Return checks as a list of dicts for JSON output."""
-        return [
-            {"name": name, "status": severity, "detail": detail}
-            for name, severity, detail in self.checks
-        ]
-
+# Severity and ValidationResult are imported from blueprint_common (above)
+# to avoid the prior duplicate definitions. Same interface, same behaviour;
+# both validators now share one canonical implementation.
 
 # ---------------------------------------------------------------------------
 # File helpers
@@ -395,21 +365,9 @@ APPROVAL_HASH_PATTERN = re.compile(r"\*\*Content Hash:\*\*\s*`([a-f0-9]+|pending
 APPROVAL_CHECKBOX_PATTERN = re.compile(r"- \[( |x)\] Approved to proceed")
 
 
-def _content_for_hashing(content: str) -> str:
-    """Return document content with only the dynamic approval values neutralized.
-
-    Replaces the checkbox state and hash value with fixed placeholders so that
-    approving a document doesn't change its hash, but any other edit does.
-    """
-    result = re.sub(r"- \[[ x]\] Approved to proceed", "- [ ] Approved to proceed", content)
-    result = re.sub(r"\*\*Content Hash:\*\*\s*`[^`]*`", "**Content Hash:** `pending`", result)
-    return result.rstrip()
-
-
-def compute_content_hash(content: str) -> str:
-    """Compute SHA-256 hash of document content (excluding approval section)."""
-    body = _content_for_hashing(content)
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+# `content_for_hashing` and `compute_content_hash` are imported from
+# blueprint_common (above). They share the same implementation as the
+# producer side, ensuring hash coherence across both validators.
 
 
 def check_approval(content: str, filename: str, result: ValidationResult) -> bool:
@@ -448,8 +406,19 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
 
 def approve_document(file_path: Path) -> None:
-    """Mark a document as approved by checking the box and writing the content hash."""
+    """Mark a document as approved by checking the box and writing the content hash.
+
+    Writes are atomic (temp-file + os.replace) to guard against partial-state
+    corruption on Ctrl-C / disk-full / process kill mid-write.
+    """
     content = file_path.read_text(encoding="utf-8")
+
+    # Trim the `### Trajectory` table to the latest 15 data rows BEFORE
+    # computing the document hash — the trimmed table is part of the
+    # approved content. Older rows are replaced with a single elided
+    # summary row at the top of the data section; re-approval merges
+    # the existing elided count with new elisions.
+    content = trim_trajectory_table(content)
 
     # Compute hash before modifying approval section
     content_hash = compute_content_hash(content)
@@ -468,7 +437,29 @@ def approve_document(file_path: Path) -> None:
         content,
     )
 
-    file_path.write_text(content, encoding="utf-8")
+    # Atomic write: temp-file then os.replace. The temp file lives in the
+    # same directory as the target so os.replace is atomic on POSIX. On
+    # failure the temp file is removed; the original target stays intact.
+    # The temp-file path is appended to the re-raised exception so
+    # cross-mount (EXDEV) or permission errors point at a real artifact
+    # (per the light-touch verification pass, critic finding #3).
+    tmp = file_path.with_suffix(file_path.suffix + ".tmp")
+    tmp_removed = False
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, file_path)
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+            tmp_removed = True
+        except Exception:
+            pass
+        tmp_status = "removed" if tmp_removed else f"left at {tmp}"
+        exc.args = (
+            *exc.args,
+            f"atomic write to {file_path} failed; temp file {tmp_status}",
+        )
+        raise
     print(f"Approved: {file_path} (hash: {content_hash})")
 
 
@@ -533,6 +524,11 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
 
     validate_resolved(content, "spec.md", result)
     validate_panel_review(content, "spec.md", result)
+
+    # CFC consumer-side checks. Run after standard validation so a structurally
+    # broken spec.md fails for the right reason first. See
+    # documentation/CFC.md § Validator for the full ruleset.
+    validate_cfc_consumer(spec_dir, content, "spec", result)
 
     return result
 
@@ -673,7 +669,289 @@ def validate_tasks(spec_dir: Path, language: str = "python") -> ValidationResult
     validate_resolved(content, "tasks.md", result)
     validate_panel_review(content, "tasks.md", result)
 
+    # CFC consumer-side checks for tasks.md (Phase 3): if this feature is named
+    # as the owning feature in any CFC's Enforcement prose, tasks.md must
+    # contain a `[CFC-N]`-tagged task. See documentation/CFC.md.
+    validate_cfc_consumer(spec_dir, content, "tasks", result)
+
     return result
+
+
+# ---------------------------------------------------------------------------
+# CFC consumer-side validation
+# ---------------------------------------------------------------------------
+#
+# Reads `blueprint/PLAN.md`'s `## Cross-Feature Contracts` section (if present)
+# and applies:
+#   - Identifier-line skip rule (5 cases per CFC.md M5/P7)
+#   - Spec.md THEN-line CFC tag presence (if feature is in CFC's Participating)
+#   - Tasks.md checkbox CFC tag presence (if feature is in CFC's Enforcement owners)
+#   - Mid-stream drift WARN (tag references CFC that no longer exists or
+#     no longer lists this feature)
+#
+# Parser primitives — extract_cfc_section, parse_cfc_entries, CFC tag regex,
+# feature-ID matcher — are imported from telescoping-sdd/scripts/cfc_parser.py
+# (shared with validate_blueprint.py). The producer/consumer split for the
+# cascade machinery is preserved (no `cfc_consistency.py` in v1); only the
+# file-format parser is shared.
+
+PLAN_FEATURE_ID_LINE_RE = re.compile(
+    r"^\*\*PLAN feature identifier:\*\*\s*`(F\d+|n/a)`", re.MULTILINE
+)
+# Accept optional leading whitespace so indented sub-task checkboxes count
+# alongside top-level ones (per P2-6 from the post-implementation review).
+TASKS_CHECKBOX_WITH_CFC_RE = re.compile(
+    r"^[ \t]*-\s+\[[ xX]\]\s+[^\n]*?\[CFC-(\d+)\]", re.MULTILINE
+)
+PLAN_FEATURE_BREAKDOWN_RE = re.compile(
+    r"^###\s+F(\d+):", re.MULTILINE
+)
+
+
+def find_project_root(spec_dir: Path) -> Optional[Path]:
+    """Walk upward from spec_dir looking for a sibling `blueprint/` directory."""
+    for candidate in (spec_dir.parent, spec_dir.parent.parent):
+        if candidate is None:
+            continue
+        if (candidate / "blueprint" / "PLAN.md").is_file():
+            return candidate
+    return None
+
+
+def _parse_cfc_section(plan_content: str) -> list[dict]:
+    """Return a list of CFC dicts with keys: number, participating, enforcement.
+
+    Wraps the shared `parse_cfc_entries` from `cfc_parser` to produce the
+    dict shape the consumer-side validator works with. Returns an empty list
+    if no `## Cross-Feature Contracts` section is present.
+    """
+    section = extract_cfc_section(plan_content)
+    if section is None:
+        return []
+    _start, _end, body = section
+    entries: list[dict] = []
+    for entry in parse_cfc_entries(body):
+        entries.append(
+            {
+                "number": entry.number,
+                "participating": entry.participating_features(),
+                "enforcement_text": entry.fields.get("Enforcement") or "",
+                "enforcement_owners": entry.enforcement_owners(),
+            }
+        )
+    return entries
+
+
+def _spec_then_line_cfc_tags(spec_content: str) -> list[int]:
+    """Extract CFC numbers from `[CFC-N]` tags on THEN lines in spec.md."""
+    return extract_cfc_tags(spec_content)
+
+
+def _tasks_checkbox_cfc_tags(tasks_content: str) -> list[int]:
+    """Extract CFC numbers from `[CFC-N]` tags on tasks.md checkbox lines."""
+    return [int(m.group(1)) for m in TASKS_CHECKBOX_WITH_CFC_RE.finditer(tasks_content)]
+
+
+def validate_cfc_consumer(
+    spec_dir: Path,
+    artifact_content: str,
+    phase: str,
+    result: ValidationResult,
+) -> None:
+    """Apply consumer-side CFC checks based on the artifact phase.
+
+    phase ∈ {"spec", "tasks"}. The "design" phase has no validator-level CFC
+    checks (design fidelity is panel-side judgement per CFC.md).
+    """
+    # Parse the identifier line from spec.md, which is the binding signal.
+    spec_path = spec_dir / "spec.md"
+    spec_content = read_file(spec_path)
+    if spec_content is None:
+        return
+
+    id_match = PLAN_FEATURE_ID_LINE_RE.search(spec_content)
+    identifier = id_match.group(1) if id_match else None
+
+    project_root = find_project_root(spec_dir)
+    plan_content = (
+        read_file(project_root / "blueprint" / "PLAN.md") if project_root else None
+    )
+    has_cfc_section = bool(plan_content and CFC_HEADER_RE.search(plan_content))
+
+    # M5 / P7 / Q11 skip rule.
+    if identifier is None:
+        # Line absent entirely → FAIL.
+        result.add(
+            "spec.md PLAN feature identifier line",
+            False,
+            "spec.md missing required `**PLAN feature identifier:**` line; "
+            "use `n/a` for standalone",
+        )
+        return
+    if identifier == "n/a":
+        if has_cfc_section:
+            # Q11 — silent opt-out vector guard. passed=False+warn_only emits WARN.
+            result.add(
+                "spec.md PLAN feature identifier coherence",
+                False,
+                "spec declares `n/a` but blueprint/PLAN.md has an active "
+                "Cross-Feature Contracts section. If this feature should "
+                "bind to one or more CFCs, set the identifier to `F<n>`; "
+                "if standalone is correct, no action needed.",
+                warn_only=True,
+            )
+        # Decision B — n/a + stale [CFC-N] tags in spec.md guard.
+        # A user downgrading from F<n> to n/a (intentional or accidental) may
+        # leave stale tags in spec.md. Without this WARN the binding silently
+        # dies until the producer-side orphan-tag scan picks it up at the next
+        # PLAN re-approval. Emit a per-CFC WARN naming the orphaned tags.
+        stale_tags = sorted(set(_spec_then_line_cfc_tags(spec_content)))
+        if stale_tags:
+            tag_list = ", ".join(f"[CFC-{n}]" for n in stale_tags)
+            result.add(
+                "spec.md `n/a` identifier with stale CFC tags",
+                False,
+                f"spec declares `n/a` but carries {tag_list} on THEN lines. "
+                "Either restore the `F<n>` identifier so binding-checks run, "
+                "or remove the stale tags. Tags on an `n/a` spec are silently "
+                "ignored by the binding validator otherwise.",
+                warn_only=True,
+            )
+        return  # n/a → skip CFC binding checks regardless of PLAN presence
+
+    # identifier is F<n> here.
+    feature_number = int(identifier[1:])
+
+    if not plan_content:
+        result.add(
+            "spec.md PLAN feature identifier resolves",
+            False,
+            f"spec claims {identifier} binding but no blueprint/PLAN.md exists",
+        )
+        return
+
+    # Check identifier resolves to a feature in PLAN's Feature Breakdown.
+    # Per P1-2 from the post-implementation code review: scope the scan to
+    # the `## Feature Breakdown` section body. Without scoping, a `### F<n>:`
+    # heading anywhere else in PLAN.md (inside `## Open Questions`, an
+    # illustrative quote, a code block, etc.) would silently satisfy the
+    # resolver and accept a feature ID that's not actually a real feature.
+    fb_match = re.search(
+        r"## Feature Breakdown\s*\n(.*?)(?=\n## |\Z)", plan_content, re.DOTALL
+    )
+    feature_breakdown_body = fb_match.group(1) if fb_match else ""
+    plan_feature_ids = {
+        int(g) for g in PLAN_FEATURE_BREAKDOWN_RE.findall(feature_breakdown_body)
+    }
+    if feature_number not in plan_feature_ids:
+        result.add(
+            "spec.md PLAN feature identifier resolves",
+            False,
+            f"PLAN feature identifier {identifier} not found in "
+            f"blueprint/PLAN.md Feature Breakdown",
+        )
+        return
+
+    if not has_cfc_section:
+        # PLAN exists but has no CFC section → no checks to run.
+        return
+
+    # CFC binding checks.
+    cfc_entries = _parse_cfc_section(plan_content)
+    binding_cfcs = [
+        e for e in cfc_entries if feature_number in e["participating"]
+    ]
+    spec_tags = _spec_then_line_cfc_tags(spec_content)
+
+    # Phase-1 checks: every binding CFC must have a corresponding [CFC-N] tag
+    # on a THEN line in spec.md.
+    if phase == "spec":
+        # Per P2-3 from the post-implementation review: surface "tag in
+        # wrong location" distinctly from "missing tag". A `[CFC-N]` on a
+        # GIVEN/WHEN line, in a requirement header, or in body prose outside
+        # an AC block is a different bug from "the author never wrote the
+        # tag" and deserves its own diagnostic.
+        misplaced = find_misplaced_cfc_tags(spec_content)
+        # A misplaced tag still counts as "present" for the purposes of the
+        # binding check below — but ALSO emit a FAIL pointing the author at
+        # the correct location.
+        for n, line in misplaced:
+            result.add(
+                f"spec.md [CFC-{n}] tag location",
+                False,
+                f"[CFC-{n}] appears outside an acceptance criterion THEN line "
+                f"(offending line: {line!r}). Move the tag to the THEN line "
+                f"of the AC that materially implements the contract, e.g. "
+                f"`THEN <assertion> [CFC-{n}]`. Tags on GIVEN/WHEN lines, "
+                f"requirement headers, body prose, or single-line GWT "
+                f"compressions are not recognised as bindings.",
+            )
+
+        for entry in binding_cfcs:
+            n = entry["number"]
+            if n in spec_tags:
+                result.add(
+                    f"spec.md carries [CFC-{n}] binding tag",
+                    True,
+                )
+            else:
+                result.add(
+                    f"spec.md carries [CFC-{n}] binding tag",
+                    False,
+                    f"feature {identifier} appears in CFC-{n}'s Participating "
+                    f"features; required: `[CFC-{n}]` on a THEN line within "
+                    f"**Acceptance Criteria:**",
+                )
+
+        # Mid-stream drift WARN: tags present in spec.md that no longer
+        # resolve cleanly in current PLAN.
+        for n in set(spec_tags):
+            entry = next((e for e in cfc_entries if e["number"] == n), None)
+            if entry is None:
+                result.add(
+                    f"spec.md [CFC-{n}] tag still resolves",
+                    False,
+                    f"spec.md carries `[CFC-{n}]` but CFC-{n} no longer "
+                    f"exists in current PLAN.md (mid-stream drift). "
+                    f"Remove the tag, or restore CFC-{n} to PLAN.md.",
+                    warn_only=True,
+                )
+            elif feature_number not in entry["participating"]:
+                result.add(
+                    f"spec.md [CFC-{n}] tag still resolves",
+                    False,
+                    f"spec.md carries `[CFC-{n}]` but {identifier} is no "
+                    f"longer in CFC-{n}'s Participating features. "
+                    f"Remove the tag, or restore {identifier} to "
+                    f"CFC-{n}'s Participating list.",
+                    warn_only=True,
+                )
+
+    # Phase-3 checks: if this feature is an Enforcement owner of any CFC,
+    # tasks.md must contain a [CFC-N]-tagged task.
+    if phase == "tasks":
+        # artifact_content is tasks.md here.
+        tasks_tags = _tasks_checkbox_cfc_tags(artifact_content)
+        owning_cfcs = [
+            e for e in cfc_entries
+            if feature_number in e["enforcement_owners"]
+        ]
+        for entry in owning_cfcs:
+            n = entry["number"]
+            if n in tasks_tags:
+                result.add(
+                    f"tasks.md carries [CFC-{n}] enforcement task",
+                    True,
+                )
+            else:
+                result.add(
+                    f"tasks.md carries [CFC-{n}] enforcement task",
+                    False,
+                    f"feature {identifier} is named in CFC-{n}'s Enforcement "
+                    f"prose as artifact owner; tasks.md must contain a "
+                    f"`[CFC-{n}]`-tagged task implementing the verifying "
+                    f"artifact named in that Enforcement field",
+                )
 
 
 # ---------------------------------------------------------------------------

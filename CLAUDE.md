@@ -9,7 +9,7 @@ This repo serves two purposes:
 1. **A Claude Code plugin** at `telescoping-sdd/` — its skills are invoked as `/telescoping-sdd:<skill-name>` (e.g., `/telescoping-sdd:project-blueprint`). The plugin manifest is `telescoping-sdd/.claude-plugin/plugin.json` (name: `telescoping-sdd`).
 2. **A Claude Code marketplace** defined by `.claude-plugin/marketplace.json` (name: `neonghost-marketplace`) that publishes the `telescoping-sdd` plugin.
 
-**Telescoping Spec-Driven Development.** `project-blueprint` and `spec-driven-dev` compose into one methodology at two altitudes: `project-blueprint` emits `blueprint/PLAN.md` (which decomposes the project into ordered features), and `spec-driven-dev` consumes one feature from `PLAN.md` to drive its Specify → Design → Tasks → Implement loop. `PLAN.md` is the seam between the two tiers — a sequential handoff, not containment.
+**Telescoping Spec-Driven Development.** `project-blueprint` and `spec-driven-dev` compose into one methodology at two altitudes: `project-blueprint` emits `blueprint/PLAN.md` (which decomposes the project into ordered features), and `spec-driven-dev` consumes one feature from `PLAN.md` to drive its Specify → Design → Tasks → Implement loop. `PLAN.md` is the seam between the two tiers — a sequential handoff, not containment. A secondary seam runs through **Cross-Feature Contracts** (PLAN's optional `## Cross-Feature Contracts` section): each `### CFC-N` entry binds multiple features at PLAN time and surfaces in each participating feature's SDD cycle via `[CFC-N]` tags on acceptance criteria (spec.md) and enforcement tasks (tasks.md). The shared `scripts/cfc_parser.py` enforces format symmetry between producer and consumer; full design in `documentation/CFC.md`.
 
 ## Repository Layout
 
@@ -20,7 +20,8 @@ This repo serves two purposes:
 | `telescoping-sdd/skills/<name>/SKILL.md` | Plugin skills (`project-blueprint`, `spec-driven-dev`) — invoked as `/telescoping-sdd:<name>` |
 | `telescoping-sdd/agents/*.md` | Every executor + persona invoked by a skill (auto-discovered by Claude Code at plugin tier 4) |
 | `telescoping-sdd/agents/references/` | Shared discipline files read by agents at runtime |
-| `telescoping-sdd/scripts/` | Shared validators (`archive_pass.py`, `blueprint_common.py`) and their tests |
+| `telescoping-sdd/scripts/` | Shared validators (`archive_pass.py`, `blueprint_common.py`, `cfc_parser.py`) and their tests |
+| `documentation/CFC.md` | Cross-Feature Contracts design spec (shared between the two skills) |
 
 ## Skill Structure
 
@@ -116,10 +117,25 @@ Or use an absolute path to the plugin folder. Run `/reload-plugins` after edits.
 /plugin install telescoping-sdd@neonghost-marketplace
 ```
 
-## Panel Review: Strict-Bar Convergence Mode
+## Panel Review: Phase-Dependent Triggers and Strict-Bar Convergence Mode
 
-Both skills share a panel-review loop. On rich documents the panel keeps surfacing real-but-downstream-deferrable HIGH concerns and never converges. **Strict-bar mode** recalibrates the panel to *this-phase* concerns once the trajectory shows convergence-shaped spinning (HIGH-count stable ±2 across two passes AND >50% of concerns deferred downstream); an **exit cross-check** runs one normal pass to audit the filter before exiting.
+Both skills share a panel-review loop. On rich documents the panel keeps surfacing real-but-downstream-deferrable HIGH concerns and never converges. **Strict-bar mode** recalibrates the panel to *this-phase* concerns once the trajectory shows convergence-shaped spinning; an **exit cross-check** runs one normal pass to audit the filter before exiting.
 
-Status: implemented in both skills, manual invocation only (auto-triggering on the trajectory signal is deferred). The shared `telescoping-sdd/scripts/archive_pass.py` carries `--strict-bar` / `--cross-check` flags that stamp the `### Trajectory` Notes column.
+`archive_pass.py` requires `--phase {1,2,3}` and drives phase-dependent trigger logic:
+- **Phase 1:** existing `Deferred → DOWNSTREAM` accumulation drives the strict-bar signal; no tag mechanism.
+- **Phase 2 / 3:** panelists prefix every HIGH `Concern` with `[contract]`, `[detail]` (Phase 3 only), or `[upstream]`. `[upstream]` auto-routes to halt votes regardless of disposition. Phase 3's strict-bar signal switches from `Deferred → DOWNSTREAM` accumulation to `[detail]`-tag accumulation (Phase 3 has no further phase to defer to). The script stashes a `tags=dXuYcZ` substring in the `### Trajectory` Notes so subsequent passes can compare.
 
-The **authoritative operational spec** is each skill's `references/panel-review.md` (`## Strict-Bar Convergence Mode`) plus `references/strict-bar-prompts.md`.
+Auto-detection is live: after every NORMAL archive `archive_pass.py` emits a `STRICT-BAR-SIGNAL:` advisory on stdout when both trigger conditions are met. The synthesizer reads the advisory and asks the user before switching mode.
+
+The shared `telescoping-sdd/scripts/archive_pass.py` carries `--strict-bar` / `--cross-check` flags that stamp the `### Trajectory` Notes column.
+
+The **authoritative operational spec** is each skill's `references/panel-review.md` (`## Strict-Bar Convergence Mode`, `## Concern tagging (Phase 2 and 3)`) plus `references/strict-bar-prompts.md`.
+
+## Cross-Feature Contracts (CFC)
+
+PLAN's optional `## Cross-Feature Contracts` section commits invariants that span multiple features. Each `### CFC-N` entry has four required fields (Participating features, Contract, Per-feature AC, Enforcement) and is bound mechanically:
+- **Producer** (`validate_blueprint.py --approve plan`) parses the section, refreshes a per-CFC content-hash sub-block before computing the document hash, and emits `orphaned-stale-content` WARNs when a previously-bound spec drifts from the current CFC text.
+- **Consumer** (`validate_spec.py`) parses participating-feature membership and enforces that each participating feature's `spec.md` carries the `Per-feature AC` line with a `[CFC-N]` tag on a THEN clause; for features named in `Enforcement` prose (bare `F<n>` token, word-boundary), `tasks.md` must carry a `[CFC-N]`-tagged enforcement task.
+- **Shared parser** (`scripts/cfc_parser.py`) owns all CFC regexes and the four-field `CFCEntry` so producer and consumer can never drift in format interpretation. The parser-contract test suite (`scripts/tests/test_cfc_parser_contract.py`) asserts the symmetry.
+
+Authoring discipline lives in `skills/project-blueprint/references/plan-template.md` (`## Cross-Feature Contracts` section), with consumer-side obligations in `skills/spec-driven-dev/references/phase-{specify,design,tasks}.md`. The full design rationale and v1/v2 split is in `documentation/CFC.md`.

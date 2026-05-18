@@ -13,8 +13,11 @@ When invoking the agent, provide:
 - The required per-task fields (below) — the agent must produce exactly these
 - The approved `specs/<feature-name>/spec.md` and `specs/<feature-name>/design.md` as authoritative upstream context
 - The task sizing rules (below) and the instruction that every spec requirement and every design component must be covered by at least one task
+- If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, pass its contents. The agent's CFC enforcement-task obligation (below) depends on this input.
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `tasks.md`, including the summary table at the top and phase groupings if there are more than a few tasks
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: task headings must use `### - [ ] T1:` checkbox format, the summary table must use the exact column headers from the template, Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to implementation` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
+
+**CFC enforcement-task obligation.** For every `### CFC-N` in `blueprint/PLAN.md`'s Cross-Feature Contracts section whose `**Enforcement:**` prose names this feature as the owner (the feature's identifier `F<n>` appears as a bare token, word-boundary), `tasks.md` must contain a task whose deliverable is the verifying artifact named in that Enforcement field (ArchUnit rule, CI grep, integration test, runbook gate, etc.). The task description must include the binding tag `[CFC-N]`. Place the tag at the end of the task title on the checkbox line: `- [ ] <task title naming the artifact> [CFC-N]`. The validator checks for this tag with the whole-number regex `\[CFC-(\d+)\]` — substring matching is not used; `[CFC-1]` and `[CFC-10]` are distinct.
 
 Each task must include:
 - **Task ID** — Sequential (T1, T2, T3...)

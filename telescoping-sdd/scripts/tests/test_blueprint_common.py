@@ -261,3 +261,122 @@ def test_validate_panel_review_missing_section():
         "section has content" in n and sev == bc.Severity.FAIL
         for n, sev, _ in result.checks
     )
+
+
+# ---------------------------------------------------------------------------
+# trim_trajectory_table — on-approval trajectory bookkeeping
+# ---------------------------------------------------------------------------
+
+
+def _build_doc_with_trajectory(n_rows: int, *, elided_prefix: str = "") -> str:
+    """Build a minimal doc with a `### Trajectory` table containing n_rows data rows.
+
+    `elided_prefix` is an optional pre-existing elided row to prepend (re-approval
+    scenarios). Pass like `"| … | … | — | — | — | — | — | 7 earlier passes elided |"`.
+    """
+    header = "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |"
+    sep = "|------|------|-------|-------------|-----------|----------|--------|-------|"
+    rows = [
+        f"| {i+1} | 2026-05-{(i % 28) + 1:02d} | 0 | 0 | 3 | 1 | 0 | normal |"
+        for i in range(n_rows)
+    ]
+    table_body = [header, sep]
+    if elided_prefix:
+        table_body.append(elided_prefix)
+    table_body.extend(rows)
+    return (
+        "# Plan\n\n## Panel Review\n\n### Trajectory\n\n"
+        + "\n".join(table_body)
+        + "\n\n### Sealed dispositions\n\n(none)\n\n### Latest pass detail\n\n"
+    )
+
+
+def test_trim_trajectory_no_op_when_under_threshold():
+    """≤ 15 data rows → content unchanged."""
+    doc = _build_doc_with_trajectory(10)
+    assert bc.trim_trajectory_table(doc) == doc
+
+
+def test_trim_trajectory_no_op_at_exact_threshold():
+    """Exactly 15 data rows → content unchanged."""
+    doc = _build_doc_with_trajectory(15)
+    assert bc.trim_trajectory_table(doc) == doc
+
+
+def test_trim_trajectory_elides_oldest_when_over_threshold():
+    """16 data rows → 1 elided, 15 kept, plus elided summary row at top."""
+    doc = _build_doc_with_trajectory(16)
+    trimmed = bc.trim_trajectory_table(doc)
+    assert trimmed != doc
+    # Elided row is present with count 1.
+    assert "1 earlier passes elided" in trimmed
+    # The oldest row (Pass 1) is gone; the latest 15 (passes 2-16) are kept.
+    assert "| 1 | 2026-05-01 |" not in trimmed
+    assert "| 2 | 2026-05-02 |" in trimmed
+    assert "| 16 | 2026-05-16 |" in trimmed
+    # Elided row appears before the kept rows.
+    elided_pos = trimmed.find("earlier passes elided")
+    pass2_pos = trimmed.find("| 2 | 2026-05-02 |")
+    assert elided_pos < pass2_pos
+
+
+def test_trim_trajectory_merges_existing_elided_count_on_reapproval():
+    """If an elided row is already present, its count merges with new elisions."""
+    existing = "| … | … | — | — | — | — | — | 7 earlier passes elided |"
+    # 18 real rows + the existing elided row at the top.
+    # On trim: keep 15, elide 3 new ones, merged count = 7 + 3 = 10.
+    doc = _build_doc_with_trajectory(18, elided_prefix=existing)
+    trimmed = bc.trim_trajectory_table(doc)
+    assert "10 earlier passes elided" in trimmed
+    assert "7 earlier passes elided" not in trimmed
+    # Three oldest real rows (passes 1, 2, 3) are gone; 4-18 kept.
+    assert "| 3 | 2026-05-03 |" not in trimmed
+    assert "| 4 | 2026-05-04 |" in trimmed
+    assert "| 18 | 2026-05-18 |" in trimmed
+
+
+def test_trim_trajectory_no_op_when_under_threshold_with_existing_elided():
+    """≤ 15 real rows + existing elided row → no-op (elided row preserved)."""
+    existing = "| … | … | — | — | — | — | — | 4 earlier passes elided |"
+    doc = _build_doc_with_trajectory(15, elided_prefix=existing)
+    assert bc.trim_trajectory_table(doc) == doc
+
+
+def test_trim_trajectory_no_op_when_no_trajectory_section():
+    """Document with no `### Trajectory` heading → content unchanged."""
+    doc = "# Plan\n\n## Stuff\n\nContent.\n"
+    assert bc.trim_trajectory_table(doc) == doc
+
+
+def test_trim_trajectory_no_op_when_section_has_no_table():
+    """`### Trajectory` heading present but no markdown table → content unchanged."""
+    doc = (
+        "# Plan\n\n## Panel Review\n\n### Trajectory\n\n"
+        "_(no passes archived yet)_\n\n### Latest pass detail\n\n"
+    )
+    assert bc.trim_trajectory_table(doc) == doc
+
+
+def test_trim_trajectory_does_not_touch_following_sections():
+    """Trim must not leak into ### Sealed dispositions / ### Latest pass detail."""
+    doc = _build_doc_with_trajectory(20)
+    doc = doc.replace(
+        "### Sealed dispositions\n\n(none)",
+        "### Sealed dispositions\n\n- `[SEAL-1]` **Topic** (pass 3, 2026-05-03) — defended.",
+    )
+    trimmed = bc.trim_trajectory_table(doc)
+    # Sealed-dispositions content untouched.
+    assert "[SEAL-1]" in trimmed
+    assert "Topic" in trimmed
+    # Trajectory trimmed correctly.
+    assert "5 earlier passes elided" in trimmed
+
+
+def test_trim_trajectory_custom_keep_value():
+    """`keep` parameter overrides the default threshold."""
+    doc = _build_doc_with_trajectory(8)
+    trimmed = bc.trim_trajectory_table(doc, keep=5)
+    assert "3 earlier passes elided" in trimmed
+    assert "| 3 | 2026-05-03 |" not in trimmed
+    assert "| 4 | 2026-05-04 |" in trimmed
+    assert "| 8 | 2026-05-08 |" in trimmed

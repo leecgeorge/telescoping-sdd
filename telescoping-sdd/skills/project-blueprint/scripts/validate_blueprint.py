@@ -16,15 +16,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
 # Locate shared helpers at telescoping-sdd/scripts/ — sibling of telescoping-sdd/skills/.
 # Use sys.path.append (not insert) so this module never displaces the
-# caller's sys.path[0].
+# caller's sys.path[0] (regression guard for T3 AC).
 _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.append(str(_SHARED_SCRIPTS))
 
@@ -39,8 +42,25 @@ from blueprint_common import (  # noqa: E402
     has_section,
     scan_unresolved_markers,
     section_has_content,
+    trim_trajectory_table,
     validate_panel_review,
     verify_content_hash,
+)
+
+from cfc_parser import (  # noqa: E402
+    CFC_ENTRY_PATTERN,
+    CFC_FIELD_ORDER,
+    CFC_FIELD_PATTERNS,
+    CFC_HEADER_PATTERN,
+    CFC_PARTICIPATING_VALUE_PATTERN,
+    CFC_TAG_PATTERN,
+    FEATURE_ID_WORD_PATTERN,
+    CFCEntry as _SharedCFCEntry,
+    detect_near_miss_cfc_header,
+    extract_cfc_section,
+    extract_cfc_tags,
+    normalize_for_hash as _normalize_for_hash,
+    parse_cfc_entries as _shared_parse_cfc_entries,
 )
 
 
@@ -95,6 +115,831 @@ FEATURE_ACCEPTANCE_CRITERIA = re.compile(r"\*\*Acceptance Criteria:\*\*", re.IGN
 
 # Regex to match risk entries in tables
 RISK_ENTRY_PATTERN = re.compile(r"\|\s*R\d+\s*\|")
+
+
+# ---------------------------------------------------------------------------
+# Cross-Feature Contracts (CFC) — producer-side validation
+# ---------------------------------------------------------------------------
+#
+# The ## Cross-Feature Contracts section in PLAN.md is OPTIONAL. When present,
+# each ### CFC-N: <title> subsection has four required fields in order:
+#   - **Participating features:** F1, F3, F5
+#   - **Contract:** <free prose>
+#   - **Per-feature AC:** <verbatim AC line>
+#   - **Enforcement:** <free prose, naming owning feature as F<n> verbatim>
+#
+# Parser primitives — CFCEntry, the regex constants, extract_cfc_section,
+# parse_cfc_entries, detect_near_miss_cfc_header, extract_cfc_tags,
+# normalize_for_hash — live in `telescoping-sdd/scripts/cfc_parser.py` and are
+# imported above. Producer-specific extensions (structured_content_hash,
+# soft-WARN keyword regex) live below.
+#
+# See documentation/CFC.md for the full spec and references/plan-template.md
+# for the producer-side authoring contract.
+
+# Enforcement-keyword set for the owner-silent WARN. Anchored to noun-context
+# to avoid false positives on bare "check" / "hook" in plain English.
+CFC_ENFORCEMENT_KEYWORDS = re.compile(
+    r"\b(ArchUnit rule|CI (?:check|workflow|grep)|integration test|"
+    r"runbook gate|pre-commit hook|ArchUnit)\b",
+    re.IGNORECASE,
+)
+
+
+class CFCEntry(_SharedCFCEntry):
+    """Producer-side CFCEntry — adds structured_content_hash on top of the shared parser."""
+
+    def structured_content_hash(self) -> str:
+        """Return a stable hash over the CFC's structured content.
+
+        Hash inputs (per CFC.md): sorted-and-deduped Participating-features
+        list, whitespace-normalized Per-feature AC, and whitespace-normalized
+        Enforcement text. Contract prose is excluded — it's free-form
+        rationale, not a binding clause. Reordering participating features
+        in the source yields the same hash (sorted before hashing).
+        Deduping is per P2-9: an authoring cosmetic fix that removes an
+        accidental duplicate (`F1, F1` → `F1`) must not produce a spurious
+        `orphaned-stale-content` WARN.
+
+        Returns the SHA-256 hexdigest of the canonical-form serialization.
+        """
+        participating = sorted(set(self.participating_features()))
+        per_feature_ac = _normalize_for_hash(self.fields.get("Per-feature AC") or "")
+        enforcement = _normalize_for_hash(self.fields.get("Enforcement") or "")
+        canonical = json.dumps(
+            {
+                "n": self.number,
+                "participating": participating,
+                "per_feature_ac": per_feature_ac,
+                "enforcement": enforcement,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def parse_cfc_entries(section_body: str) -> list[CFCEntry]:
+    """Parse all ### CFC-N entries from a section body — returns producer-side CFCEntry subclass."""
+    shared_entries = _shared_parse_cfc_entries(section_body)
+    return [
+        CFCEntry(number=e.number, title=e.title, body=e.body)
+        for e in shared_entries
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Spec.md / design.md / tasks.md helpers for bound-spec classification
+# ---------------------------------------------------------------------------
+#
+# The PLAN-side validator walks specs/F<n>/ to determine each feature's
+# bound state (not-started / pre-Phase-1 / in-flight / shipped) and to
+# collect [CFC-N] tag bindings. See CFC.md § Bound-spec detection.
+
+PLAN_FEATURE_ID_LINE = re.compile(
+    r"^\*\*PLAN feature identifier:\*\*\s*`(F\d+|n/a)`", re.MULTILINE
+)
+APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
+# Strict form: `- [x] Approved to proceed`. Per P3-8 from the
+# post-implementation review, the prior loose `-\s*\[(x|X)\]` matched any
+# checked box anywhere, which would have false-positived if a spec ever
+# added an unrelated `- [x] <something>` sub-checkbox under `## Approval`.
+APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
+APPROVAL_HASH_LINE = re.compile(
+    r"^\s*-\s*\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
+)
+TASKS_CHECKBOX_WITH_CFC = re.compile(
+    r"^[ \t]*-\s+\[[ xX]\]\s+[^\n]*?\[CFC-(\d+)\]", re.MULTILINE
+)
+
+
+def has_approval(content: str) -> bool:
+    """Return True if the file contains a `## Approval` section with a checked box."""
+    if not APPROVAL_HEADER.search(content):
+        return False
+    return bool(APPROVAL_CHECKBOX.search(content))
+
+
+def approval_hash(content: str) -> Optional[str]:
+    """Return the stamped `**Content Hash:**` value, or None if absent or 'pending'."""
+    m = APPROVAL_HASH_LINE.search(content)
+    if m is None:
+        return None
+    value = m.group(1)
+    return None if value == "pending" else value
+
+
+def approval_hash_matches(content: str) -> bool:
+    """Return True if the stored Content Hash matches the current file content.
+
+    Uses the shared blueprint_common.verify_content_hash helper which is what
+    SDD's hash-and-cascade flow uses for hash-coherence detection.
+    """
+    if not has_approval(content):
+        return False
+    stored = approval_hash(content)
+    if stored is None:
+        return False
+    return verify_content_hash(content, stored)
+
+
+def spec_then_line_cfc_tags(spec_content: str) -> list[int]:
+    """Return CFC numbers tagged on THEN lines inside spec.md acceptance criteria."""
+    return extract_cfc_tags(spec_content)
+
+
+def tasks_checkbox_cfc_tags(tasks_content: str) -> list[int]:
+    """Return CFC numbers tagged on tasks.md checkbox lines."""
+    return [int(m.group(1)) for m in TASKS_CHECKBOX_WITH_CFC.finditer(tasks_content)]
+
+
+def parse_plan_feature_identifier(spec_content: str) -> Optional[str]:
+    """Return the `**PLAN feature identifier:**` value as `F<n>` or `n/a`, or None if absent/malformed."""
+    m = PLAN_FEATURE_ID_LINE.search(spec_content)
+    if m is None:
+        return None
+    return m.group(1)
+
+
+def all_tasks_ticked(tasks_content: str) -> bool:
+    """Return True if tasks.md has at least one task checkbox and every task checkbox is ticked.
+
+    A narrative-only tasks.md (zero task checkboxes) returns False — it cannot
+    classify as `shipped` because there is no implementation work to make
+    immutable. Per CFC.md doctrine refinement: "shipped" requires at least
+    one ticked task checkbox; the empty-set vacuous-truth case is rejected.
+
+    Scoping: counts only checkboxes BEFORE the `## Approval` heading. The
+    `## Approval` section's own `- [x] Approved ...` checkbox is the approval
+    marker, not a task, and must not contribute.
+    """
+    # Truncate at the Approval section header (if present) so we count only
+    # task-list checkboxes, not the Approval marker.
+    approval_match = APPROVAL_HEADER.search(tasks_content)
+    scan_region = (
+        tasks_content[: approval_match.start()] if approval_match else tasks_content
+    )
+    boxes = list(re.finditer(r"^-\s+\[([ xX])\]\s+", scan_region, re.MULTILINE))
+    if not boxes:
+        return False
+    return all(b.group(1).lower() == "x" for b in boxes)
+
+
+# ---------------------------------------------------------------------------
+# Bound-spec classification + coverage walk + orphan-tag scan
+# ---------------------------------------------------------------------------
+#
+# These run at PLAN validation (and at --approve plan) to give the PLAN
+# author visibility into:
+#   (a) which features are bound to which CFCs (coverage walk)
+#   (b) which specs carry orphaned [CFC-N] tags (orphan-tag scan)
+#
+# See CFC.md § Bound-spec detection for the four-state classification and
+# the orphan subtypes (orphaned-missing / orphaned-departed / orphaned-stale-content).
+
+# Class names match the strings in CFC.md so the report output and the
+# documented behavior stay in sync.
+STATE_NOT_STARTED = "not-started"
+STATE_PRE_PHASE_1 = "pre-Phase-1"
+STATE_IN_FLIGHT = "in-flight"
+STATE_SHIPPED = "shipped"
+
+
+class SpecState:
+    """Classification of a feature's spec directory and the artifacts in it."""
+
+    def __init__(
+        self,
+        feature_id: int,
+        spec_dir: Path,
+        state: str,
+        cfc_tags_in_spec: list[int],
+        cfc_tags_in_tasks: list[int],
+        spec_content: Optional[str],
+        tasks_content: Optional[str],
+    ):
+        self.feature_id = feature_id
+        self.spec_dir = spec_dir
+        self.state = state  # one of STATE_*
+        self.cfc_tags_in_spec = cfc_tags_in_spec
+        self.cfc_tags_in_tasks = cfc_tags_in_tasks
+        self.spec_content = spec_content
+        self.tasks_content = tasks_content
+
+    @property
+    def is_bound(self) -> bool:
+        """A spec is bound if it has shipped — Phase 4 complete."""
+        return self.state == STATE_SHIPPED
+
+
+def classify_spec(spec_dir: Path) -> SpecState:
+    """Classify the feature's spec into one of the four bound-detection states.
+
+    Per CFC.md § Bound-spec detection:
+      - not-started: spec.md missing
+      - pre-Phase-1: spec.md exists, no ## Approval (or hash stale)
+      - in-flight: spec.md approved, Phase 4 not yet complete
+      - shipped: all phases approved + all tasks ticked + tasks.md hash matches content
+    """
+    # Feature number is the trailing digits of the spec_dir name.
+    m = re.match(r"F(\d+)$", spec_dir.name)
+    feature_id = int(m.group(1)) if m else -1
+
+    spec_path = spec_dir / "spec.md"
+    design_path = spec_dir / "design.md"
+    tasks_path = spec_dir / "tasks.md"
+
+    spec_content = read_file(spec_path)
+    if spec_content is None:
+        return SpecState(
+            feature_id=feature_id,
+            spec_dir=spec_dir,
+            state=STATE_NOT_STARTED,
+            cfc_tags_in_spec=[],
+            cfc_tags_in_tasks=[],
+            spec_content=None,
+            tasks_content=None,
+        )
+
+    cfc_in_spec = spec_then_line_cfc_tags(spec_content)
+    tasks_content = read_file(tasks_path)
+    cfc_in_tasks = (
+        tasks_checkbox_cfc_tags(tasks_content) if tasks_content else []
+    )
+
+    # Phase 1 approved?
+    if not approval_hash_matches(spec_content):
+        return SpecState(
+            feature_id=feature_id,
+            spec_dir=spec_dir,
+            state=STATE_PRE_PHASE_1,
+            cfc_tags_in_spec=cfc_in_spec,
+            cfc_tags_in_tasks=cfc_in_tasks,
+            spec_content=spec_content,
+            tasks_content=tasks_content,
+        )
+
+    # Spec.md approved. Check design.md and tasks.md.
+    design_content = read_file(design_path)
+    design_approved = bool(
+        design_content and approval_hash_matches(design_content)
+    )
+    tasks_approved = bool(
+        tasks_content and approval_hash_matches(tasks_content)
+    )
+
+    if not (design_approved and tasks_approved):
+        # In-flight: spec is approved but at least one downstream artifact
+        # is not yet at a coherent approved state.
+        return SpecState(
+            feature_id=feature_id,
+            spec_dir=spec_dir,
+            state=STATE_IN_FLIGHT,
+            cfc_tags_in_spec=cfc_in_spec,
+            cfc_tags_in_tasks=cfc_in_tasks,
+            spec_content=spec_content,
+            tasks_content=tasks_content,
+        )
+
+    # All three artifacts approved. Shipped iff every task box is ticked AND
+    # tasks.md's approval hash matches current content (derived-coherence
+    # per CFC.md Q4). The matching hash IS the ship signal — no separate
+    # ceremony marker needed.
+    if tasks_content is None:
+        # Shouldn't happen given tasks_approved=True, but guard anyway.
+        state = STATE_IN_FLIGHT
+    elif all_tasks_ticked(tasks_content) and approval_hash_matches(tasks_content):
+        state = STATE_SHIPPED
+    else:
+        state = STATE_IN_FLIGHT
+
+    return SpecState(
+        feature_id=feature_id,
+        spec_dir=spec_dir,
+        state=state,
+        cfc_tags_in_spec=cfc_in_spec,
+        cfc_tags_in_tasks=cfc_in_tasks,
+        spec_content=spec_content,
+        tasks_content=tasks_content,
+    )
+
+
+def walk_specs(project_root: Path) -> list[SpecState]:
+    """Walk every specs/F<n>/ directory under project_root and classify each.
+
+    Returns a list ordered by feature ID ascending. Directories that don't
+    match the `F<n>` pattern are skipped. Symlinks are also skipped — they
+    can point outside the project tree, and following them would let a
+    maliciously- or accidentally-placed symlink coerce the validator to
+    read arbitrary files. Real specs live as real directories; if a project
+    legitimately needs to symlink a spec dir, the user can run with the
+    symlink target as `project_root`.
+    """
+    specs_root = project_root / "specs"
+    if not specs_root.is_dir():
+        return []
+    results: list[SpecState] = []
+    for entry in sorted(specs_root.iterdir()):
+        if entry.is_symlink():
+            continue
+        if not entry.is_dir():
+            continue
+        if not re.match(r"F\d+$", entry.name):
+            continue
+        results.append(classify_spec(entry))
+    return sorted(results, key=lambda s: s.feature_id)
+
+
+class CFCCoverage:
+    """Coverage state per CFC.
+
+    `feature_states` maps a participating feature's ID to one of:
+      * "tagged-in-flight" — spec.md approved, carries the [CFC-N] tag, but
+        feature has not shipped (Phase 4 incomplete).
+      * "tagged-shipped" — spec.md approved, carries the [CFC-N] tag, AND
+        the feature has shipped (Phase 4 complete; immutable).
+      * "approved-no-tag" — spec.md approved, feature is in flight or
+        shipped, but the [CFC-N] tag is missing. This is a binding gap.
+      * "pre-Phase-1" — spec.md exists but is not yet approved.
+      * "not-started" — no spec.md.
+
+    Per P3-9 (renamed legacy "bound" to "tagged-*" to disambiguate from
+    `STATE_SHIPPED`) and P3-10 (in-flight vs shipped distinction now
+    surfaced) from the post-implementation code review.
+    """
+
+    def __init__(self, cfc_number: int):
+        self.cfc_number = cfc_number
+        self.participating: list[int] = []
+        self.feature_states: dict[int, str] = {}
+
+    @property
+    def status(self) -> str:
+        """One of 'fully-bound' / 'partially-bound' / 'unbound'.
+
+        A feature is "covered" for this CFC if its spec is approved AND carries
+        the [CFC-N] tag on a THEN line (either tagged-in-flight or
+        tagged-shipped — both count). In-flight-untagged / pre-Phase-1 /
+        not-started are all "not covered."
+        """
+        if not self.participating:
+            return "unbound"
+        covered = sum(
+            1 for fid in self.participating
+            if self.feature_states.get(fid) in ("tagged-in-flight", "tagged-shipped")
+        )
+        if covered == 0:
+            return "unbound"
+        if covered == len(self.participating):
+            return "fully-bound"
+        return "partially-bound"
+
+
+def compute_coverage(
+    cfc_entries: list[CFCEntry], spec_states: list[SpecState]
+) -> list[CFCCoverage]:
+    """Compute per-CFC coverage from CFC entries + walked spec states."""
+    state_by_id = {s.feature_id: s for s in spec_states}
+    coverages: list[CFCCoverage] = []
+    for entry in cfc_entries:
+        cov = CFCCoverage(entry.number)
+        cov.participating = entry.participating_features()
+        for fid in cov.participating:
+            spec = state_by_id.get(fid)
+            if spec is None:
+                cov.feature_states[fid] = "not-started"
+                continue
+            if spec.state == STATE_NOT_STARTED:
+                cov.feature_states[fid] = "not-started"
+            elif spec.state == STATE_PRE_PHASE_1:
+                cov.feature_states[fid] = "pre-Phase-1"
+            else:
+                # Approved at the spec.md level (in-flight or shipped). Check
+                # for the [CFC-N] tag binding on a THEN line, and surface
+                # the in-flight-vs-shipped distinction so the PLAN author
+                # can judge urgency (per P3-10).
+                if entry.number in spec.cfc_tags_in_spec:
+                    if spec.state == STATE_SHIPPED:
+                        cov.feature_states[fid] = "tagged-shipped"
+                    else:
+                        cov.feature_states[fid] = "tagged-in-flight"
+                else:
+                    cov.feature_states[fid] = "approved-no-tag"
+        coverages.append(cov)
+    return coverages
+
+
+class OrphanTag:
+    """One orphaned [CFC-N] tag found by the orphan-tag scan."""
+
+    def __init__(
+        self,
+        spec_dir: Path,
+        artifact: str,  # 'spec.md' or 'tasks.md'
+        cfc_number: int,
+        subtype: str,  # 'orphaned-missing' / 'orphaned-departed' / 'orphaned-stale-content'
+        message: str,
+    ):
+        self.spec_dir = spec_dir
+        self.artifact = artifact
+        self.cfc_number = cfc_number
+        self.subtype = subtype
+        self.message = message
+
+
+def scan_orphan_tags(
+    cfc_entries: list[CFCEntry],
+    spec_states: list[SpecState],
+    prior_cfc_hashes: dict[int, str],
+) -> list[OrphanTag]:
+    """Find all [CFC-N] tags in walked specs that no longer resolve cleanly.
+
+    Three subtypes (per CFC.md):
+      - orphaned-missing: tag references a CFC number not present in current PLAN
+      - orphaned-departed: CFC exists but the spec's feature is no longer Participating
+      - orphaned-stale-content: CFC exists, feature still Participating, but the
+        CFC's structured content hash differs from prior_cfc_hashes[N]
+
+    prior_cfc_hashes: per-CFC content hashes from the prior PLAN approval (empty
+    on the first PLAN approval; orphaned-stale-content never fires until the
+    second PLAN approval).
+    """
+    orphans: list[OrphanTag] = []
+    entry_by_number = {e.number: e for e in cfc_entries}
+
+    for spec in spec_states:
+        # Bound-state filter: skip not-started and pre-Phase-1 — they have
+        # nothing approved to orphan.
+        if spec.state in (STATE_NOT_STARTED, STATE_PRE_PHASE_1):
+            continue
+
+        # Collect all tag occurrences from spec.md and tasks.md.
+        for artifact_name, tags in (
+            ("spec.md", spec.cfc_tags_in_spec),
+            ("tasks.md", spec.cfc_tags_in_tasks),
+        ):
+            seen_in_artifact: set[int] = set()
+            for n in tags:
+                if n in seen_in_artifact:
+                    continue
+                seen_in_artifact.add(n)
+                entry = entry_by_number.get(n)
+                if entry is None:
+                    # orphaned-missing — try to suggest near matches.
+                    suggestions = _nearest_cfc_numbers(n, entry_by_number.keys())
+                    sugg_text = (
+                        f" — did you mean {', '.join(f'CFC-{s}' for s in suggestions)}?"
+                        if suggestions
+                        else ""
+                    )
+                    orphans.append(
+                        OrphanTag(
+                            spec_dir=spec.spec_dir,
+                            artifact=artifact_name,
+                            cfc_number=n,
+                            subtype="orphaned-missing",
+                            message=(
+                                f"{spec.spec_dir.name}/{artifact_name} carries "
+                                f"[CFC-{n}] which has no matching CFC in current PLAN"
+                                f"{sugg_text}"
+                            ),
+                        )
+                    )
+                    continue
+                # CFC exists; check membership. The rule differs per artifact:
+                #   - spec.md tags signal "this feature participates in the
+                #     contract", so Participating membership is required.
+                #   - tasks.md tags signal "this feature works on the
+                #     contract" — which is legitimate for either a Participating
+                #     feature OR an Enforcement-owner feature (the feature
+                #     named in the Enforcement prose may not itself be a
+                #     Participating member; e.g., F36 owning the ArchUnit
+                #     rule that verifies F2/F11's writes — F36 isn't in
+                #     Participating but does carry the [CFC-N] tag on the
+                #     task implementing the rule).
+                # Per P1-1 from the post-implementation code review.
+                participating = entry.participating_features()
+                enforcement_owners = entry.enforcement_owners()
+                if artifact_name == "tasks.md":
+                    is_legitimate_holder = (
+                        spec.feature_id in participating
+                        or spec.feature_id in enforcement_owners
+                    )
+                else:
+                    is_legitimate_holder = spec.feature_id in participating
+                if not is_legitimate_holder:
+                    orphans.append(
+                        OrphanTag(
+                            spec_dir=spec.spec_dir,
+                            artifact=artifact_name,
+                            cfc_number=n,
+                            subtype="orphaned-departed",
+                            message=(
+                                f"{spec.spec_dir.name}/{artifact_name} carries "
+                                f"[CFC-{n}] but F{spec.feature_id} is no longer "
+                                f"in CFC-{n}'s Participating features"
+                                + (
+                                    " (and is not named as an Enforcement owner)"
+                                    if artifact_name == "tasks.md"
+                                    else ""
+                                )
+                                + " — remove the tag (allowed metadata edit), or "
+                                f"restore F{spec.feature_id} to CFC-{n} if the "
+                                "removal was unintended"
+                            ),
+                        )
+                    )
+                    continue
+                # CFC exists; feature is still Participating; check content drift.
+                current_hash = entry.structured_content_hash()
+                prior_hash = prior_cfc_hashes.get(n)
+                if prior_hash is not None and prior_hash != current_hash:
+                    orphans.append(
+                        OrphanTag(
+                            spec_dir=spec.spec_dir,
+                            artifact=artifact_name,
+                            cfc_number=n,
+                            subtype="orphaned-stale-content",
+                            message=(
+                                f"{spec.spec_dir.name}/{artifact_name} carries "
+                                f"[CFC-{n}] bound at content hash {prior_hash[:12]}; "
+                                f"CFC-{n}'s content hash has since changed to "
+                                f"{current_hash[:12]}. "
+                                f"{'Bound spec is shipped — immutable; remediation via new feature or unbound-spec absorption.' if spec.state == STATE_SHIPPED else 'Spec is in flight — amend in place via hash-and-cascade.'}"
+                            ),
+                        )
+                    )
+
+    return orphans
+
+
+def _nearest_cfc_numbers(target: int, existing: list[int], k: int = 2) -> list[int]:
+    """Return the up-to-k existing CFC numbers closest to target by absolute distance."""
+    existing_list = sorted(existing, key=lambda n: (abs(n - target), n))
+    return existing_list[:k]
+
+
+# Per-CFC content hashes stored alongside PLAN.md's main approval hash.
+# Stored as an indented sub-block under the `## Approval` section:
+#
+#   ## Approval
+#
+#   - [x] Approved to proceed to feature development
+#   - **Content Hash:** `abc123...`
+#   - **CFC Content Hashes:**
+#     - CFC-1: `def456...`
+#     - CFC-2: `ghi789...`
+#
+# The validator parses these at PLAN re-validation and uses them as the
+# prior-state baseline for orphaned-stale-content detection. The
+# `approve_document` flow re-computes them at every --approve plan.
+
+CFC_HASH_BLOCK_HEADER = re.compile(
+    r"^\s*-\s*\*\*CFC Content Hashes:\*\*\s*$", re.MULTILINE
+)
+CFC_HASH_LINE = re.compile(
+    r"^\s*-\s*CFC-(\d+):\s*`([0-9a-fA-F]+)`\s*$", re.MULTILINE
+)
+
+
+def _approval_section_slice(content: str) -> Optional[tuple[int, int]]:
+    """Return (body_start, body_end) bounding PLAN.md's `## Approval` section body, or None.
+
+    body_start is the offset immediately after the `## Approval` header line;
+    body_end is the offset of the next `## ` heading (or end-of-file if no
+    later heading). Used by `read_cfc_hashes`, `_write_cfc_hash_block`, and
+    `approve_document` to scope their regex operations to the Approval
+    section body — without this scope, phantom `**Content Hash:**` lines or
+    stray `- **CFC Content Hashes:**` sub-blocks anywhere else in PLAN.md
+    can confuse the validator (silent data corruption + invalid baselines).
+
+    Emits a stderr warning if the document contains more than one `## Approval`
+    header — only the first is honoured for scope. A duplicate header would
+    otherwise silently orphan hash state in the second section (per the
+    light-touch verification pass, critic finding #1).
+    """
+    matches = list(APPROVAL_HEADER.finditer(content))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        print(
+            f"WARN: document contains {len(matches)} `## Approval` headers; "
+            "approval state operations target the first match only — "
+            "the others will silently orphan state.",
+            file=sys.stderr,
+        )
+    m = matches[0]
+    body_start = m.end()
+    next_h2 = re.search(r"^## ", content[body_start:], re.MULTILINE)
+    body_end = body_start + next_h2.start() if next_h2 else len(content)
+    return (body_start, body_end)
+
+
+def read_cfc_hashes(plan_content: str) -> dict[int, str]:
+    """Read per-CFC content hashes from PLAN.md's `## Approval` section.
+
+    Returns an empty dict if the block is absent (which is the case on a
+    first PLAN approval or for PLANs predating the CFC amendment). The scan
+    is bounded to the `## Approval` section body — stray `- CFC-N:` lines
+    elsewhere in PLAN.md are not considered baselines.
+    """
+    slice_range = _approval_section_slice(plan_content)
+    if slice_range is None:
+        return {}
+    body_start, body_end = slice_range
+    approval_body = plan_content[body_start:body_end]
+    if not CFC_HASH_BLOCK_HEADER.search(approval_body):
+        return {}
+    return {
+        int(m.group(1)): m.group(2)
+        for m in CFC_HASH_LINE.finditer(approval_body)
+    }
+
+
+def render_cfc_hashes(cfc_entries: list[CFCEntry]) -> str:
+    """Render per-CFC content hashes as a markdown sub-block under `- **CFC Content Hashes:**`.
+
+    Returns the markdown lines (no leading newline). Empty string if there
+    are no CFC entries.
+    """
+    if not cfc_entries:
+        return ""
+    lines = ["- **CFC Content Hashes:**"]
+    for entry in sorted(cfc_entries, key=lambda e: e.number):
+        lines.append(f"  - CFC-{entry.number}: `{entry.structured_content_hash()}`")
+    return "\n".join(lines)
+
+
+def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntry]:
+    """Run all soft validations on the ## Cross-Feature Contracts section.
+
+    The section is optional — absence is not a failure. When present:
+      - Each ### CFC-N entry must have the four required fields in order.
+      - Participating features must match the strict regex.
+      - CFC numbers must be unique within the document.
+      - Owner-silent Enforcement prose emits a WARN.
+
+    Returns the list of parsed CFC entries (possibly empty if the section is
+    absent or contains no entries). Downstream coverage walk + orphan-tag
+    scan consume this list.
+    """
+    # Near-miss header check fires even if no canonical header is found —
+    # catches the silent-extractor-failure case from CFC.md P6.
+    near_miss = detect_near_miss_cfc_header(content)
+    if near_miss:
+        result.add(
+            "PLAN.md ## Cross-Feature Contracts header form",
+            False,
+            f"Header '{near_miss}' does not match canonical "
+            f"'## Cross-Feature Contracts' form (case-sensitive, no trailing "
+            f"colon, no extra whitespace). If you intended to declare a CFC "
+            f"section, fix the header. If not, rename the section to avoid "
+            f"the near-miss.",
+        )
+        return []
+
+    section = extract_cfc_section(content)
+    if section is None:
+        # Section absent — optional, no failure.
+        return []
+
+    _start, _end, body = section
+    from cfc_parser import parse_cfc_entries_with_malformed
+    shared_entries, malformed = parse_cfc_entries_with_malformed(body)
+    # Wrap into producer-side CFCEntry subclass (has structured_content_hash).
+    entries = [
+        CFCEntry(number=e.number, title=e.title, body=e.body)
+        for e in shared_entries
+    ]
+
+    # Per P3-12: surface malformed CFC numbers (leading zero, `CFC-0`)
+    # explicitly rather than silently dropping them. They would collide with
+    # their canonical forms (`CFC-007` vs `CFC-7`) under int() parsing.
+    for malformed_heading in malformed:
+        result.add(
+            f"PLAN.md CFC heading format: {malformed_heading.split(':')[0]}",
+            False,
+            f"CFC heading '{malformed_heading}' uses a non-canonical number "
+            f"format (leading zero or zero). CFC numbers must match "
+            f"`^(1|[1-9]\\d*)$` — i.e., decimal integer with no leading "
+            f"zeros and not zero. Renumber to the canonical form.",
+        )
+
+    # Empty section (header present, no CFC entries) — informational only.
+    if not entries:
+        result.add(
+            "PLAN.md ## Cross-Feature Contracts section has entries",
+            True,
+            "Section present with no CFC entries (informational; no CFCs declared)",
+            warn_only=True,
+        )
+        return entries
+
+    # CFC number uniqueness — within current PLAN.md (no cross-history check).
+    numbers_seen: dict[int, int] = {}
+    for entry in entries:
+        numbers_seen[entry.number] = numbers_seen.get(entry.number, 0) + 1
+    duplicates = sorted(n for n, count in numbers_seen.items() if count > 1)
+    if duplicates:
+        labels = ", ".join(f"CFC-{n}" for n in duplicates)
+        result.add(
+            "PLAN.md CFC numbers are unique",
+            False,
+            f"Duplicate CFC number(s): {labels}",
+        )
+    else:
+        result.add("PLAN.md CFC numbers are unique", True)
+
+    # Per-entry field validation.
+    for entry in entries:
+        cfc_label = f"CFC-{entry.number}"
+
+        # 1. Required fields present.
+        missing = [
+            name for name in CFC_FIELD_ORDER if entry.fields[name] is None
+        ]
+        if missing:
+            result.add(
+                f"PLAN.md {cfc_label} has all required fields",
+                False,
+                f"Missing required field(s): {', '.join(missing)}",
+            )
+        else:
+            result.add(
+                f"PLAN.md {cfc_label} has all required fields",
+                True,
+            )
+
+        # 2. Field order.
+        if not missing and entry.field_order_observed != list(CFC_FIELD_ORDER):
+            result.add(
+                f"PLAN.md {cfc_label} fields appear in canonical order",
+                False,
+                f"Expected order {list(CFC_FIELD_ORDER)}, "
+                f"observed {entry.field_order_observed}",
+            )
+        elif not missing:
+            result.add(
+                f"PLAN.md {cfc_label} fields appear in canonical order",
+                True,
+            )
+
+        # 3. Duplicate fields.
+        for name, count in entry.field_duplicates.items():
+            result.add(
+                f"PLAN.md {cfc_label} field '{name}' appears more than once",
+                False,
+                f"Field '{name}' appears {count} times; "
+                f"each field must appear exactly once",
+            )
+
+        # 4. Participating-features regex.
+        if entry.fields["Participating features"] is not None:
+            pf_value = entry.fields["Participating features"]
+            if not CFC_PARTICIPATING_VALUE_PATTERN.match(pf_value):
+                result.add(
+                    f"PLAN.md {cfc_label} Participating features regex",
+                    False,
+                    f"Value '{pf_value}' does not match "
+                    f"^F\\d+(, F\\d+)*$ (comma-separated F<n> tokens, "
+                    f"no backticks, no other prose)",
+                )
+            else:
+                # Check for duplicates within the list.
+                ids = entry.participating_features()
+                if len(ids) != len(set(ids)):
+                    result.add(
+                        f"PLAN.md {cfc_label} Participating features has no duplicates",
+                        False,
+                        f"Duplicate feature ID(s) in Participating features",
+                    )
+                else:
+                    result.add(
+                        f"PLAN.md {cfc_label} Participating features regex",
+                        True,
+                    )
+
+        # 5. Owner-silent Enforcement WARN.
+        enf_value = entry.fields["Enforcement"]
+        if enf_value is not None:
+            has_keyword = bool(CFC_ENFORCEMENT_KEYWORDS.search(enf_value))
+            has_feature_token = bool(FEATURE_ID_WORD_PATTERN.search(enf_value))
+            has_explicit_disclaimer = (
+                "no owning feature" in enf_value
+                or "co-owned" in enf_value
+            )
+            if has_keyword and not has_feature_token and not has_explicit_disclaimer:
+                result.add(
+                    f"PLAN.md {cfc_label} Enforcement names owning feature",
+                    False,
+                    "Enforcement prose mentions a verifying mechanism "
+                    "but names no owning feature. Add F<n> verbatim, or "
+                    "write 'no owning feature' / 'co-owned by F<n>, F<m>' "
+                    "explicitly so the consumer-side task-analyst knows "
+                    "whose tasks.md to bind.",
+                    warn_only=True,
+                )
+
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -190,28 +1035,156 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
 
 def approve_document(file_path: Path) -> None:
-    """Mark a document as approved by checking the box and writing the content hash."""
+    """Mark a document as approved by checking the box and writing the content hash.
+
+    For PLAN.md, additionally re-writes the per-CFC content hashes inside the
+    `## Approval` section so the next validation pass can detect content drift
+    on each CFC independently (orphaned-stale-content subtype of the
+    orphan-tag scan).
+
+    All checkbox and hash rewrites are scoped to the `## Approval` section
+    body to prevent silent corruption of phantom `**Content Hash:**` or
+    `- [ ] Approved` strings elsewhere in the document (e.g., a Feature
+    Breakdown entry that happens to include a literal example).
+    """
     content = file_path.read_text(encoding="utf-8")
+
+    # Trim the `### Trajectory` table to the latest 15 data rows BEFORE
+    # computing the document hash — the trimmed table is part of the
+    # approved content. Older rows are replaced with a single elided
+    # summary row at the top of the data section; re-approval merges
+    # the existing elided count with new elisions.
+    content = trim_trajectory_table(content)
+
+    # For PLAN.md, refresh the per-CFC content-hash sub-block BEFORE computing
+    # the document-level hash — the sub-block is part of the approved content.
+    if file_path.name == "PLAN.md":
+        section = extract_cfc_section(content)
+        cfc_entries = parse_cfc_entries(section[2]) if section else []
+        content = _write_cfc_hash_block(content, cfc_entries)
 
     # Compute hash before modifying approval section
     content_hash = compute_content_hash(content)
 
-    # Update the checkbox
-    content = re.sub(
-        r"- \[ \] Approved to proceed",
-        "- [x] Approved to proceed",
-        content,
-    )
+    # Update the checkbox + hash, scoped to the ## Approval section body.
+    # Without scoping, a phantom `- [ ] Approved` or `**Content Hash:** \`...\``
+    # anywhere else in the document would be silently rewritten.
+    approval = _approval_section_slice(content)
+    if approval is not None:
+        body_start, body_end = approval
+        approval_body = content[body_start:body_end]
+        approval_body = re.sub(
+            r"- \[ \] Approved to proceed",
+            "- [x] Approved to proceed",
+            approval_body,
+        )
+        approval_body = re.sub(
+            r"\*\*Content Hash:\*\*\s*`[^`]*`",
+            f"**Content Hash:** `{content_hash}`",
+            approval_body,
+        )
+        content = content[:body_start] + approval_body + content[body_end:]
 
-    # Update the hash
-    content = re.sub(
-        r"\*\*Content Hash:\*\*\s*`[^`]*`",
-        f"**Content Hash:** `{content_hash}`",
-        content,
-    )
-
-    file_path.write_text(content, encoding="utf-8")
+    _atomic_write(file_path, content)
     print(f"Approved: {file_path} (hash: {content_hash})")
+
+
+def _atomic_write(target: Path, content: str) -> None:
+    """Write `content` to `target` atomically via temp-file + os.replace.
+
+    Guards against partial-write corruption on Ctrl-C, disk-full, or process
+    kill mid-write. The temp file lives in the same directory as the target
+    (required for `os.replace` to be atomic across filesystems). On failure
+    the temp file is removed; the original target is untouched.
+
+    On unrecoverable failure the temp-file path is appended to the re-raised
+    exception's args so cross-mount (EXDEV) or permission errors point at a
+    real artifact rather than disappearing into a bare OSError (per the
+    light-touch verification pass, critic finding #3).
+    """
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp_removed = False
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+            tmp_removed = True
+        except Exception:
+            pass
+        tmp_status = "removed" if tmp_removed else f"left at {tmp}"
+        exc.args = (
+            *exc.args,
+            f"atomic write to {target} failed; temp file {tmp_status}",
+        )
+        raise
+
+
+def _write_cfc_hash_block(plan_content: str, cfc_entries: list[CFCEntry]) -> str:
+    """Insert/replace the `- **CFC Content Hashes:**` sub-block in PLAN.md's `## Approval` section.
+
+    If `cfc_entries` is empty (no CFC section, or empty section), removes any
+    existing block. If a block already exists, replaces it. If no block exists
+    and we have entries, appends the new block after the Content Hash line.
+
+    All operations are scoped to the `## Approval` section body. The tail of
+    an existing block matches only CFC-hash-shaped lines (``  - CFC-N: `<hex>` ``)
+    — adjacent user-added metadata bullets (e.g., a reviewer list) are
+    preserved.
+    """
+    rendered = render_cfc_hashes(cfc_entries)
+
+    approval = _approval_section_slice(plan_content)
+    if approval is None:
+        # No ## Approval section at all — nothing we can write into.
+        return plan_content
+    body_start, body_end = approval
+    approval_body = plan_content[body_start:body_end]
+
+    # Locate any existing block within the approval body. A block starts at
+    # `- **CFC Content Hashes:**` and continues through CFC-hash-shaped
+    # indented entries — *not* arbitrary indented bullets — so adjacent
+    # user-added metadata (`- **Reviewer:** Alice`) is preserved.
+    existing = re.search(
+        r"(?ms)^\s*-\s*\*\*CFC Content Hashes:\*\*\s*$"
+        r"(?:\n[ \t]+-[ \t]+CFC-\d+:[ \t]+`[0-9a-fA-F]+`[ \t]*)*",
+        approval_body,
+    )
+
+    if existing:
+        if rendered:
+            new_body = (
+                approval_body[: existing.start()]
+                + rendered
+                + approval_body[existing.end():]
+            )
+        else:
+            # Remove the existing block + a trailing newline if present.
+            end = existing.end()
+            if end < len(approval_body) and approval_body[end] == "\n":
+                end += 1
+            new_body = approval_body[: existing.start()] + approval_body[end:]
+        return plan_content[:body_start] + new_body + plan_content[body_end:]
+
+    if not rendered:
+        return plan_content  # no entries, no existing block, nothing to do
+
+    # Append the block after the Content Hash line inside the approval body.
+    hash_line = re.search(
+        r"(?m)^(\s*-\s*\*\*Content Hash:\*\*\s*`[^`]*`\s*)$",
+        approval_body,
+    )
+    if hash_line is None:
+        # Approval section may not have a Content Hash line yet; do nothing.
+        return plan_content
+    insertion = "\n" + rendered
+    new_body = (
+        approval_body[: hash_line.end()]
+        + insertion
+        + approval_body[hash_line.end():]
+    )
+    return plan_content[:body_start] + new_body + plan_content[body_end:]
 
 
 def check_previous_phase_approved(
@@ -577,6 +1550,84 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
             False,
         )
 
+    # ## Cross-Feature Contracts is optional — absence is not a failure.
+    # When present, validate field structure, regex, uniqueness, and emit
+    # the owner-silent Enforcement WARN.
+    cfc_entries = validate_cfc_section(content, result)
+
+    # Cross-artifact CFC checks (coverage walk + orphan-tag scan). Only run
+    # if a Cross-Feature Contracts section was declared OR specs/ has
+    # bound files with [CFC-N] tags (so we still flag orphans on a PLAN
+    # that removed all its CFCs). Per P2-7 from the post-implementation
+    # review: short-circuit BEFORE walking specs/ when there's clearly no
+    # CFC work to do — cheap substring scan over PLAN.md tells us if any
+    # [CFC-N] tag could possibly be relevant.
+    project_root = blueprint_dir.parent
+    plan_has_cfc_tags = bool(CFC_TAG_PATTERN.search(content))
+    if cfc_entries or plan_has_cfc_tags:
+        spec_states = walk_specs(project_root)
+        has_any_cfc_tags = any(
+            s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
+        )
+    else:
+        # Fast path: PLAN declares no CFCs and references no tags. Still
+        # check specs/ for orphan tags (PLAN may have removed its CFCs and
+        # left orphans behind), but only via a cheap substring scan first.
+        spec_states = walk_specs(project_root) if (project_root / "specs").is_dir() else []
+        has_any_cfc_tags = any(
+            s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
+        )
+
+    if cfc_entries or has_any_cfc_tags:
+        prior_hashes = read_cfc_hashes(content)
+        coverages = compute_coverage(cfc_entries, spec_states)
+        orphans = scan_orphan_tags(cfc_entries, spec_states, prior_hashes)
+
+        # Coverage walk: emit a WARN only for `partially-bound`. `fully-bound`
+        # and `unbound` produce no validator-level row — the PLAN author
+        # gets a clean output unless there's actually work to do. (Per P2-16
+        # from the post-implementation review: the previous all-three-states
+        # emission was output noise that obscured real findings.)
+        for cov in coverages:
+            if cov.status == "partially-bound":
+                result.add(
+                    f"PLAN.md CFC-{cov.cfc_number} coverage",
+                    False,
+                    f"partially-bound: "
+                    + ", ".join(
+                        f"F{fid}=[{cov.feature_states.get(fid, '?')}]"
+                        for fid in cov.participating
+                    ),
+                    warn_only=True,
+                )
+            elif cov.status == "fully-bound":
+                # Surface in-flight vs shipped distinction in the detail
+                # string (P3-10) so the PLAN author can judge urgency at a
+                # glance. Emitted as PASS — the binding is complete.
+                state_summary = ", ".join(
+                    f"F{fid}=[{cov.feature_states.get(fid, '?')}]"
+                    for fid in cov.participating
+                )
+                result.add(
+                    f"PLAN.md CFC-{cov.cfc_number} coverage",
+                    True,
+                    f"fully-bound: {state_summary}",
+                )
+            # `unbound` produces no validator row — work hasn't started on
+            # any participant; informational noise the PLAN author doesn't
+            # need to see while drafting other sections.
+
+        # Orphan-tag scan: each orphan emits a WARN. The validator surfaces
+        # them as actionable; the user fixes via the remediation paths in
+        # workflow-overview.md § Bound-Spec Immutability.
+        for orphan in orphans:
+            result.add(
+                f"PLAN.md orphan-tag scan: {orphan.subtype}",
+                False,
+                orphan.message,
+                warn_only=True,
+            )
+
     validate_resolved(content, "PLAN.md", result)
     validate_panel_review(content, "PLAN.md", result)
 
@@ -609,6 +1660,11 @@ def main():
         help="Approve a phase document (marks it approved with content hash)",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the pre-approval validation gate (use after manually reviewing FAIL items)",
+    )
+    parser.add_argument(
         "--output",
         choices=["text", "json"],
         default="text",
@@ -632,6 +1688,28 @@ def main():
         if not target.is_file():
             print(f"Error: {target} does not exist")
             sys.exit(2)
+
+        # Decision E — gate on validation. Approving a structurally-broken
+        # document silently corrupts state and produces a confusing
+        # "approved, but next validate FAILs" 3am scenario. Refuse to stamp
+        # unless validation passes. --force overrides after the user has
+        # read the FAIL items.
+        if not args.force:
+            validators = {
+                "scope": validate_scope,
+                "architecture": validate_architecture,
+                "plan": validate_plan,
+            }
+            pre_result = validators[args.approve](blueprint_dir)
+            if not pre_result.passed:
+                print(f"Refusing to approve {target.name}: validation FAILed.")
+                print(pre_result.summary())
+                print(
+                    f"\nFix the FAIL items above, OR re-run with --force to "
+                    f"approve anyway (you take responsibility for the "
+                    f"approved-but-invalid state)."
+                )
+                sys.exit(1)
         approve_document(target)
         sys.exit(0)
 

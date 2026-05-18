@@ -110,6 +110,12 @@ SCOPE.md → ARCHITECTURE.md → PLAN.md → spec.md → design.md → tasks.md 
 
 Any edit above the break re-invalidates everything below it until each phase is re-approved.
 
+### Cross-Feature Contracts (optional)
+
+`PLAN.md` has an optional `## Cross-Feature Contracts` section for invariants that span multiple features — e.g. a shared event-key registry, an enforcement ArchUnit rule one feature owns on behalf of others, a cross-feature interface contract. Each `### CFC-N` entry names the participating features and the Per-feature AC each one must carry. When `spec-driven-dev` runs on a participating feature, its spec must tag the matching acceptance criterion with `[CFC-N]`, and (if this feature owns enforcement) its tasks must include a `[CFC-N]`-tagged enforcement task. The validators mechanically detect drift: if a CFC's content changes after a feature has shipped against the old version, `validate_blueprint.py --approve plan` emits an `orphaned-stale-content` WARN naming the affected specs so you can decide whether to amend, remediate via a new feature, or accept the divergence.
+
+Full design in [`documentation/CFC.md`](documentation/CFC.md).
+
 ## Prerequisites
 
 - [Claude Code](https://claude.com/product/claude-code) installed and authenticated
