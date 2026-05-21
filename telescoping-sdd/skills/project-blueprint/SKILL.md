@@ -18,6 +18,7 @@ Every project blueprint follows three phases. **Always get user approval before 
 1. **Scope** — Define what we're building and why (`SCOPE.md`) — drafted by the `telescoping-sdd:project-spec-analyst` agent
 2. **Architecture** — Design how it fits together (`ARCHITECTURE.md`) — drafted by the `telescoping-sdd:project-architecture-analyst` agent
 3. **Implementation Plan** — Break it into features and sequence them (`PLAN.md`) — drafted by the `telescoping-sdd:project-plan-analyst` agent
+4. **Business Brief** — Optional. After PLAN approval, offer to render the three approved documents as self-contained HTML for stakeholder consumption.
 
 All blueprint documents live in `blueprint/` at the project root.
 
@@ -68,6 +69,34 @@ Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telesc
 
 **Read `references/phase-plan.md` for the full Phase 3 workflow — drafting, self-review, scope-architecture-plan consistency check, panel, validation, and approval. This is the last blueprint phase; concerns cannot be deferred forward.**
 
+## Phase 4: Business Brief
+
+Output: `blueprint/business-brief/scope.html`, `architecture.html`, `plan.html`. Requires approved `SCOPE.md`, `ARCHITECTURE.md`, AND `PLAN.md`.
+
+**Optional and re-runnable.** Phase 4 renders the three approved blueprint documents as self-contained HTML for business-stakeholder consumption. After the user approves PLAN.md, present a clear yes/no prompt to the user: `Generate a Business Brief for stakeholders? [y/n]`. If the user answers `y`/`yes` (case-insensitive, whitespace tolerated), invoke the script below and report the three output paths. If the user answers `n`/`no`, exit Phase 4 gracefully and confirm the brief was skipped. For any other response, re-prompt.
+
+If all three phase artifacts (SCOPE.md, ARCHITECTURE.md, PLAN.md) are already approved on entry, offer the Phase 4 prompt directly rather than re-entering Phase 1.
+
+**First-time setup.** Phase 4 needs two pip packages — `markdown>=3.4` and `bleach>=6.0,<7.0` — that the rest of the skill does not. Install them once into the Python environment that will invoke the script:
+
+```bash
+pip install -r <script-path>/requirements.txt
+```
+
+Invocation:
+
+```bash
+python <script-path>/render_business_brief.py blueprint/
+# Optional overrides:
+python <script-path>/render_business_brief.py blueprint/ --project-name "Acme Q3 Initiative"
+python <script-path>/render_business_brief.py blueprint/ --dry-run          # preview paths, write nothing
+python <script-path>/render_business_brief.py blueprint/ --logo /path/to/logo.png  # custom branding
+```
+
+The script filters workflow-internal content (YAML frontmatter, Panel Review, Approval blocks, inline tags like `[SEAL-NN]`, content-hash stamps), renders the remaining markdown to clean HTML with inline CSS, embeds the Neon Ghost brand logo as a base64 data URL in each file's footer, and writes three self-contained files to `blueprint/business-brief/`. The output files are email-able / SharePoint-droppable / offline-openable — no external CSS, JS, fonts, or images.
+
+**Read `references/phase-business-brief.md` for the full Phase 4 workflow — the prompt, re-running behaviour, the upstream approval guard, and the brand-logo asset.**
+
 ## Validation Rules
 
 Before any document can be approved, it must pass validation:
@@ -103,6 +132,7 @@ When an approved document is edited (by Claude at the user's request, by the use
 - `references/panel-review.md` — the shared panel-review loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract, and panel-skip rules. Read before running any phase's panel.
 - `references/strict-bar-prompts.md` — per-phase prompt additions for strict-bar passes. Loaded only when a strict-bar pass runs.
 - `references/phase-scope.md`, `references/phase-architecture.md`, `references/phase-plan.md` — full per-phase workflows.
+- `references/phase-business-brief.md` — optional Phase 4 workflow: render the three approved blueprint documents as self-contained HTML for stakeholders.
 - `references/workflow-overview.md` — quick-reference diagram of the full process.
 - `references/scope-template.md`, `references/architecture-template.md`, `references/plan-template.md` — document templates the drafting agents must follow exactly.
 - `references/examples.md` — end-to-end walkthroughs for common entry points (new project, resuming, plan-only, blueprint complete).

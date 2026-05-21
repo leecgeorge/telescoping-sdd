@@ -5,9 +5,11 @@ When an approved spec document changes — Claude edits it, the user edits it, o
 1. **Re-stamp the changed document** so its approval hash matches its new content.
 2. **Check downstream consistency** so an out-of-date upstream doesn't silently invalidate the artifacts approved against it.
 
-Do both without prompting for permission — the user has already authorized the edit. Real decisions surface only at the consistency-check boundary.
+Do both without prompting for permission — the user has already authorized the edit. Real decisions surface at the consistency-check boundary AND at one earlier point: between re-stamping and cascading, a brief upstream panel re-review step fires when the edit is substantive (lean-yes) or borderline non-trivial (lean-no but not visibly trivial under the four-criterion test in step 3). Visibly trivial edits skip silently with a one-line note. This exception exists because substantive new content in the upstream should be stress-tested before it becomes the baseline downstream documents are measured against.
 
 **Phase 4 (Implement) is the exception.** `tasks.md` gets ticked continuously during implementation; re-stamping after every tick would be noise. The Phase 4 cadence is: re-stamp once on resumption (handled by mid-stream entry), stay silent through every tick, then re-stamp once at completion (driven by the Final Check in SKILL.md). Substantive mid-implementation edits to `tasks.md` (re-scoping, adding tasks because design proved incomplete) still follow the full flow below.
+
+**Task-tick discriminator (C2).** A task-tick edit is one that modifies only checkbox state on a `### - [ ] T<n>:` (or `### - [x] T<n>:`) task heading line — changing the state between `[ ]` and `[x]` in either direction — or the corresponding Status column entry in the Summary table, and nothing else. Either direction of checkbox toggle qualifies (a task being re-opened from `[x]` to `[ ]` is as much a task-tick edit as completing it from `[ ]` to `[x]`). Any diff that modifies content outside those two surfaces (description text, notes, acceptance criteria text, dates, scope changes, newly-added task lines) is a substantive mid-implementation edit and follows the full `Re-Approval After Edits` flow, including the upstream panel re-review step.
 
 ## Entering the Workflow Mid-Stream
 
@@ -15,10 +17,10 @@ Run `python <script-path>/validate_spec.py specs/<feature-name>/`. Output lines 
 
 1. **Fix structural FAILs first** (missing sections, `[TBD]`/`TODO`/`FIXME`, unchecked open questions). Self-correct trivial breaks; escalate when content judgment is needed. Re-run the validator to confirm before continuing. Do not re-stamp a structurally broken document.
 2. **Then handle approval-state FAILs:**
-   - Stale hash or missing hash → auto-restamp with `--approve <phase>` (`spec`, `design`, or `tasks`) and note it in one line ("spec.md hash refreshed: abc123 → def456"). Then run the cascade (step 3 in "Re-Approval After Edits" below).
+   - Stale hash or missing hash → auto-restamp with `--approve <phase>` (`spec`, `design`, or `tasks`) and note it in the source-tagged format `<file> re-stamped after <source-tag>: hash <old> → <new>` where `<source-tag>` is one of `user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch`. Then run the cascade (step 4 in "Re-Approval After Edits" below).
    - Checkbox unchecked → **halt and ask the user.** An unchecked box is ambiguous (deliberate "needs revision" vs. accidental).
-   - If the edit came from `git pull`/`merge`/branch switch rather than the user's keystrokes, auto-restamp still applies; mention the source in the note ("…hash refreshed after merge from main: …").
-   - **Phase 4 carve-out.** If you're resuming mid-Phase-4 (some tasks already ticked), the stale hash on `tasks.md` is expected — re-stamp silently and skip the cascade (`tasks.md` has no downstream). Structural FAILs on `tasks.md` still halt at step 1.
+   - If the edit came from `git pull`/`merge`/branch switch rather than the user's keystrokes, auto-restamp still applies; the `<source-tag>` in the note (`git-pull`, `git-merge`, or `branch-switch`) records the origin.
+   - **Phase 4 carve-out.** If the edit is a task-tick edit (per the task-tick discriminator above), re-stamp silently, skip the cascade, AND skip the upstream panel re-review step. All three actions are explicit — the new step's suppression is named directly here so a future text edit cannot accidentally drop it by re-ordering. Structural FAILs on `tasks.md` still halt at step 1. When the carve-out fires and suppresses the new step, emit a one-line debug note: `Upstream panel re-review: suppressed — Phase 4 task-tick carve-out active`.
 3. **`Previous phase approved` FAILs** are propagated — fix the upstream named in the FAIL line and they clear automatically.
 4. **Then route to the right phase:**
    - spec.md clean → proceed to Design (self-review, spec-design consistency, panel).
@@ -30,8 +32,65 @@ Run `python <script-path>/validate_spec.py specs/<feature-name>/`. Output lines 
 When an approved document changes, run this flow against it:
 
 1. **Verify structural validity.** Run the validator. If a structural check fails on the edited document, self-correct trivial breaks; escalate when content judgment is needed. Do not re-stamp until structural checks pass.
-2. **Re-stamp silently.** `python <script-path>/validate_spec.py specs/<feature-name>/ --approve <phase>` for the edited document. One-line note ("spec.md re-approved, hash abc123 → def456"). No prompt.
-3. **Cascade the consistency check to approved downstream artifacts.** This is the cross-doc consistency check only — no re-drafting, no panel review, no full validation. Use the named sections:
+2. **Re-stamp silently.** `python <script-path>/validate_spec.py specs/<feature-name>/ --approve <phase>` for the edited document. Emit a one-line note in the source-tagged format: `<file> re-stamped after <source-tag>: hash <old> → <new>` where `<source-tag>` is one of `user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch` (determined at step-2 emit time by inspecting the immediate trigger that brought the flow into Re-Approval After Edits). Example: `spec.md re-stamped after user-edit: hash abc123 → def456`. No prompt. This is the **writer side** of the source-tag contract; the new step 3 (Upstream panel re-review) reads the tag to determine source classification per AD1.
+3. **Upstream panel re-review.** Before cascading, decide whether to stress-test the edited upstream itself with a panel pass. This step fires only on **top-level entries** of `Re-Approval After Edits` (a human keystroke edit, a Claude-drafted edit at the user's request, or a `git pull`/`merge`/branch-switch). When this flow is **re-entered** as a result of the downstream-revision recursion described in the "Resolution has two paths" block below, this step does NOT fire — the existing downstream optional panel re-review block at the end of this section remains the mechanism for stress-testing revised downstreams. When a single trigger (e.g., one `git pull`) brings new content into N approved documents simultaneously, each edited document is its own top-level entry; the step fires once per edited document, not once per pull.
+
+   a. **Recommendation formation.** Determine edit source by deterministic precedence (highest first):
+      1. **Step-2 source tag** — if step 2's re-stamp note carries a source tag (`user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch`), that tag is authoritative.
+      2. **Prior Claude Agent invocation** — if the most recent edit to the upstream came from an Agent tool call in this session before step 2 emitted, source = `claude-edit`.
+      3. **User's typed prompt text** — examine the literal text the user typed at the prompt (NOT document content the message includes by reference, attached files, or pasted-from-elsewhere blocks). If it contains the literal edit (paste or diff) or a clear first-person edit instruction ("I'm going to add R6"), source = `keystroke`.
+      4. **Ambiguous → non-keystroke** (lean-yes bar). When source = `ambiguous`, the user-facing prompt's Reason line states: `edit source could not be confidently classified; treating as non-keystroke per AD1 default.` so the user can correct.
+
+   b. **Apply the four-criterion triviality test (AD3).** Visibly trivial if and only if the diff passes ALL FOUR criteria:
+      1. **Diff content is whitespace-only OR punctuation-only OR comment-only** (after Unicode-NFC normalization) — characters that differ between pre and post must be members of `{whitespace, ASCII punctuation, content inside <!-- --> HTML comments}`. **AND** the diff does NOT touch: blank lines adjacent to fenced code blocks, blank lines adjacent to list items or headings, leading whitespace on any line, trailing whitespace on lines ending in two-or-more spaces, or any line matching `^#{1,6} `, `^\s*[-*+] `, `^\s*\d+\. ` (markdown-rendering-impactful patterns).
+      2. **No change to checkbox state** on any content-bearing line.
+      3. **No change to ANY content of a code block** (regardless of language tag — including YAML/JSON/config blocks).
+      4. **No rename of any identifier** matching one of: `F\d+`, `T\d+`, `R\d+`, `CFC-\d+`, `AD\d+`, `DEF-\d+`, `SEAL-\d+`, OR a contract-vocabulary token from this enumerated list: `user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch`, `keystroke`, `non-keystroke`, `ambiguous`, `top_level_entry`, `STRICT-BAR-SIGNAL`, `Halt and re-scope`, `Addressed`, `Deferred`, `Sealed`, `Accepted as risk`, `upstream-panel`. Examples: trivial = pure whitespace cleanup; non-trivial = `may`→`must`, `should`→`must`, `30s`→`60s`, any letter-content change (typo corrections do NOT qualify as trivial under this strict reading — they prompt with default-no).
+
+      If the diff passes all four criteria → **trivial-skip**: emit `Upstream panel re-review: skipped — trivial edit (whitespace / punctuation / comment-only, no semantic diff)` and proceed directly to step 4 (cascade). No prompt.
+
+   c. **Lean classification (for non-trivial diffs):**
+      - For **non-keystroke** source (Claude-drafted, git pull/merge, branch-switch, or ambiguous): any non-trivial edit → **lean-yes** regardless of content category (source-aware bar per Q1/DP1).
+      - For **keystroke** source: apply content categories. **Lean-yes** if the diff adds new requirements, ACs, components, interface contracts, security/privacy surfaces, or external dependencies. **Lean-no** if the diff only restructures, rewords, or reformats existing content.
+
+   d. **Prompt presentation.** Present the recommendation and ask the user explicitly. Use the panelist set defined in `panel-review.md § Panelists per phase` for the upstream's phase — do not inline the panelist names here.
+
+      **Lean-yes prompt (I1)** — default-yes on Enter:
+      ```
+      Upstream panel re-review: recommended (yes)
+      Reason: <one-sentence reason naming the category of change and which panelists would care — focus on the concern, mention panelists parenthetically if it adds clarity>
+
+      Run upstream panel re-review on `<filename>` before cascading? (Y/n)
+      ```
+
+      **Lean-no (borderline) prompt (I2)** — default-no on Enter:
+      ```
+      Upstream panel re-review: not recommended (no)
+      Reason: <one-sentence reason — e.g., "the revision restructures the Requirements section without adding new behavior">
+
+      Run upstream panel re-review on `<filename>` before cascading? (y/N)
+      ```
+
+      **Answer vocabulary:** `y`/`yes`/`Y`/`Yes`/`YES` → yes; `n`/`no`/`N`/`No`/`NO` → no; Enter (empty) → recommendation's default. Ambiguous responses re-ask once with `Please answer y or n (default on Enter: <Y or N>):` then apply the recommendation's default.
+
+   e. **Yes-path execution.** Run the panel-review loop on the upstream document:
+      - Use `panel-review.md § Panelists per phase` for the upstream's phase.
+      - Determine the `--phase` argument from the upstream artifact: `spec.md` → `--phase 1`; `design.md` → `--phase 2`; `tasks.md` → `--phase 3`.
+      - Compute the pre-panel content hash of the upstream; capture the most recent NORMAL row from the upstream's Trajectory (if any) and its provenance tag.
+      - Run `python <shared-script-path>/archive_pass.py <upstream> --phase <N>` extending the upstream's existing `## Panel Review` Trajectory. After archiving, tag the new Trajectory row's Notes column with `upstream-panel <pre-panel-hash-short>` where `<pre-panel-hash-short>` is exactly the first 8 lowercase hex characters of the pre-panel content hash (format: regex `upstream-panel [0-9a-f]{8}` — no other content; the hash is derived from upstream content only, never from filenames or user input).
+      - **Stale-baseline detection.** If `STRICT-BAR-SIGNAL:` fires and the prior NORMAL row's provenance hash does NOT exactly equal the current pre-panel hash, treat the baseline as stale. Surface a "stale baseline" note to the user and let them decide whether to switch to STRICT-BAR mode; do not auto-apply. For legacy rows lacking a provenance tag, treat the baseline as unconditionally stale. Any hash difference is stale; no "hash-refresh-only delta" carve-out.
+      - **For PLAN.md upstream only — Post-panel immutability validation.** The full deterministic 4-step procedure (pre-panel scope capture, post-panel diff, abort on MODIFIED, pre-panel-membership authoritative for TOCTTOU) lives in the project-blueprint copy of this document (the SDD file does not have PLAN.md as an upstream). When the upstream is `spec.md`/`design.md`/`tasks.md`, no closed-feature scope applies; this validation is skipped.
+      - If panel auto-fixes were applied: re-stamp the upstream with `--approve <phase>` and emit the summary line: `<file> re-approved after upstream panel: hash <pre-panel-stamp> → <h1> → <h2> → ... → <post-fix-stamp> (<N> panel passes, <M> auto-fixes applied)` where intermediate hashes are listed in order. If more than 5 intermediates, elide with `...` and emit a separate `Detailed re-stamp manifest:` line listing every (pass-number, post-pass-hash) pair. If no auto-fixes: emit `<file> upstream panel complete: no auto-fixes applied (hash unchanged at <hash>)`.
+      - **archive_pass.py failure.** If `archive_pass.py` exits non-zero or emits stderr indicating malformed Trajectory or file-permission errors, surface the error to the user, do not auto-cascade, do not auto-re-stamp; require explicit user confirmation to retry or proceed.
+      - Then proceed to step 4 (cascade).
+
+   f. **No-path execution.** Emit `Upstream panel re-review: skipped — user declined` and proceed to step 4 (cascade). If the user said "no" against a **lean-yes** recommendation (crossed-recommendation), emit this additional warning: `Note: the upstream panel re-review was skipped on a lean-yes edit. The revised content will cascade without panel stress-testing. To run the panel later: ask "run the upstream panel re-review on \`<file>\` now" or re-edit the upstream (any non-trivial change) to re-enter this flow.`
+
+      If the user said "yes" against a **lean-no** recommendation and the panel converges immediately with 0 HIGHs, emit after the I4 summary: `Upstream panel: converged immediately — no issues found, consistent with lean-no recommendation.`
+
+   g. **Recovery path.** If the user later realizes they want a panel pass after declining, two affirmative options exist: (1) ask Claude in-session "run the upstream panel re-review on `<file>` now" — Claude re-runs the recommendation+ask cycle without requiring an edit; (2) re-edit the upstream (any non-trivial change to its content) re-enters `Re-Approval After Edits` and re-offers the upstream panel. Saying "no" does not mark the content as permanently un-reviewed.
+
+4. **Cascade the consistency check to approved downstream artifacts.** This is the cross-doc consistency check only — no re-drafting, no panel review, no full validation. Use the named sections:
    - Spec ↔ Design: `phase-design.md` § "Spec-Design Consistency Check".
    - Spec+Design ↔ Tasks: `phase-tasks.md` § "Spec-Design-Tasks Consistency Check".
 

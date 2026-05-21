@@ -6,7 +6,7 @@ The `telescoping-sdd` plugin bundles two skills that compose into one methodolog
 
 | Skill | Invocation | Status | What it does |
 |---|---|---|---|
-| `project-blueprint` | `/telescoping-sdd:project-blueprint` | Stable | Three-phase project planning (Scope → Architecture → Plan) with panel-review gates. Outputs `blueprint/PLAN.md` — an ordered feature list. |
+| `project-blueprint` | `/telescoping-sdd:project-blueprint` | Stable | Three-phase project planning (Scope → Architecture → Plan) with panel-review gates, plus an optional Phase 4 Business Brief that renders the three approved documents as self-contained HTML for stakeholders. Outputs `blueprint/PLAN.md` — an ordered feature list. |
 | `spec-driven-dev` | `/telescoping-sdd:spec-driven-dev` | Stable | Four-phase feature workflow (Specify → Design → Tasks → Implement) with panel-review gates. Consumes one feature from `PLAN.md` per cycle. |
 
 **Status** — *Stable*: ready for day-to-day use.
@@ -15,7 +15,7 @@ The `telescoping-sdd` plugin bundles two skills that compose into one methodolog
 
 The two skills aren't separate tools — they're one methodology at two altitudes.
 
-- `project-blueprint` zooms **out** to plan the whole project: Scope → Architecture → `PLAN.md`.
+- `project-blueprint` zooms **out** to plan the whole project: Scope → Architecture → `PLAN.md`. After PLAN approval, an optional Phase 4 renders the three approved documents as a self-contained HTML Business Brief for stakeholders.
 - `spec-driven-dev` zooms **in** to build each feature `PLAN.md` names: Specify → Design → Tasks → Implement.
 
 `PLAN.md` is the seam: the project tier's final artifact and the feature tier's input. Every feature listed there becomes one `spec-driven-dev` cycle.
@@ -97,6 +97,7 @@ Only `spec-driven-dev` Phase 4 (Implement) skips the panel and gate — the call
 | Output dir | `blueprint/` | `specs/<feature-name>/` |
 | Phases with panels | 3 (Scope, Architecture, Plan) | 3 (Specify, Design, Tasks) |
 | Implementation phase | — (hands off to `spec-driven-dev`) | Phase 4, no panel, interactive TDD |
+| Optional Phase 4 | Business Brief — self-contained HTML render of the three approved documents for stakeholder consumption | — |
 | Hash-locked approval | Yes — cascades invalidate downstream | Yes — same mechanism |
 | Validator | `validate_blueprint.py` | `validate_spec.py` |
 

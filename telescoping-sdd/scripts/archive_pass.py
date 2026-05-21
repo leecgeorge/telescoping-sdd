@@ -102,7 +102,7 @@ SEPARATOR_PAT = re.compile(r"^\|[\s\-|:]+\|\s*$")
 H_DEFERRED = "### Deferred dispositions"
 DEFERRED_REDISPOSITION_PREFIX = "Defense: already routed to "
 TERMINAL_FILENAMES = frozenset({"PLAN.md", "tasks.md", "tasks-python.md", "tasks-java.md"})
-TERMINAL_HTML_MARKER = "<!-- terminal-phase: brownfield-scope -->"
+TERMINAL_HTML_MARKER = "<!-- terminal-phase: scope -->"
 PANEL_SECTION_ORDER = [H_TRAJECTORY, H_SEALED, H_DEFERRED, H_LATEST]
 
 DEF_PAT = re.compile(
@@ -121,7 +121,7 @@ def _is_terminal(content: str, path: Path, explicit_flag: bool) -> bool:
     Priority order (per design AD1, I2):
       1. explicit_flag (--terminal was passed on CLI)
       2. path.name in TERMINAL_FILENAMES (case-sensitive registry)
-      3. TERMINAL_HTML_MARKER in content (brownfield SCOPE.md backstop)
+      3. TERMINAL_HTML_MARKER in content (terminal SCOPE.md backstop)
     """
     if explicit_flag:
         return True
@@ -589,9 +589,10 @@ def main():
     )
     parser.add_argument(
         "--terminal", action="store_true",
-        help="Mark this archive as a terminal-phase artifact (PLAN.md, brownfield "
-             "SCOPE.md, tasks.md). Suppresses ### Deferred dispositions auto-insert "
-             "and promotion; rejects Deferred-disposed rows in Latest.",
+        help="Mark this archive as a terminal-phase artifact (PLAN.md, tasks.md, "
+             "or a SCOPE.md that the user has explicitly marked terminal). "
+             "Suppresses ### Deferred dispositions auto-insert and promotion; "
+             "rejects Deferred-disposed rows in Latest.",
     )
     args = parser.parse_args()
 

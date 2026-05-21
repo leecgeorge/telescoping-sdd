@@ -789,7 +789,7 @@ def test_is_terminal_registry_match():
 def test_is_terminal_html_marker_detection():
     """_is_terminal returns True for content containing TERMINAL_HTML_MARKER."""
     ap = _load_archive_pass()
-    content = "## Panel Review\n\n<!-- terminal-phase: brownfield-scope -->\n"
+    content = "## Panel Review\n\n<!-- terminal-phase: scope -->\n"
     assert ap._is_terminal(content, Path("/x/SCOPE.md"), False) is True
     assert ap._is_terminal("no marker here", Path("/x/SCOPE.md"), False) is False
 
@@ -1560,7 +1560,7 @@ def test_panel_review_md_amendments_present():
     # Path resolution: archive_pass.py lives at telescoping-sdd/scripts/; panel-review.md
     # at telescoping-sdd/skills/<skill>/references/.
     base = Path(ap.__file__).parent.parent / "skills"
-    skills = ["project-blueprint", "brownfield-blueprint", "spec-driven-dev"]
+    skills = ["project-blueprint", "spec-driven-dev"]
     import pytest as _pytest
     for skill in skills:
         p = base / skill / "references" / "panel-review.md"
@@ -1591,7 +1591,7 @@ def test_panel_review_md_disposition_vocabulary_preserved():
     ap = _load_archive_pass()
     base = Path(ap.__file__).parent.parent / "skills"
     import pytest as _pytest
-    for skill in ["project-blueprint", "brownfield-blueprint", "spec-driven-dev"]:
+    for skill in ["project-blueprint", "spec-driven-dev"]:
         p = base / skill / "references" / "panel-review.md"
         if not p.is_file():
             _pytest.skip(f"panel-review.md not present for {skill}")
@@ -1609,7 +1609,7 @@ def test_deferred_redisposition_prefix_drift():
     base = Path(ap.__file__).parent.parent / "skills"
     import pytest as _pytest
     prefix = ap.DEFERRED_REDISPOSITION_PREFIX  # "Defense: already routed to "
-    for skill in ["project-blueprint", "brownfield-blueprint", "spec-driven-dev"]:
+    for skill in ["project-blueprint", "spec-driven-dev"]:
         p = base / skill / "references" / "panel-review.md"
         if not p.is_file():
             _pytest.skip(f"panel-review.md not present for {skill}")
