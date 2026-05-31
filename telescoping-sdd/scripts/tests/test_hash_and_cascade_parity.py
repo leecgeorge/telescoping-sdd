@@ -85,7 +85,12 @@ C4_INLINE_SUMMARY_VERBATIM_FRAGMENT_2 = "byte-frozen as a historical commitment 
 C4_INLINE_SUMMARY_VERBATIM_VALID_DISPOSITIONS = "divergence note in the downstream spec's `## Accepted Divergences`"
 C4_INLINE_SUMMARY_VERBATIM_REMEDIATION = "new remediation feature added to PLAN.md's `## Feature Breakdown`"
 
-C4_REGEX_PATTERN = r"^- \[xX\] F\d+\b"
+# Canonical milestone-lookup form (review finding Correct D1-3): match a
+# milestone-feature row in any checkbox state, then inspect whether it is `[x]`.
+# Previously stated here as the malformed `^- \[xX\] F\d+\b` (literal "xX", not a
+# character class) — reconciled to the same form used by workflow-overview.md
+# § Closed-Feature-Row Immutability / panel-review Self-Check (e) / phase-plan.md.
+C4_REGEX_PATTERN = r"^- \[[ xX]\] F\d+\b"
 
 FORBIDDEN_PANELIST_NAMES_INLINE = (
     "user-advocate",

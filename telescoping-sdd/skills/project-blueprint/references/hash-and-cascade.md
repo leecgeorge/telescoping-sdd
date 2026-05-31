@@ -1,3 +1,15 @@
+<!--
+SHARED REFERENCE — keep in sync with the spec-driven-dev copy at
+skills/spec-driven-dev/references/hash-and-cascade.md. Edits to the shared cascade machinery must be mirrored in BOTH copies.
+
+Intentional asymmetries vs the sibling (do NOT "sync" these away):
+- SDD-only: all Phase 4 (Implement) content — the Phase-4-exception note, the Task-tick discriminator (C2), and the task-tick carve-out that skips step 3 + the cascade. Blueprint has no artifact Phase 4; do not add it there.
+- Blueprint-only: PLAN.md closed-feature scope detection, the verbatim closed-feature immutability panelist constraint, and the full 4-step post-panel immutability validation. The SDD copy carries only a stub pointer (it has no PLAN.md upstream); do not expand the stub.
+- The yes-path re-stamp gate is conditioned on immutability validation passing in blueprint but unconditional in SDD — this tracks the blueprint-only validation above; do not "sync" the AND-clause.
+- Terminal Phase-3 artifact differs: PLAN.md (blueprint) vs tasks.md (spec-driven-dev); the --terminal note and routing name PLAN.md vs tasks.md accordingly.
+Otherwise the copies differ only cosmetically (phase-vocabulary mapping, filenames, example values).
+-->
+
 # Hash handling and the cascade
 
 When an approved blueprint document changes — Claude edits it, the user edits it, or `git pull`/`merge` brings in someone else's change — two things must happen automatically:
@@ -36,6 +48,8 @@ When an approved document changes, run this flow against it:
       3. **User's typed prompt text** — examine the literal text the user typed at the prompt (NOT document content the message includes by reference, attached files, or pasted-from-elsewhere blocks). If it contains the literal edit (paste or diff) or a clear first-person edit instruction ("I'm going to add G6"), source = `keystroke`.
       4. **Ambiguous → non-keystroke** (lean-yes bar). When source = `ambiguous`, the user-facing prompt's Reason line states: `edit source could not be confidently classified; treating as non-keystroke per AD1 default.` so the user can correct.
 
+      **Git-origin detection (stale-hash mid-stream entry, no in-session edit).** When the flow was entered because the validator reported a stale hash but no edit was made in this session (no step-2 source tag, no prior Agent edit, nothing in the user's typed prompt), determine the source from git before falling through to `ambiguous`: run `git log -1 --format=%s -- <file>` to read the most recent commit subject touching the file, and inspect `git reflog -n 5` (or `git reflog show HEAD -n 5`) for a recent `pull`/`merge`/`checkout`/`clone` entry. A reflog `pull`/`merge` immediately preceding the working state → `git-pull` / `git-merge`; a recent `checkout: moving from <A> to <B>` → `branch-switch`. If the git signals are inconclusive or conflict, tag the source `ambiguous` (which leans non-keystroke per sub-point 4). Never block on this — it is a best-effort classifier feeding the lean decision, not a gate.
+
    b. **Apply the four-criterion triviality test (AD3).** Visibly trivial if and only if the diff passes ALL FOUR criteria:
       1. **Diff content is whitespace-only OR punctuation-only OR comment-only** (after Unicode-NFC normalization) — characters that differ between pre and post must be members of `{whitespace, ASCII punctuation, content inside <!-- --> HTML comments}`. **AND** the diff does NOT touch: blank lines adjacent to fenced code blocks, blank lines adjacent to list items or headings, leading whitespace on any line, trailing whitespace on lines ending in two-or-more spaces, or any line matching `^#{1,6} `, `^\s*[-*+] `, `^\s*\d+\. ` (markdown-rendering-impactful patterns).
       2. **No change to checkbox state** on any content-bearing line.
@@ -71,7 +85,7 @@ When an approved document changes, run this flow against it:
    e. **Yes-path execution.** Run the panel-review loop on the upstream document:
       - Use `panel-review.md § Panelists per phase` for the upstream's phase.
       - Determine the `--phase` argument from the upstream artifact: `SCOPE.md` → `--phase 1`; `ARCHITECTURE.md` → `--phase 2`; `PLAN.md` → `--phase 3`.
-      - **PLAN.md special handling — closed-feature scope detection.** If the upstream is PLAN.md, before forming the recommendation, scan `## Milestones` for `- [xX] F\d+\b` rows (regex `^- \[xX\] F\d+\b`) to determine `closed_feature_scope` — the list of features whose milestone checkbox is `[x]` (per `workflow-overview.md § Closed-Feature-Row Immutability` lookup mechanic). The scope is always re-computed at flow entry from PLAN.md on local disk (never from cached FlowState, panel-supplied payload, or in-flight content). Empty list when no closed-feature rows or `## Milestones` absent.
+      - **PLAN.md special handling — closed-feature scope detection.** If the upstream is PLAN.md, before forming the recommendation, scan `## Milestones` for milestone-feature rows (regex `^- \[[ xX]\] F\d+\b`, the canonical lookup form) to determine `closed_feature_scope` — the list of features whose milestone checkbox is `[x]` (per `workflow-overview.md § Closed-Feature-Row Immutability` lookup mechanic). The scope is always re-computed at flow entry from PLAN.md on local disk (never from cached FlowState, panel-supplied payload, or in-flight content). Empty list when no closed-feature rows or `## Milestones` absent.
 
          **If `closed_feature_scope` is non-empty:** inject the following immutability constraint into the panelist prompt verbatim (substituting `<closed-list>` with the closed-feature identifiers, e.g., `F1, F3`):
 
@@ -84,7 +98,7 @@ When an approved document changes, run this flow against it:
          > If you identify a concern about content under either category: the only valid dispositions are (i) a divergence note in the downstream spec's `## Accepted Divergences`, or (ii) a new remediation feature added to PLAN.md's `## Feature Breakdown`. Do not propose in-place text edits to the closed rows or their CFCs — such proposals will be rejected at synthesis time.
 
       - Compute the pre-panel content hash of the upstream; capture the most recent NORMAL row from the upstream's Trajectory (if any) and its provenance tag.
-      - Run `python <shared-script-path>/archive_pass.py <upstream> --phase <N>` extending the upstream's existing `## Panel Review` Trajectory. After archiving, tag the new Trajectory row's Notes column with `upstream-panel <pre-panel-hash-short>` where `<pre-panel-hash-short>` is exactly the first 8 lowercase hex characters of the pre-panel content hash (format: regex `upstream-panel [0-9a-f]{8}` — no other content; the hash is derived from upstream content only, never from filenames or user input).
+      - Run `python <shared-script-path>/archive_pass.py <upstream> --phase <N>` extending the upstream's existing `## Panel Review` Trajectory; when the upstream is the terminal Phase-3 artifact (`PLAN.md`), append `--terminal` (`archive_pass.py` hard-rejects that filename without it — see `panel-review.md` `## The Loop`, Terminal-archive invocation). After archiving, tag the new Trajectory row's Notes column with `upstream-panel <pre-panel-hash-short>` where `<pre-panel-hash-short>` is exactly the first 8 lowercase hex characters of the pre-panel content hash (format: regex `upstream-panel [0-9a-f]{8}` — no other content; the hash is derived from upstream content only, never from filenames or user input).
       - **Stale-baseline detection.** If `STRICT-BAR-SIGNAL:` fires and the prior NORMAL row's provenance hash does NOT exactly equal the current pre-panel hash, treat the baseline as stale. Surface a "stale baseline" note to the user and let them decide whether to switch to STRICT-BAR mode; do not auto-apply. For legacy rows lacking a provenance tag, treat the baseline as unconditionally stale. Any hash difference is stale; no "hash-refresh-only delta" carve-out.
       - **Post-panel immutability validation (PLAN.md only, when `closed_feature_scope` is non-empty) — deterministic 4-step procedure:**
 
@@ -104,7 +118,7 @@ When an approved document changes, run this flow against it:
 
    f. **No-path execution.** Emit `Upstream panel re-review: skipped — user declined` and proceed to step 4 (cascade). If the user said "no" against a **lean-yes** recommendation (crossed-recommendation), emit this additional warning: `Note: the upstream panel re-review was skipped on a lean-yes edit. The revised content will cascade without panel stress-testing. To run the panel later: ask "run the upstream panel re-review on \`<file>\` now" or re-edit the upstream (any non-trivial change) to re-enter this flow.`
 
-      If the user said "yes" against a **lean-no** recommendation and the panel converges immediately with 0 HIGHs, emit after the I4 summary: `Upstream panel: converged immediately — no issues found, consistent with lean-no recommendation.`
+      If the user said "yes" against a **lean-no** recommendation and the panel converges immediately with 0 HIGHs, emit after the yes-path summary line (step e): `Upstream panel: converged immediately — no issues found, consistent with lean-no recommendation.`
 
    g. **Recovery path.** If the user later realizes they want a panel pass after declining, two affirmative options exist: (1) ask Claude in-session "run the upstream panel re-review on `<file>` now" — Claude re-runs the recommendation+ask cycle without requiring an edit; (2) re-edit the upstream (any non-trivial change to its content) re-enters `Re-Approval After Edits` and re-offers the upstream panel. Saying "no" does not mark the content as permanently un-reviewed.
 
@@ -159,7 +173,7 @@ This section documents two operator-facing behaviours of the `### Deferred dispo
 
 **What happens automatically**:
 
-1. `archive_pass.py` detects the missing section on first archive (any flag: normal, `--skip`, `--strict-bar`, `--cross-check`, `--dry-run`) and auto-inserts the empty `### Deferred dispositions` header between `### Sealed dispositions` and `### Latest pass detail`. This is a **cosmetic edit** (no semantic content), handled by the existing auto-re-stamp flow described above — no operator prompt fires.
+1. `archive_pass.py` detects the missing section on first archive (any flag: normal, `--skip`, `--strict-bar`, `--cross-check`, `--dry-run`) and auto-inserts the empty `### Deferred dispositions` header between `### Sealed dispositions` and `### Latest pass detail`. This auto-insert happens on any NON-TERMINAL artifact; it is suppressed on terminal artifacts (`PLAN.md`, marked `--terminal`), which must not carry the section per R1. This is a **cosmetic edit** (no semantic content), handled by the existing auto-re-stamp flow described above — no operator prompt fires.
 
 2. The first panel pass after re-entry lacks a populated suppression list. If panelists re-raise concerns that were previously disposed `Deferred` (whose `[DEF-NN]` entries vanished under the pre-feature behaviour), the synthesizer disposes them normally — `Deferred → <TARGET>` with a fresh `Routed because:` rationale — and `archive_pass.py` promotes them into the freshly-inserted section with `[DEF-01]`, `[DEF-02]`, etc.
 

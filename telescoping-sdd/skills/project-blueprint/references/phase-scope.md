@@ -42,7 +42,7 @@ If any issues were fixed, repeat the self-review on the updated scope — fixes 
 
 After the scope self-review is complete, run the scope panel against `blueprint/SCOPE.md` following the loop described in `references/panel-review.md`.
 
-Panelists: `user-advocate`, `devils-advocate`, `pragmatist`.
+Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`.
 
 There are no upstream approved artifacts at this phase — pass the current SCOPE.md only. Deferred concerns from this panel can target `ARCHITECTURE.md` or `PLAN.md`.
 
@@ -55,6 +55,8 @@ python <script-path>/validate_blueprint.py blueprint/
 ```
 
 **Stop and ask the user to review SCOPE.md before proceeding.**
+
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
 
 When the user approves, run:
 

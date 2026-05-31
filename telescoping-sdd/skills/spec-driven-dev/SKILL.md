@@ -24,6 +24,10 @@ All spec documents live in `specs/<feature-name>/` at the project root.
 
 Read `references/workflow-overview.md` for a quick-reference diagram of the full process.
 
+### When to use this — and when a lighter path fits
+
+The full four-phase loop is calibrated for **substantial, long-lived features** — code other features build against, specs that will be re-entered and amended. For a **small one-off feature, a throwaway prototype, or an exploratory spike**, that's disproportionate. If the user says the work is small/throwaway and asks for a lighter review, run the panel in **lightweight mode** (one pass, dispose, self-check, archive, exit — no convergence loop, no strict-bar/halt/cross-check). Default stays the full loop; lightweight mode is opt-in only. See `references/panel-review.md` § "Lightweight Mode (single-pass panel)".
+
 ### Path placeholders
 
 The commands in this skill reference two distinct script roots:
@@ -54,7 +58,7 @@ State the detected language to the user at the start of the first phase you ente
 
 Output: `specs/<feature-name>/spec.md`. Drafted by `telescoping-sdd:feature-spec-analyst`.
 
-Required sections: Objective, Requirements, Acceptance Criteria, Project Structure, Boundaries, Success Criteria.
+Required sections: Objective, Requirements (with per-requirement **Acceptance Criteria** sub-labels), Project Structure, Boundaries, Success Criteria.
 
 Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`.
 
@@ -74,7 +78,7 @@ Panelists: `telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, 
 
 Output: `specs/<feature-name>/tasks.md`. Drafted by `telescoping-sdd:feature-task-analyst`. Requires approved `spec.md` and `design.md`.
 
-Required per-task fields: Task ID, Requirement, Description, Files, Dependencies, Parallel, Acceptance Criteria, Tests, Verification.
+Required per-task fields: Task ID, Requirement, Description, Files, Dependencies, Parallel, Acceptance Criteria, Verification (the validator FAILs if any is missing from a task), plus Tests (advisory — the validator warns rather than fails, since specific test names are often refined during implementation).
 
 Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
 

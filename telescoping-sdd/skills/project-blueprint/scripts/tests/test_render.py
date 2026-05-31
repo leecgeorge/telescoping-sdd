@@ -205,13 +205,29 @@ def test_html_template_structural_contract():
     """_HTML_TEMPLATE is a module-level string with the committed slot set."""
     tmpl = render_business_brief._HTML_TEMPLATE
     assert isinstance(tmpl, str)
-    ids = set(string.Template(tmpl).get_identifiers())
-    assert ids == {"title", "project_name", "render_ts", "css", "body", "logo"}
+    # string.Template.get_identifiers() is 3.11+; extract identifiers via the
+    # public .pattern regex so this test runs on 3.9+ (this is what
+    # get_identifiers() does internally — collect the named/braced groups).
+    ids = {
+        mo.group("named") or mo.group("braced")
+        for mo in string.Template(tmpl).pattern.finditer(tmpl)
+        if mo.group("named") or mo.group("braced")
+    }
+    assert ids == {"title", "project_name", "render_ts", "css", "body", "logo", "lang"}
     assert tmpl.startswith("<!DOCTYPE html>")
     assert tmpl.rstrip().endswith("</html>")
     assert '<div class="brand">' in tmpl
     assert '<meta name="generator"' in tmpl
     assert "Derived artifact" in tmpl
+
+
+def test_html_lang_defaults_to_en_and_is_overridable():
+    """`<html lang=...>` defaults to en but is set by the --lang option / lang
+    arg, so a non-English brief announces its language to assistive tech
+    (review finding Critic C1-5)."""
+    base = dict(md_content="# X", title="T", project_name="P", render_ts="2026-01-01 00:00 UTC")
+    assert '<html lang="en">' in render_business_brief.render_to_html(**base)
+    assert '<html lang="fr">' in render_business_brief.render_to_html(**base, lang="fr")
 
 
 def test_html_template_round_trip():

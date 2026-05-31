@@ -8,6 +8,7 @@ extractors.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -106,4 +107,77 @@ def test_skill_subagent_invocation_shapes_complete():
         "any of the four extractors. Update _subagent_extractors.py with a "
         "fifth extractor matching the new shape:\n  "
         + "\n  ".join(findings)
+    )
+
+
+# Panel persona slugs (the names that collide with built-in agents of the same
+# name if invoked without the `telescoping-sdd:` prefix).
+_PANEL_PERSONAS = {
+    "user-advocate",
+    "devils-advocate",
+    "pragmatist",
+    "architect",
+    "ops-reviewer",
+    "security-reviewer",
+    "testability-reviewer",
+    "delivery-manager",
+    "critic",
+    "simplifier",
+}
+
+_BACKTICK_TOKEN = re.compile(r"`([A-Za-z0-9:_-]+)`")
+
+
+def _reference_panelist_lines():
+    """(file, lineno, line) for reference-doc lines that *invoke/list* panelists:
+    `Panelists:` lines (phase-*.md), the `## Panelists per phase` roster bullets
+    (panel-review.md), and the `panel (...)` parentheticals (examples.md).
+
+    Deliberately excludes prose mentions like "`ops-reviewer` raises a concern"
+    — those legitimately use a bare slug as an illustration, not an invocation.
+    """
+    out = []
+    refs = sorted(
+        (_REPO_ROOT / "telescoping-sdd" / "skills").glob("*/references/*.md")
+    )
+    for f in refs:
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.lstrip()
+            if (
+                stripped.startswith("Panelists:")
+                or re.search(r"\bpanel \(`", line)
+                or re.match(r"- \*\*[A-Za-z][A-Za-z ]*:\*\* `", line)
+            ):
+                out.append((f, i, line))
+    return out
+
+
+def test_reference_docs_panelist_names_carry_prefix():
+    """Panelist persona slugs in the reference docs (Panelists: lines, the
+    panel-review roster, examples 'panel (...)') must use the `telescoping-sdd:`
+    prefix so the plugin's customised persona resolves rather than the built-in
+    of the same name. The pre-existing resolution test only scans SKILL.md;
+    this guards the reference files where the bare-name regression actually
+    occurred (review finding Agents D1-2 / H2).
+    """
+    universe = _name_universe()
+    offenders = []
+    for f, lineno, line in _reference_panelist_lines():
+        for tok in _BACKTICK_TOKEN.findall(line):
+            base = tok.split(":")[-1]
+            if base in _PANEL_PERSONAS:
+                if not tok.startswith("telescoping-sdd:"):
+                    offenders.append(
+                        f"{f.relative_to(_REPO_ROOT)}:{lineno} -> bare `{tok}` "
+                        "(missing telescoping-sdd: prefix)"
+                    )
+                elif base not in universe:
+                    offenders.append(
+                        f"{f.relative_to(_REPO_ROOT)}:{lineno} -> `{tok}` "
+                        "resolves to no agent definition"
+                    )
+    assert not offenders, (
+        "Panelist persona references in reference docs are bare or unresolved "
+        "(the built-in persona would shadow the plugin's):\n  "
+        + "\n  ".join(offenders)
     )

@@ -118,14 +118,14 @@ You are responsible for reviewing your own draft before returning it to the call
 
 Review for inconsistencies, inaccuracies, and gaps. Fix issues you can resolve directly; flag issues that need judgment with `[TBD — needs input]` tags. Iterate until a review pass finds no issues, or until you have completed 5 passes.
 
-Read `references/agent-self-review-instructions.md` for the detailed review discipline.
+Read `../agent-references/agent-self-review-instructions.md` for the detailed review discipline.
 
 ## Iteration
 
-Be prepared to iterate. When presenting a draft, ask the user what needs revision. Each revision should be a clean, complete document — not a diff.
+You are invoked one-shot and return your draft to the calling Claude, not to the user. Do not ask the user questions directly. When you return a draft, surface any open questions, assumptions needing confirmation, or revision points as an explicit list for the calling Claude to route. If you are re-invoked with revision instructions, return a clean, complete document — not a diff.
 
 ## Memory
 
 Update your agent memory as you discover project-level patterns, technology preferences, integration conventions, and recurring architectural decisions. This builds institutional knowledge across conversations.
 
-Read `references/agent-memory-instructions.md` for memory usage instructions.
+Read `../agent-references/agent-memory-instructions.md` for memory usage instructions.

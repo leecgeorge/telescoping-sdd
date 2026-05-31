@@ -48,7 +48,7 @@ def _independent_hash(content: str) -> str:
     pinned by `test_independent_hash_oracle_parity` (P2-10).
     """
     neutralised = re.sub(
-        r"- \[[ x]\] Approved to proceed", "- [ ] Approved to proceed", content
+        r"- \[[ xX]\] Approved to proceed", "- [ ] Approved to proceed", content
     )
     neutralised = re.sub(
         r"\*\*Content Hash:\*\*\s*`[^`]*`", "**Content Hash:** `pending`", neutralised

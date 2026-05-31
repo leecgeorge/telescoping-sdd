@@ -225,6 +225,14 @@ def _load_logo_img_tag(logo_path: Path | None = None) -> str:
             file=sys.stderr,
         )
         return ""
+    if len(raw) > _LOGO_DATA_URL_MAX_BYTES:
+        print(
+            f"WARNING: brand logo at {path} is {len(raw)} bytes, exceeding the "
+            f"{_LOGO_DATA_URL_MAX_BYTES}-byte data-URL cap (base64 would inflate "
+            f"each rendered file by ~4/3 of that); rendering without logo",
+            file=sys.stderr,
+        )
+        return ""
     encoded = base64.b64encode(raw).decode("ascii")
     return (
         f'<img alt="Neon Ghost" class="brand-logo" '
@@ -432,7 +440,7 @@ footer {
 # Test suite asserts on the exact characters; do not replace with ASCII `--`
 # or `-` without updating the matching tests in test_render_business_brief.py.
 _HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
+<html lang="$lang">
 <head>
 <meta charset="utf-8">
 <meta name="generator" content="render_business_brief.py">
@@ -571,6 +579,7 @@ def render_to_html(
     project_name: str,
     render_ts: str,
     logo_img_tag: str = "",
+    lang: str = "en",
 ) -> str:
     """Convert filtered markdown to a complete, sanitized HTML document.
 
@@ -625,6 +634,7 @@ def render_to_html(
         css=_CSS,
         body=hardened,
         logo=logo_img_tag,
+        lang=html.escape(lang, quote=True),
     )
 
 
@@ -664,6 +674,7 @@ def render_all(
     arch_content: str,
     plan_content: str,
     logo_path: Path | None = None,
+    lang: str = "en",
 ) -> list[Path]:
     """Run the full filter → render → write pipeline for all three artifacts.
 
@@ -686,6 +697,7 @@ def render_all(
             project_name=project_name,
             render_ts=render_ts,
             logo_img_tag=logo_img_tag,
+            lang=lang,
         )
         paths.append(write_output(output_dir, filename, rendered))
     return paths
@@ -733,6 +745,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Override the default brand-logo PNG path. Used by third-party "
             "redistributors who want their own branding instead of Neon Ghost."
+        ),
+    )
+    parser.add_argument(
+        "--lang",
+        default="en",
+        metavar="BCP47",
+        help=(
+            "BCP-47 language tag for the rendered HTML `<html lang=...>` "
+            "attribute (default: en). Set when the brief content is authored "
+            "in another language so assistive tech announces it correctly."
         ),
     )
     return parser
@@ -816,6 +838,7 @@ def main() -> None:
         arch_content=arch_md,
         plan_content=plan_md,
         logo_path=logo_path,
+        lang=args.lang,
     )
     for p in paths:
         print(p)

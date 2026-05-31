@@ -89,6 +89,10 @@ Every artifact phase above runs the same six-step loop. Only the drafting subage
 
 Only `spec-driven-dev` Phase 4 (Implement) skips the panel and gate — the calling Claude executes TDD directly so course-correction stays interactive.
 
+**Rough cost per panel phase:** one drafting-agent invocation plus up to 5 panel passes × 3 persona invocations (≈15 agent calls at the cap, usually fewer once HIGH concerns converge), then a human review gate. Budget accordingly — a full blueprint run is three such phases, and each `spec-driven-dev` feature is three more. For small or throwaway work, use lightweight mode (below) to collapse the panel to a single pass.
+
+The loop above is calibrated for substantial, long-lived, multi-feature work. For a small one-off feature, throwaway prototype, or exploratory spike, tell the skill the work is small and ask for a lighter review — it runs the panel in opt-in **lightweight mode** (a single pass, no convergence loop or strict-bar/halt machinery). The default stays the full loop.
+
 ### Side-by-side
 
 | Aspect | `project-blueprint` | `spec-driven-dev` |
@@ -113,9 +117,9 @@ Any edit above the break re-invalidates everything below it until each phase is 
 
 ### Cross-Feature Contracts (optional)
 
-`PLAN.md` has an optional `## Cross-Feature Contracts` section for invariants that span multiple features — e.g. a shared event-key registry, an enforcement ArchUnit rule one feature owns on behalf of others, a cross-feature interface contract. Each `### CFC-N` entry names the participating features and the Per-feature AC each one must carry. When `spec-driven-dev` runs on a participating feature, its spec must tag the matching acceptance criterion with `[CFC-N]`, and (if this feature owns enforcement) its tasks must include a `[CFC-N]`-tagged enforcement task. The validators mechanically detect drift: if a CFC's content changes after a feature has shipped against the old version, `validate_blueprint.py --approve plan` emits an `orphaned-stale-content` WARN naming the affected specs so you can decide whether to amend, remediate via a new feature, or accept the divergence.
+`PLAN.md` has an optional `## Cross-Feature Contracts` section for invariants that span multiple features — e.g. a shared event-key registry, an enforcement ArchUnit rule one feature owns on behalf of others, a cross-feature interface contract. Each `### CFC-N` entry names the participating features and the Per-feature AC each one must carry. When `spec-driven-dev` runs on a participating feature, its spec must tag the matching acceptance criterion with `[CFC-N]`, and (if this feature owns enforcement) its tasks must include a `[CFC-N]`-tagged enforcement task. The validators mechanically detect drift: if a CFC's content changes after a feature has shipped against the old version, validating `PLAN.md` (`validate_blueprint.py blueprint/ --phase plan`) emits an `orphaned-stale-content` WARN naming the affected specs so you can decide whether to amend, remediate via a new feature, or accept the divergence.
 
-Full design in [`documentation/CFC.md`](documentation/CFC.md).
+Full design in [`telescoping-sdd/documentation/CFC.md`](telescoping-sdd/documentation/CFC.md).
 
 ## Prerequisites
 

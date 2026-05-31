@@ -1,3 +1,15 @@
+<!--
+SHARED REFERENCE — keep in sync with the spec-driven-dev copy at
+skills/spec-driven-dev/references/workflow-overview.md. Edits to shared content must be mirrored in BOTH copies.
+
+Intentional asymmetries vs the sibling (do NOT "sync" these away):
+- Phase model is skill-specific: blueprint has 3 phases (Scope/Architecture/Plan); spec-driven-dev has 4 (Specify/Design/Tasks/Implement) — diagram, headings, and phase count differ by design.
+- spec-driven-dev's Phase 4 (Implement) is SDD-only: extra Phase-Summary row, "Phase 4 executed directly" note, a 4th review gate, and the "Implement task" quick command have no blueprint counterpart.
+- Terminal Phase-3 artifact differs: PLAN.md (blueprint) vs tasks.md (spec-driven-dev), along with the File Layout tree (flat blueprint/ vs specs/feature-name/).
+- Blueprint-only doctrine sections (Handoff to Feature Development, Bound-Spec Immutability, Closed-Feature-Row Immutability) are PLAN/CFC-producer rules, intentionally absent from spec-driven-dev (the consumer).
+Otherwise the copies differ only cosmetically (phase names, filenames, example feature names, quick-command phrasing, Principles wording).
+-->
+
 # Project Blueprint — Workflow Overview
 
 ## The Three Phases
@@ -122,7 +134,7 @@ Bound-Spec Immutability (above) governs *shipped feature artifacts* downstream o
 | Altitude | What's immutable | Trigger | Detection |
 |---|---|---|---|
 | `spec.md` / `design.md` / `tasks.md` | Phase-4 complete (shipped) | All tasks ticked + content hash matches | `validate_blueprint.py orphaned-stale-content` WARN (CFC tag binding only) |
-| PLAN `### F<n>:` row + bullets | Milestone checkbox `[x]` | `^- \[x\] F<n>\b` in `## Milestones` | None — author + synthesizer discipline |
+| PLAN `### F<n>:` row + bullets | Milestone checkbox `[x]` | `^- \[[ xX]\] F<n>\b` in `## Milestones` (closed iff the matched checkbox is `[x]`) | None — author + synthesizer discipline |
 
 The remediation pattern is identical at both altitudes: when a PLAN update (or a CFC content edit, or a panelist proposal at panel-review time) creates an obligation that *would* require editing a closed feature, route the obligation to a new amending feature in `## Feature Breakdown`, or to an in-flight unbound feature that can absorb it, or to the relevant `M*N Deliverable` narrative explaining who actually ships the artefact. Never edit a `[x]`-bound feature row in place — not even to add a single AC bullet that cross-references a CFC. The deferred-amendment-avoidance pattern preserves the audit trail.
 

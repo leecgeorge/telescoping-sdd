@@ -67,7 +67,7 @@ For each issue found:
 
 After the spec-design consistency check is complete, run the design panel against `specs/<feature-name>/design.md` following the loop described in `references/panel-review.md`.
 
-Panelists: `architect`, `testability-reviewer`, `security-reviewer`.
+Panelists: `telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, `telescoping-sdd:security-reviewer`.
 
 Pass the current design.md and the approved spec.md. Deferred concerns from this panel can target `tasks.md`.
 
@@ -80,6 +80,8 @@ python <script-path>/validate_spec.py specs/<feature-name>/
 ```
 
 **Stop and ask the user to review design.md before proceeding.**
+
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
 
 When the user approves, run:
 

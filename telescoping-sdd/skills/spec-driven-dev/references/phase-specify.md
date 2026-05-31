@@ -50,7 +50,7 @@ If any issues were fixed, repeat the self-review on the updated spec — fixes c
 
 After the spec self-review is complete, run the spec panel against `specs/<feature-name>/spec.md` following the loop described in `references/panel-review.md`.
 
-Panelists: `user-advocate`, `devils-advocate`, `pragmatist`.
+Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`.
 
 There are no upstream approved artifacts at this phase — pass the current spec.md only. Deferred concerns from this panel can target `design.md` or `tasks.md`.
 
@@ -65,6 +65,8 @@ python <script-path>/validate_spec.py specs/<feature-name>/
 Where `<script-path>` is the path to the skill's `scripts/` directory (either relative from the project, e.g. `specs/<feature-name>/../../spec-driven-dev/scripts`, or the global install location).
 
 **Stop and ask the user to review spec.md before proceeding.**
+
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
 
 When the user approves, run:
 

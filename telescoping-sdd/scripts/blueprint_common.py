@@ -162,7 +162,7 @@ def content_for_hashing(content: str) -> str:
     other edit does. Idempotent: applying twice yields the same result.
     """
     result = re.sub(
-        r"- \[[ x]\] Approved to proceed", "- [ ] Approved to proceed", content
+        r"- \[[ xX]\] Approved to proceed", "- [ ] Approved to proceed", content
     )
     result = re.sub(
         r"\*\*Content Hash:\*\*\s*`[^`]*`", "**Content Hash:** `pending`", result
@@ -177,8 +177,14 @@ def compute_content_hash(content: str) -> str:
 
 
 def verify_content_hash(content: str, stored_hash: str) -> bool:
-    """True iff stored_hash equals the hash recomputed over content."""
-    return compute_content_hash(content) == stored_hash
+    """True iff stored_hash equals the hash recomputed over content.
+
+    Compared case-insensitively: compute_content_hash() emits lower-case hex,
+    but a hand-edited stamp may be upper-case, and hash identity must not depend
+    on case. This is the single comparison both validators' approval checks
+    route through, so they cannot drift on hash interpretation.
+    """
+    return compute_content_hash(content).lower() == stored_hash.lower()
 
 
 # ---------------------------------------------------------------------------
