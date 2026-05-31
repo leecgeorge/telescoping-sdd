@@ -56,7 +56,7 @@ For each issue found:
 
 After the scope-architecture consistency check is complete, run the architecture panel against `blueprint/ARCHITECTURE.md` following the loop described in `references/panel-review.md`.
 
-Panelists: `architect`, `ops-reviewer`, `security-reviewer`.
+Panelists: `telescoping-sdd:architect`, `telescoping-sdd:ops-reviewer`, `telescoping-sdd:security-reviewer`.
 
 Pass the current ARCHITECTURE.md and the approved SCOPE.md. Deferred concerns from this panel can target `PLAN.md`.
 
@@ -69,6 +69,8 @@ python <script-path>/validate_blueprint.py blueprint/
 ```
 
 **Stop and ask the user to review ARCHITECTURE.md before proceeding.**
+
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
 
 When the user approves, run:
 

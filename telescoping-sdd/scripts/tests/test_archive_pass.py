@@ -711,6 +711,25 @@ def test_is_normal_pass_row_recognizes_normal_row():
     assert ap._is_normal_pass_row({"Notes": "halt vote tags=d2u0c1"}) is True
 
 
+def test_parse_table_warns_on_unescaped_pipe_row(capsys):
+    """A panel-table row whose cell count != header (an unescaped `|` in a
+    Concern/Notes cell) must NOT be dropped silently — it would vanish from the
+    HIGH/Deferred/Sealed counts and the audit trail. parse_table warns instead
+    (review finding Scripts D5-2)."""
+    ap = _load_archive_pass()
+    lines = [
+        "| Severity | Source | Concern | Disposition | Notes |",
+        "|----------|--------|---------|-------------|-------|",
+        "| [HIGH] | critic | clean row | Addressed | ok |",
+        "| [MED] | critic | a | b unescaped | Deferred | leftover |",
+    ]
+    rows, table = ap.parse_table(lines, 0, len(lines))
+    assert table is not None
+    assert len(rows) == 1 and rows[0]["Severity"] == "[HIGH]"
+    err = capsys.readouterr().err
+    assert "expected 5" in err and "unescaped '|'" in err
+
+
 # ============================================================================
 # Deferred-dispositions feature — T1 tests (constants, _is_terminal, --terminal)
 # See specs/deferred-dispositions/{spec.md, design.md, tasks.md}

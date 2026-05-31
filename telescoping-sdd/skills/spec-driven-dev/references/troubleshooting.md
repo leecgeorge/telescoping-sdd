@@ -1,3 +1,16 @@
+<!--
+SHARED REFERENCE — keep in sync with the project-blueprint copy at
+skills/project-blueprint/references/troubleshooting.md. Edits to shared entries must be mirrored in BOTH copies.
+
+Intentional asymmetries vs the sibling (do NOT "sync" these away):
+- Troubleshooting topics are skill-specific: each copy lists problems for its own phases (blueprint: scope/architecture/feature-sizing; spec-driven-dev: tasks/design/acceptance-criteria/requirement-coverage) — extra or differently-named sections are expected.
+- Phase names + artifact filenames swap per skill (Scope/SCOPE.md/validate_blueprint.py vs Specify/spec.md/validate_spec.py, etc.).
+- The "Validator shows warnings" entry lists spec-driven-dev-only advisory categories (type hints, test names, unresolved markers); blueprint intentionally has none.
+- The shared "concern belongs in a later phase" entry cites each skill's real panelist (ops-reviewer for blueprint, testability-reviewer for spec-driven-dev; delivery-manager in both).
+- The no-deferral fallback names the terminal Phase-3 artifact: PLAN.md / "last blueprint phase" vs tasks.md / "last artifact phase".
+Otherwise the copies differ only cosmetically (terminology mapping, example wording).
+-->
+
 # Troubleshooting
 
 ## Spec validation fails

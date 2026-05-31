@@ -205,7 +205,7 @@ APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
 # added an unrelated `- [x] <something>` sub-checkbox under `## Approval`.
 APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
 APPROVAL_HASH_LINE = re.compile(
-    r"^\s*-\s*\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
+    r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
 )
 TASKS_CHECKBOX_WITH_CFC = re.compile(
     r"^[ \t]*-\s+\[[ xX]\]\s+[^\n]*?\[CFC-(\d+)\]", re.MULTILINE
@@ -819,9 +819,9 @@ def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntr
             f"PLAN.md CFC heading format: {malformed_heading.split(':')[0]}",
             False,
             f"CFC heading '{malformed_heading}' uses a non-canonical number "
-            f"format (leading zero or zero). CFC numbers must match "
-            f"`^(1|[1-9]\\d*)$` — i.e., decimal integer with no leading "
-            f"zeros and not zero. Renumber to the canonical form.",
+            f"format (leading zero or zero). CFC numbers must be a canonical "
+            f"decimal integer with no leading zeros and not zero (i.e., 1, 2, "
+            f"3, ...). Renumber to the canonical form.",
         )
 
     # Empty section (header present, no CFC entries) — informational only.
@@ -923,9 +923,10 @@ def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntr
         if enf_value is not None:
             has_keyword = bool(CFC_ENFORCEMENT_KEYWORDS.search(enf_value))
             has_feature_token = bool(FEATURE_ID_WORD_PATTERN.search(enf_value))
-            has_explicit_disclaimer = (
-                "no owning feature" in enf_value
-                or "co-owned" in enf_value
+            _enf_lower = enf_value.lower()
+            has_explicit_disclaimer = any(
+                phrase in _enf_lower
+                for phrase in ("no owning feature", "co-owned", "no single owner", "no owner")
             )
             if has_keyword and not has_feature_token and not has_explicit_disclaimer:
                 result.add(
@@ -933,9 +934,10 @@ def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntr
                     False,
                     "Enforcement prose mentions a verifying mechanism "
                     "but names no owning feature. Add F<n> verbatim, or "
-                    "write 'no owning feature' / 'co-owned by F<n>, F<m>' "
-                    "explicitly so the consumer-side task-analyst knows "
-                    "whose tasks.md to bind.",
+                    "write a disclaimer ('no owning feature' / 'co-owned by "
+                    "F<n>, F<m>' / 'no single owner' / 'no owner') explicitly "
+                    "so the consumer-side task-analyst knows whose tasks.md "
+                    "to bind.",
                     warn_only=True,
                 )
 
@@ -987,12 +989,14 @@ def validate_resolved(content: str, filename: str, result: ValidationResult) -> 
 # Approval helpers
 # ---------------------------------------------------------------------------
 
-APPROVAL_SECTION_PATTERN = re.compile(
-    r"^## Approval\s*\n.*?(?=\n^## |\Z)",
-    re.MULTILINE | re.DOTALL,
-)
-APPROVAL_HASH_PATTERN = re.compile(r"\*\*Content Hash:\*\*\s*`([a-f0-9]+|pending)`")
-APPROVAL_CHECKBOX_PATTERN = re.compile(r"- \[( |x)\] Approved to proceed")
+# check_approval shares the canonical approval-detection constants defined above
+# (APPROVAL_HEADER / APPROVAL_CHECKBOX / APPROVAL_HASH_LINE) and the shared
+# verify_content_hash comparison, so this validator, has_approval() /
+# approval_hash_matches() (used by render_business_brief), and validate_spec.py's
+# check_approval all interpret the approval format identically — accepting
+# `- [x]` / `- [X]`, an upper- or lower-case hex hash, and a `## Approval` header
+# with flexible surrounding whitespace. (A second, stricter regex family used to
+# live here and could disagree with the canonical set on the same document.)
 
 
 def check_approval(content: str, filename: str, result: ValidationResult) -> bool:
@@ -1000,8 +1004,7 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
     Returns True if the document is approved and hash matches.
     """
-    has_sect = bool(APPROVAL_SECTION_PATTERN.search(content))
-    if not has_sect:
+    if not APPROVAL_HEADER.search(content):
         result.add(
             f"{filename} has Approval section", False, "Missing ## Approval section"
         )
@@ -1009,14 +1012,13 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
     result.add(f"{filename} has Approval section", True)
 
-    checkbox_match = APPROVAL_CHECKBOX_PATTERN.search(content)
-    is_approved = checkbox_match is not None and checkbox_match.group(1) == "x"
+    is_approved = bool(APPROVAL_CHECKBOX.search(content))
     result.add(f"{filename} is approved", is_approved)
 
     if not is_approved:
         return False
 
-    hash_match = APPROVAL_HASH_PATTERN.search(content)
+    hash_match = APPROVAL_HASH_LINE.search(content)
     if not hash_match:
         result.add(
             f"{filename} approval hash present", False, "No content hash found"
@@ -1024,12 +1026,13 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
         return False
 
     stored_hash = hash_match.group(1)
-    current_hash = compute_content_hash(content)
-    hashes_match = stored_hash == current_hash
+    hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
     result.add(
         f"{filename} has not been modified since approval",
         hashes_match,
-        f"Stored: {stored_hash}, Current: {current_hash}" if not hashes_match else "",
+        f"Stored: {stored_hash}, Current: {compute_content_hash(content)}"
+        if not hashes_match
+        else "",
     )
     return hashes_match
 
@@ -1703,27 +1706,50 @@ def main():
             print(f"Error: {target} does not exist")
             sys.exit(2)
 
+        validators = {
+            "scope": validate_scope,
+            "architecture": validate_architecture,
+            "plan": validate_plan,
+        }
+        # Compute the pre-approval result once: it drives both the Decision-E
+        # gate and the CFC-drift surfacing below.
+        pre_result = validators[args.approve](blueprint_dir)
+
         # Decision E — gate on validation. Approving a structurally-broken
         # document silently corrupts state and produces a confusing
         # "approved, but next validate FAILs" 3am scenario. Refuse to stamp
         # unless validation passes. --force overrides after the user has
         # read the FAIL items.
-        if not args.force:
-            validators = {
-                "scope": validate_scope,
-                "architecture": validate_architecture,
-                "plan": validate_plan,
-            }
-            pre_result = validators[args.approve](blueprint_dir)
-            if not pre_result.passed:
-                print(f"Refusing to approve {target.name}: validation FAILed.")
-                print(pre_result.summary())
-                print(
-                    f"\nFix the FAIL items above, OR re-run with --force to "
-                    f"approve anyway (you take responsibility for the "
-                    f"approved-but-invalid state)."
-                )
-                sys.exit(1)
+        if not args.force and not pre_result.passed:
+            print(f"Refusing to approve {target.name}: validation FAILed.")
+            print(pre_result.summary())
+            print(
+                f"\nFix the FAIL items above, OR re-run with --force to "
+                f"approve anyway (you take responsibility for the "
+                f"approved-but-invalid state)."
+            )
+            sys.exit(1)
+
+        # Surface CFC drift / coverage WARNs BEFORE approve_document refreshes
+        # the per-CFC content-hash baseline (which overwrites the prior state
+        # the orphaned-stale-content scan compares against). These are
+        # warn_only rows, so they did not block the Decision-E gate above —
+        # without this, a clean `--approve plan` would silently drop them and
+        # then erase the drift baseline (CFC D1-2).
+        cfc_warns = [
+            (n, s, d)
+            for (n, s, d) in pre_result.checks
+            if s == "WARN" and ("orphan-tag scan" in n or "CFC" in n)
+        ]
+        if cfc_warns:
+            print(
+                "CFC coverage / drift warnings — review before approving "
+                "(approval (re)stamps the per-CFC content-hash baseline):"
+            )
+            for n, s, d in cfc_warns:
+                print(f"  [{s}] {n}" + (f" — {d}" if d else ""))
+            print()
+
         approve_document(target)
         sys.exit(0)
 

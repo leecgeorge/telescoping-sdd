@@ -27,7 +27,7 @@ Each task must include:
 - **Dependencies** — Which tasks must complete first
 - **Parallel** — Whether this task can run concurrently with other tasks, and which ones (e.g., "Yes (with T3)")
 - **Acceptance Criteria** — GIVEN/WHEN/THEN format, matching the spec style
-- **Tests** — Specific test function/method names and what they verify
+- **Tests** (advisory — the validator warns, does not fail) — Specific test function/method names and what they verify
 - **Verification** — A concrete command to prove the task is done (e.g., `pytest tests/test_X.py -v` for Python, `mvn test -Dtest=XTest` for Java)
 
 Group tasks into phases (Foundation, Core Logic, etc.) when there are more than a few tasks.
@@ -73,7 +73,7 @@ For each issue found:
 
 After the spec-design-tasks consistency check is complete, run the tasks panel against `specs/<feature-name>/tasks.md` following the loop described in `references/panel-review.md`.
 
-Panelists: `delivery-manager`, `critic`, `simplifier`.
+Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
 
 Pass the current tasks.md and the approved spec.md and design.md. This is the last artifact phase before implementation — concerns cannot be deferred forward. Concerns that would warrant deferral should instead be handled as `Addressed` in tasks.md, `Sealed` (user-directed), or `Accepted as risk` (with explicit user sign-off and `Defense:` text in Notes).
 
@@ -86,6 +86,8 @@ python <script-path>/validate_spec.py specs/<feature-name>/
 ```
 
 **Stop and ask the user to review tasks.md before proceeding.**
+
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade. (tasks.md is the terminal artifact — concerns surfaced by a re-run cannot be deferred forward; dispose them Addressed / Sealed / Accepted as risk.)
 
 When the user approves, run:
 

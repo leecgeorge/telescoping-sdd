@@ -57,7 +57,7 @@ For each issue found:
 
 After the scope-architecture-plan consistency check is complete, run the plan panel against `blueprint/PLAN.md` following the loop described in `references/panel-review.md`.
 
-Panelists: `delivery-manager`, `critic`, `simplifier`.
+Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
 
 Pass the current PLAN.md and the approved SCOPE.md and ARCHITECTURE.md. This is the last blueprint phase — concerns cannot be deferred forward. Concerns that would warrant deferral should instead be handled as `Addressed` in PLAN.md, `Sealed` (user-directed), or `Accepted as risk` (with explicit user sign-off and `Defense:` text in Notes).
 
@@ -74,6 +74,8 @@ python <script-path>/validate_blueprint.py blueprint/
 ```
 
 **Stop and ask the user to review PLAN.md before proceeding.**
+
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade. (PLAN.md is the terminal artifact — concerns surfaced by a re-run cannot be deferred forward; dispose them Addressed / Sealed / Accepted as risk. A re-run that edits a closed `[x]` feature row is still bound by Self-Check (e) — re-route, do not edit in place.)
 
 When the user approves, run:
 

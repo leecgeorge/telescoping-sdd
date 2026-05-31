@@ -1,3 +1,15 @@
+<!--
+SHARED REFERENCE — keep in sync with the spec-driven-dev copy at
+skills/spec-driven-dev/references/strict-bar-prompts.md. Edits to the shared strict-bar machinery must be mirrored in BOTH copies.
+
+Intentional asymmetries vs the sibling (do NOT "sync" these away):
+- Phase section names + the artifact each cites (SCOPE/ARCHITECTURE/PLAN.md vs spec/design/tasks.md) and the change-unit vocabulary differ per skill's phase model.
+- Phase 3 "required to clear the bar" is cross-FEATURE (blueprint, CFC producer, cites PLAN.md) vs cross-TASK (spec-driven-dev, cites tasks.md).
+- The Phase-3 "> **CFC self-check.**" block is project-blueprint-only (CFC producer); spec-driven-dev has none here — this is the source of the line-count difference.
+- Phase-3 excluded concerns defer to a feature's spec-driven-dev design/tasks phase (blueprint) vs to Phase 4 (Implement) (spec-driven-dev).
+- Exclusion-category examples and the "shaped-by-construction" phrasing restate each skill's phase vocabulary; differing wording there is expected.
+-->
+
 # Strict-Bar Prompts
 
 This reference holds the per-phase prompt additions that turn a normal panel pass into a **strict-bar** pass. The strict-bar mode itself — when to enter it, the exit cross-check, and cap accounting — is defined in `references/panel-review.md` under `## Strict-Bar Convergence Mode`. This file is loaded only when a pass is run in strict-bar mode (whether reached via the fire-and-ask auto-detection or via the user typing "strict bar").

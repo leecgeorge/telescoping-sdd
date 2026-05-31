@@ -9,7 +9,7 @@ This repo serves two purposes:
 1. **A Claude Code plugin** at `telescoping-sdd/` — its skills are invoked as `/telescoping-sdd:<skill-name>` (e.g., `/telescoping-sdd:project-blueprint`). The plugin manifest is `telescoping-sdd/.claude-plugin/plugin.json` (name: `telescoping-sdd`).
 2. **A Claude Code marketplace** defined by `.claude-plugin/marketplace.json` (name: `neonghost-marketplace`) that publishes the `telescoping-sdd` plugin.
 
-**Telescoping Spec-Driven Development.** `project-blueprint` and `spec-driven-dev` compose into one methodology at two altitudes: `project-blueprint` emits `blueprint/PLAN.md` (which decomposes the project into ordered features), and `spec-driven-dev` consumes one feature from `PLAN.md` to drive its Specify → Design → Tasks → Implement loop. `PLAN.md` is the seam between the two tiers — a sequential handoff, not containment. A secondary seam runs through **Cross-Feature Contracts** (PLAN's optional `## Cross-Feature Contracts` section): each `### CFC-N` entry binds multiple features at PLAN time and surfaces in each participating feature's SDD cycle via `[CFC-N]` tags on acceptance criteria (spec.md) and enforcement tasks (tasks.md). The shared `scripts/cfc_parser.py` enforces format symmetry between producer and consumer; full design in `documentation/CFC.md`.
+**Telescoping Spec-Driven Development.** `project-blueprint` and `spec-driven-dev` compose into one methodology at two altitudes: `project-blueprint` emits `blueprint/PLAN.md` (which decomposes the project into ordered features), and `spec-driven-dev` consumes one feature from `PLAN.md` to drive its Specify → Design → Tasks → Implement loop. `PLAN.md` is the seam between the two tiers — a sequential handoff, not containment. A secondary seam runs through **Cross-Feature Contracts** (PLAN's optional `## Cross-Feature Contracts` section): each `### CFC-N` entry binds multiple features at PLAN time and surfaces in each participating feature's SDD cycle via `[CFC-N]` tags on acceptance criteria (spec.md) and enforcement tasks (tasks.md). The shared `scripts/cfc_parser.py` enforces format symmetry between producer and consumer; full design in `telescoping-sdd/documentation/CFC.md`.
 
 ## Repository Layout
 
@@ -19,9 +19,9 @@ This repo serves two purposes:
 | `telescoping-sdd/.claude-plugin/plugin.json` | Plugin manifest |
 | `telescoping-sdd/skills/<name>/SKILL.md` | Plugin skills (`project-blueprint`, `spec-driven-dev`) — invoked as `/telescoping-sdd:<name>` |
 | `telescoping-sdd/agents/*.md` | Every executor + persona invoked by a skill (auto-discovered by Claude Code at plugin tier 4) |
-| `telescoping-sdd/agents/references/` | Shared discipline files read by agents at runtime |
+| `telescoping-sdd/agent-references/` | Shared discipline files read by the executor agents at runtime (kept OUT of `agents/` so the plugin loader does not mis-discover them as subagents) |
 | `telescoping-sdd/scripts/` | Shared validators (`archive_pass.py`, `blueprint_common.py`, `cfc_parser.py`) and their tests |
-| `documentation/CFC.md` | Cross-Feature Contracts design spec (shared between the two skills) |
+| `telescoping-sdd/documentation/CFC.md` | Cross-Feature Contracts design spec (shared between the two skills) |
 
 ## Skill Structure
 
@@ -94,7 +94,9 @@ claude plugin validate ./telescoping-sdd
 python telescoping-sdd/skills/spec-driven-dev/scripts/validate_spec.py specs/<feature>/
 python telescoping-sdd/skills/project-blueprint/scripts/validate_blueprint.py blueprint/
 
-# Run the test suite (python/pip are NOT on PATH — use the venv directly)
+# Run the test suite (python/pip are NOT on PATH — use the venv directly).
+# One-time setup (the .venv is gitignored, so a fresh clone must create it; Python 3.9+):
+#   python3 -m venv .venv && .venv/bin/pip install pytest -r telescoping-sdd/skills/project-blueprint/scripts/requirements.txt
 .venv/bin/pytest telescoping-sdd/ -q                                 # full suite
 .venv/bin/pytest telescoping-sdd/scripts/tests/ -q                   # shared-script tests only
 .venv/bin/pytest telescoping-sdd/scripts/tests/test_archive_pass.py::test_mode_flags_are_mutually_exclusive -q  # single test
@@ -134,8 +136,8 @@ The **authoritative operational spec** is each skill's `references/panel-review.
 ## Cross-Feature Contracts (CFC)
 
 PLAN's optional `## Cross-Feature Contracts` section commits invariants that span multiple features. Each `### CFC-N` entry has four required fields (Participating features, Contract, Per-feature AC, Enforcement) and is bound mechanically:
-- **Producer** (`validate_blueprint.py --approve plan`) parses the section, refreshes a per-CFC content-hash sub-block before computing the document hash, and emits `orphaned-stale-content` WARNs when a previously-bound spec drifts from the current CFC text.
+- **Producer** (`validate_blueprint.py`) parses the section. On `--approve plan` it refreshes a per-CFC content-hash sub-block before computing the document hash; on PLAN validation (`--phase plan` / default) it emits `orphaned-stale-content` WARNs when a previously-bound spec drifts from the current CFC text.
 - **Consumer** (`validate_spec.py`) parses participating-feature membership and enforces that each participating feature's `spec.md` carries the `Per-feature AC` line with a `[CFC-N]` tag on a THEN clause; for features named in `Enforcement` prose (bare `F<n>` token, word-boundary), `tasks.md` must carry a `[CFC-N]`-tagged enforcement task.
 - **Shared parser** (`scripts/cfc_parser.py`) owns all CFC regexes and the four-field `CFCEntry` so producer and consumer can never drift in format interpretation. The parser-contract test suite (`scripts/tests/test_cfc_parser_contract.py`) asserts the symmetry.
 
-Authoring discipline lives in `skills/project-blueprint/references/plan-template.md` (`## Cross-Feature Contracts` section), with consumer-side obligations in `skills/spec-driven-dev/references/phase-{specify,design,tasks}.md`. The full design rationale and v1/v2 split is in `documentation/CFC.md`.
+Authoring discipline lives in `skills/project-blueprint/references/plan-template.md` (`## Cross-Feature Contracts` section), with consumer-side obligations in `skills/spec-driven-dev/references/phase-{specify,design,tasks}.md`. The full design rationale and v1/v2 split is in `telescoping-sdd/documentation/CFC.md`.

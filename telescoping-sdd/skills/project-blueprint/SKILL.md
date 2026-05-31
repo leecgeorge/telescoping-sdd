@@ -24,6 +24,10 @@ All blueprint documents live in `blueprint/` at the project root.
 
 Read `references/workflow-overview.md` for a quick-reference diagram of the full process.
 
+### When to use this — and when a lighter path fits
+
+The full three-phase loop is calibrated for **substantial, long-lived, multi-feature projects** — a blueprint that spawns many features and gets re-entered and amended. For a **small single-component project, a throwaway prototype, or an exploratory spike**, that's disproportionate. If the user says the work is small/throwaway and asks for a lighter review, run the panel in **lightweight mode** (one pass, dispose, self-check, archive, exit — no convergence loop, no strict-bar/halt/cross-check). Default stays the full loop; lightweight mode is opt-in only. See `references/panel-review.md` § "Lightweight Mode (single-pass panel)".
+
 ### Path placeholders
 
 The commands in this skill reference two distinct script roots:

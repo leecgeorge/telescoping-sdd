@@ -1,3 +1,19 @@
+<!--
+SHARED REFERENCE — keep in sync with the project-blueprint copy at
+skills/project-blueprint/references/panel-review.md. Edits to the shared panel-review machinery must be mirrored in BOTH copies.
+
+Intentional asymmetries vs the sibling (do NOT "sync" these away):
+- Phase names differ (Scope/Architecture/Plan vs Specify/Design/Tasks); spec-driven-dev also has a panel-less Phase 4 (Implement) that blueprint lacks.
+- Terminal Phase-3 artifact is PLAN.md (blueprint) vs tasks.md (spec-driven-dev); the three --terminal archive-command sites differ ONLY in that filename.
+- Synthesizer Self-Check is (a)-(f) in blueprint (adds (e) closed-feature-row integrity and (f) CFC authoring fidelity — the CFC PRODUCER role) vs (a)-(d) in spec-driven-dev; the [SELF-CHECK] (a|b|c|d|e|f) vs (a|b|c|d) Source tags follow.
+- The "## CFC Compliance Check" section and "Per-feature AC alignment" rubric are spec-driven-dev-only (the CFC CONSUMER check against PLAN.md); blueprint has no counterpart.
+- Architecture/Design middle panelist differs: telescoping-sdd:ops-reviewer (blueprint) vs telescoping-sdd:testability-reviewer (spec-driven-dev), including in example tables.
+- Halt-and-rescope routes to the user revising project scope/phase boundary (blueprint) vs to the project-blueprint amendment workflow then a spec-loop restart (spec-driven-dev).
+- Upstream-halt / sibling-artifact targets are SCOPE.md / ARCHITECTURE.md (blueprint) vs spec.md / design.md (spec-driven-dev).
+- Blueprint-only: the two-paragraph "Cap-pressure caveat" inside `## The Loop` (cap-pressure / domain-ignorance discipline leaning on Self-Check (e)/(f) and CFC-producer authoring) has no spec-driven-dev counterpart.
+Otherwise the copies differ only cosmetically (phase-vocabulary mapping, filenames, illustrative example values).
+-->
+
 # Panel Review
 
 This reference defines the shared panel-review mechanism used by Phases 1–3 of the spec-driven-dev workflow. The same loop runs in Phase 1 (Specify), Phase 2 (Design), and Phase 3 (Tasks) — only the panelists change. Phase 4 (Implement) does not use the panel.
@@ -10,6 +26,18 @@ This reference uses two script-root placeholders defined in the main `SKILL.md` 
 
 * `<script-path>` — the skill's own `scripts/` directory.
 * `<shared-script-path>` — the plugin-wide `telescoping-sdd/scripts/` directory containing `archive_pass.py`.
+
+## Minimum to run the NORMAL loop
+
+First-pass digest — the rest of this file loads when a trigger fires. To run one normal panel pass:
+
+1. Pick the three panelists for this phase (`## Panelists per phase` below) and dispatch all three in one message, by their `telescoping-sdd:` prefix.
+2. Ask each for a ranked list of concerns, each tagged `[HIGH]` / `[MED]` / `[LOW]` with a one-line description and rationale.
+3. Synthesize in-thread; dispose each concern as `Addressed` / `Deferred → <target>` / `Sealed` / `Accepted as risk` / `User input needed`. (Phase 2/3: prefix each HIGH Concern with `[contract]` / `[detail]` / `[upstream]` — see `## Concern tagging`.)
+4. Run the **Synthesizer Self-Check** (§ below), then `python <shared-script-path>/archive_pass.py <artifact> --phase <N>` (add `--terminal` for `tasks.md`).
+5. Exit when a pass returns no new HIGH concerns; otherwise loop (cap 5 passes).
+
+Load on demand: **strict-bar** mode (only when `archive_pass.py` emits `STRICT-BAR-SIGNAL:`), **halt-and-rescope** (only on `[upstream]` tags / two consecutive halt votes), the **exit cross-check** (only when leaving strict-bar), **lightweight mode** and **panel skip** (only when the user opts in / the change is mechanical).
 
 ## Panelists per phase
 
@@ -34,7 +62,7 @@ This reference uses two script-root placeholders defined in the main `SKILL.md` 
 5. Run the **Synthesizer Self-Check** (see § below) against the just-applied fixes. If issues are found, fix them and re-run the checklist; only proceed when every item is answered with cited evidence and any issues found are fixed.
 6. Run `python <shared-script-path>/archive_pass.py <artifact> --phase <N>` (where `<N>` is `1`, `2`, or `3` matching the current phase) to archive this pass — promotes any newly-sealed items into `### Sealed dispositions`, appends a row to `### Trajectory` (with HIGH / regression / disposition counts; halt votes recorded in Notes), and clears `### Latest pass detail`. For Phase 2 and 3, the script also stashes a `tags=dXuYcZ` substring in the Notes column recording the count of `[detail]`/`[upstream]`/`[contract]` tags in the just-archived Latest. If the script exits 1, 2, or 3, fix the reported issue and re-invoke; do not proceed with unresolved violations.
 
-   **Terminal-archive invocation.** For tasks.md (the terminal Phase-3 artifact), invoke `python <shared-script-path>/archive_pass.py specs/<feature>/tasks.md --phase 3 --terminal`. The flag suppresses deferred-disposition mechanics and rejects Deferred-disposed rows in Latest.
+   **Terminal-archive invocation.** For tasks.md (the terminal Phase-3 artifact), invoke `python <shared-script-path>/archive_pass.py specs/<feature>/tasks.md --phase 3 --terminal`. The `--terminal` flag suppresses `### Deferred dispositions` auto-insert and row promotion, rejects any Deferred-disposed row in Latest as a format violation, and suppresses the strict-bar trigger.
 7. **Halt-trigger check.** Read the last two rows of `### Trajectory`. If both rows' Notes column contains "halt vote" (case-insensitive substring match), the halt-trigger has fired — see `## Halt and Re-scope Exit` below for what to do. Otherwise proceed to step 8.
 8. If this pass returned no new HIGH-severity concerns, exit the loop and proceed to validation (the trajectory row gets `converged (0 HIGH)` stamped in Notes by `archive_pass.py` to mark convergence in the historical record) — **unless this was a STRICT-BAR pass, which exits through the cross-check in `## Strict-Bar Convergence Mode` instead of exiting directly.** MEDIUM and LOW concerns from the final pass are still synthesized, disposed, and recorded in `### Latest pass detail` before archive — they just do not block exit. Rationale: HIGH issues are convergence-blocking (contradictions, regressions, unimplementable claims); MEDIUM/LOW are polish that surfaces in PR and implementation review anyway, so looping for them has diminishing value. **Cap: 5 passes.** If HIGH concerns remain after 5 passes, stop and ask the user: continue reviewing, or move on. Otherwise (HIGHs remain, cap not yet reached), repeat from step 1 against the updated artifact. Each new pass reads the full doc fresh — including the cleared `### Latest pass detail` and the cumulative `### Sealed dispositions` list (panelists are instructed not to re-raise sealed items unless they have new substantive evidence).
 
@@ -51,7 +79,7 @@ This reference uses two script-root placeholders defined in the main `SKILL.md` 
 
 ## Panel Review section format
 
-Each artifact ends with a `## Panel Review` section placed immediately before the Approval section. The section has three sub-sections, in this order:
+Each artifact ends with a `## Panel Review` section placed immediately before the Approval section. The section has four sub-sections, in this order (the terminal Phase-3 artifact `tasks.md` omits `### Deferred dispositions` — the `--terminal` archive suppresses it, since a terminal artifact has no later phase to defer to):
 
 ```
 ## Panel Review
@@ -64,6 +92,10 @@ Each artifact ends with a `## Panel Review` section placed immediately before th
 ### Sealed dispositions
 
 (bullet list of `[SEAL-NN]` entries; empty until the first sealed item)
+
+### Deferred dispositions
+
+(bullet list of `[DEF-NN]` entries; empty until the first deferred item — omitted on terminal Phase-3 `tasks.md`)
 
 ### Latest pass detail
 
@@ -91,11 +123,13 @@ Each artifact ends with a `## Panel Review` section placed immediately before th
 
 `[SEAL-NN]` is sequential, two-digit zero-padded, assigned by `archive_pass.py` when it promotes an entry from Latest pass detail. Panelist prompts in subsequent passes include this list with the instruction *"do not re-raise sealed items unless you have new substantive evidence."*
 
+**Deferred dispositions** — concerns routed to a named downstream artifact, surviving across passes so panelists do not re-raise them. Each entry has the form `` `[DEF-NN]` **<Title>** → <TARGET.md> (pass <N>) — Routed because: <reason>. `` `[DEF-NN]` is sequential, two-digit zero-padded, assigned by `archive_pass.py` when it promotes a `Deferred → <target>` row from Latest pass detail. Panelist prompts in subsequent passes include this list with the re-raise-suppression instruction (see § The Loop, step 1). On a legacy non-terminal artifact missing the sub-section, `archive_pass.py` auto-inserts the heading. The terminal Phase-3 artifact `tasks.md` does not carry this sub-section — `--terminal` suppresses both the auto-insert and promotion, and rejects any `Deferred`-disposed row in Latest.
+
 **Latest pass detail** — the most recent panel pass's concerns + dispositions. `archive_pass.py` clears this table at the start of each new pass; the synthesizer (you) populates it as the panel raises concerns. Format contract:
 
 - `Severity` — exactly one of `[HIGH]`, `[MED]`, `[LOW]`. Optionally followed by `[REGRESSION]` for regressions caught this pass (e.g. `[HIGH] [REGRESSION]`).
 - `Source` — panelist name (e.g. `devils-advocate`) or `[SELF-CHECK] (a|b|c|d)` for synthesizer self-check entries.
-- `Concern` — one-line concern text.
+- `Concern` — one-line concern text. Escape any literal pipe as `\|` — an unescaped `|` adds a phantom cell, and `archive_pass.py`'s `parse_table` silently drops a row whose cell count differs from the header.
 - `Disposition` — exactly one of: `Addressed`, `Deferred → <target>`, `Sealed`, `Accepted as risk`, `User input needed`, `Halt and re-scope`.
 - `Notes` — rationale, fix description, target. For `Sealed` and `Accepted as risk`, **must include** `Defense: <reason>` — `archive_pass.py` lifts this verbatim into `### Sealed dispositions`.
 
@@ -158,19 +192,19 @@ After applying fixes from a pass and **before triggering the next panel pass**, 
 
 **Why this exists:** in observed cycles, three classes of synthesizer-introduced regressions were the load-bearing convergence blockers — claims that turned out to be unimplementable on the target stack, fixes that silently broke contracts elsewhere in the doc, and bulk-substitution edits that left tautologies and orphaned references. Each one burned a full panel cycle to catch. Self-check would have caught all three at synthesizer time.
 
-**Three checks:**
+**Five checks:**
 
 **(a) Contract preservation** — for each fix you applied, did it change an interface, schema, return value, error code, configuration shape, or invariant referenced elsewhere in the artifact (or a sibling artifact like `design.md` / `tasks.md`)? If yes, are all references still valid? Did your fix contradict a previously sealed disposition (`Accepted as risk` or user-directed decision)?
 
-**(b) Implementability AND intra-artifact fidelity** — for each new technical claim you added — whether about external stack / language / library version / SQL dialect / framework OR about content in approved project artifacts (`blueprint/PLAN.md`, `blueprint/SCOPE.md`, `blueprint/ARCHITECTURE.md`, sibling feature specs) — verify the cited source actually supports the *specific* claim, not just adjacent text. **Quote the supporting passage verbatim in the self-check record.** "Citation exists" is not sufficient — the cited text must literally say what your claim says. For intra-artifact claims, run `grep` and paste the matching line(s) in the self-check entry's Notes. For external claims, paste the docs URL or code reference plus the specific sentence or code-shape that supports the claim. Do not rely on training-data recall for stack-specific behaviour or paraphrased recall for artifact content. The verbatim-quote requirement is a forcing function: without a quote, the check can't pass cleanly; with a quote, the synthesizer is physically confronted with the cited text and can't pattern-match on adjacency. (Per the post-implementation field observation in `documentation/CFC.md § Domain-Ignorance in CFC Authoring`.)
+**(b-i) Implementability AND intra-artifact fidelity** — for each new technical claim you added — whether about external stack / language / library version / SQL dialect / framework OR about content in approved project artifacts (`blueprint/PLAN.md`, `blueprint/SCOPE.md`, `blueprint/ARCHITECTURE.md`, sibling feature specs) — verify the cited source actually supports the *specific* claim, not just adjacent text. **Quote the supporting passage verbatim in the self-check record.** "Citation exists" is not sufficient — the cited text must literally say what your claim says. For intra-artifact claims, run `grep` and paste the matching line(s) in the self-check entry's Notes. For external claims, paste the docs URL or code reference plus the specific sentence or code-shape that supports the claim. Do not rely on training-data recall for stack-specific behaviour or paraphrased recall for artifact content. The verbatim-quote requirement is a forcing function: without a quote, the check can't pass cleanly; with a quote, the synthesizer is physically confronted with the cited text and can't pattern-match on adjacency. (Per the post-implementation field observation in `documentation/CFC.md § Domain-Ignorance in CFC Authoring`.)
 
-**(b) Symmetric application** — when a fix excludes, drops, differentiates, or otherwise treats one item differently from others in a list, set, or enumeration based on cited evidence, apply the same source-check to every other item in the same list before archiving. Example: if a requirement is removed from this spec because grepping its acceptance criteria shows it overlaps with a sibling spec's commitment, run the same grep against every other requirement in the same list and either (i) remove them too, or (ii) record a verbatim quote in the self-check Notes showing why their evidence shape *is* different. Per-claim verbatim quotes prove individual claims; symmetric application prevents the most common residual error — rigorous evidence for the items the synthesizer questioned, casual acceptance of the items the synthesizer didn't think to question. (Per the v2 acceptance-test residual finding recorded in `documentation/CFC.md § Domain-Ignorance in CFC Authoring`.)
+**(b-ii) Symmetric application** (recorded under the same `[SELF-CHECK] (b)` Source tag as (b-i)) — when a fix excludes, drops, differentiates, or otherwise treats one item differently from others in a list, set, or enumeration based on cited evidence, apply the same source-check to every other item in the same list before archiving. Example: if a requirement is removed from this spec because grepping its acceptance criteria shows it overlaps with a sibling spec's commitment, run the same grep against every other requirement in the same list and either (i) remove them too, or (ii) record a verbatim quote in the self-check Notes showing why their evidence shape *is* different. Per-claim verbatim quotes prove individual claims; symmetric application prevents the most common residual error — rigorous evidence for the items the synthesizer questioned, casual acceptance of the items the synthesizer didn't think to question. (Per the v2 acceptance-test residual finding recorded in `documentation/CFC.md § Domain-Ignorance in CFC Authoring`.)
 
 **(c) String-substitution hygiene** — after any rename / sed-class change / bulk edit: are there tautologies (e.g., `F26 + F26`, `F26/F26`, "F26 were merged")? Orphaned cross-references (`see §X` where §X has been removed)? Unbalanced markers (e.g., `[BEGIN ...]` without `[END ...]`)? Run `grep` and cite the result.
 
 **(d) Tag presence (Phase 2 and 3 only)** — for each HIGH row from a panelist source in `### Latest pass detail` this pass, verify the `Concern` text begins with one of `[contract]`, `[detail]` (Phase 3 only), or `[upstream]` (per `## Concern tagging (Phase 2 and 3)`). `[SELF-CHECK]` rows are exempt — they describe synthesizer-side self-check findings (any of categories a/b/c/d), not at-this-phase panelist routing decisions, and `archive_pass.py` does not count their tags for halt/strict-bar routing. MED and LOW rows are also exempt (they don't block convergence). Missing or wrong-format tags on HIGH panel rows silently break the halt-and-rescope and strict-bar triggers; fix any missing tag before archiving. Cite each tagged row.
 
-Additionally, **when `blueprint/PLAN.md` contains a `## Cross-Feature Contracts` section**, every `[upstream]` HIGH row's concern text is scanned for the regex `\bCFC-\d+\b`. If a CFC-related concern is plausible (at least one CFC in PLAN names this feature in its Participating features) AND any `[upstream]` HIGH row's concern lacks the `CFC-<M>` token, emit a soft WARN: "Panelist `<source>`'s `[upstream]` concern at row `<row-id>` does not name a `CFC-<M>` token. If this concern is about a Cross-Feature Contract, edit the concern text to name the affected CFC so the user knows to look in PLAN.md." Informational; does not block archiving. The CFC-routing premise (panelists name `CFC-<M>` in concern text → user reads concern → user edits PLAN) depends on this discipline; the WARN is the cheap reminder.
+Additionally, **when `blueprint/PLAN.md` contains a `## Cross-Feature Contracts` section**, you (the synthesizer, as part of this self-check — `archive_pass.py` has no CFC awareness and does not perform this scan) scan every `[upstream]` HIGH row's concern text for the regex `\bCFC-\d+\b`. If a CFC-related concern is plausible (at least one CFC in PLAN names this feature in its Participating features) AND any `[upstream]` HIGH row's concern lacks the `CFC-<M>` token, surface a soft WARN yourself: "Panelist `<source>`'s `[upstream]` concern at row `<row-id>` does not name a `CFC-<M>` token. If this concern is about a Cross-Feature Contract, edit the concern text to name the affected CFC so the user knows to look in PLAN.md." Informational; does not block archiving. The CFC-routing premise (panelists name `CFC-<M>` in concern text → user reads concern → user edits PLAN) depends on this discipline; the synthesizer-emitted WARN is the cheap reminder.
 
 **Forcing function (structured checklist):** answer this checklist explicitly, citing evidence for every item. Do not write "looks fine" — show your work.
 
@@ -187,7 +221,7 @@ For each fix applied this pass:
      grep result) AND **quote the supporting passage verbatim** in the
      self-check record. "Citation exists" is not sufficient — the cited
      text must literally say what the claim says.
-  3a. (b) Symmetric application: does the fix exclude, drop, or
+  3a. (b-ii) Symmetric application: does the fix exclude, drop, or
       differentiate one item from a list/set based on cited evidence?
       If yes, run the same source-check on every other item in the
       same list before archiving. Drop them too, or record a verbatim
@@ -298,7 +332,7 @@ The synthesizer watches `### Trajectory` for this two-part signal:
 **`[upstream]` tags do NOT contribute to the strict-bar trigger.** They route to the halt-and-rescope trigger instead (see § Halt and Re-scope Exit). Strict-bar is "find concerns at *this* phase" — `[upstream]` concerns belong at an *earlier* phase, so filtering them in strict-bar would silently let the upstream gap persist. The two triggers are deliberately disjoint.
 
 
-> **Worked example (R7).** A Phase-1 pass shows: 4 Addressed, 0 literal Deferred, 3 Sealed — 2 of those 3 Sealed rows were expanded by `archive_pass.py` from `Defense: rerouted [DEF-NN]` markers (i.e., they are re-routed-deferral rows, each beginning `Defense: already routed to …`). Trajectory's Sealed column records 3. Trigger's deferred-equivalent for this pass = 2 (the `rerouted_def_count`). Pooled over two passes where the previous pass had 4 literal Deferred: `pooled_deferred = 4 + 2 = 6`; `pooled_total = (4+0+4) + (4+0+3) = 15`; `ratio = 6/15 = 40%`, below the >50% threshold — trigger does not fire. If the previous pass had 6 literal Deferred and the current has 2 rerouted + 1 Addressed: `pooled_deferred = 6 + 2 = 8`, `pooled_total = (6+0+1) + (0+2+1) = 10`; ratio 80% — trigger fires.
+> **Worked example (R7).** A Phase-1 pass shows: 4 Addressed, 0 literal Deferred, 3 Sealed — 2 of those 3 Sealed rows were expanded by `archive_pass.py` from `Defense: rerouted [DEF-NN]` markers (i.e., they are re-routed-deferral rows, each beginning `Defense: already routed to …`). Trajectory's Sealed column records 3. Trigger's deferred-equivalent for this pass = 2 (the `rerouted_def_count`). Pooled over two passes where the previous pass had 4 literal Deferred (and 4 Addressed, 0 Sealed): `pooled_deferred = 4 + 2 = 6`; `pooled_total = (4+4+0) + (4+0+3) = 15`; `ratio = 6/15 = 40%`, below the >50% threshold — trigger does not fire. If the previous pass had 6 literal Deferred (and 1 Addressed, 0 Sealed) and the current has 2 rerouted + 1 Addressed: `pooled_deferred = 6 + 2 = 8`; `pooled_total = (1+6+0) + (1+0+2) = 10`; `ratio = 8/10 = 80%` — trigger fires.
 
 ### Auto-detection (fire-and-ask) and manual invocation
 
@@ -317,7 +351,7 @@ The user can also request strict-bar without waiting for the trigger — saying 
 
 ### Running a strict-bar pass
 
-Same panelists, same loop steps 1–7. The only change is the invocation prompt: load `references/strict-bar-prompts.md` and append the core filter rule, the current phase's excluded/required lists, and the inspectability instruction to every panelist's prompt. Synthesize, dispose, self-check, and archive as normal — but archive with `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --strict-bar` so the Trajectory Notes record the mode.
+Same panelists, same loop steps 1–7. The only change is the invocation prompt: load `references/strict-bar-prompts.md` and append the core filter rule, the current phase's excluded/required lists, and the inspectability instruction to every panelist's prompt. Synthesize, dispose, self-check, and archive as normal — but archive with `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --strict-bar` so the Trajectory Notes record the mode. (For the terminal Phase-3 artifact `tasks.md`, add `--terminal` as well — `archive_pass.py` hard-rejects that filename without it; see the Terminal-archive invocation in `## The Loop`, step 6.)
 
 If a strict-bar pass returns HIGHs, those are genuine this-phase decisions — dispose them normally (often `Sealed`, `Accepted as risk`, or `User input needed`) and run another pass. Mode stays STRICT-BAR.
 
@@ -363,6 +397,27 @@ Because cross-check passes still get a `Pass` number from `archive_pass.py`, the
 - **Halt-and-rescope** takes priority over everything — the step-7 halt-trigger check runs every pass regardless of mode. A strict-bar panelist that sees a feature whose boundary is fundamentally wrong still votes `Halt and re-scope` (which routes to the project-blueprint amendment workflow, per `## Halt and Re-scope Exit`).
 - **Panel skip** is orthogonal — a mechanical-only change can be skipped in either mode. A skipped pass does not change the current mode. Its `### Trajectory` row carries dashed counts, so it contributes nothing to the trigger's HIGH-count or deferral-rate read; the synthesizer judges the trigger from the last two *panel* passes, stepping over any `skipped` rows.
 
+## Lightweight Mode (single-pass panel)
+
+The default loop — drafting subagent (≤5 self-review passes) plus a ≤5-pass convergence panel of three personas, with strict-bar, halt-and-rescope, and the exit cross-check layered on — is calibrated for **substantial, long-lived, multi-feature work**: artifacts other features will build against, that will be re-entered and amended, where a missed contradiction or untestable AC is expensive to discover late. On a small one-off feature, a throwaway prototype, or an exploratory spike, that machinery is disproportionate — the strict-bar/halt/cross-check apparatus exists to *reach* convergence on rich documents, and there is little to converge on.
+
+For those cases the user may opt into **lightweight mode**: one panel pass, then exit. This is distinct from `## When to Skip the Panel` below — skip is gated on *mechanical re-edits* of an already-reviewed artifact and explicitly cannot apply to a fresh draft; lightweight mode is the opposite, a single *genuine* panel pass on a fresh small artifact. The default stays the full loop; lightweight mode is **opt-in only** and never auto-selected.
+
+**When it fits (the user says so):** the user describes the work as small, throwaway, exploratory, a prototype/spike, or a one-feature script with no downstream consumers, and explicitly asks for a lighter review (e.g. "this is a throwaway prototype, do a light review", "single-pass panel", "lightweight mode"). If the user hasn't said the work is small, run the full loop. If you believe a nominally-small artifact is actually load-bearing (other features will depend on it, it commits a cross-feature contract, it's the project's first artifact), say so and recommend the full loop before accepting the opt-in.
+
+**The single pass:**
+
+1. Run **one** NORMAL panel pass exactly as `## The Loop` steps 1–4 describe — same three panelists, dispatched together, synthesized in-thread, each concern disposed (`Addressed` / `Deferred → <target>` / `Sealed` / `Accepted as risk` / `User input needed`), every row written to `### Latest pass detail`. Phase 2/3 concern tagging still applies.
+2. Run the **Synthesizer Self-Check** (§ above) against the fixes — this is *not* skipped; it is the cheap catch for synthesizer-introduced regressions and stays mandatory in lightweight mode.
+3. Archive the pass with `python <shared-script-path>/archive_pass.py <artifact> --phase <N>` (add `--terminal` for the terminal Phase-3 artifact `tasks.md`). No special flag exists for lightweight mode — it is an ordinary NORMAL archive; the single Trajectory row is the audit trail.
+4. **Exit to validation regardless of remaining HIGHs.** Do not loop. Before exiting, surface any unresolved HIGH concerns to the user in one line each so the lighter bar is an informed choice ("Lightweight pass left 2 HIGH concerns unresolved: … — proceed to approval, or switch to the full loop?"). `User input needed` rows must still be resolved before validation can pass — lightweight mode does not relax the validator.
+
+**What lightweight mode turns off:** the convergence loop (no second pass to drive HIGHs to zero), the strict-bar trigger and STRICT-BAR mode, the exit cross-check, and the 5-pass cap (there is only one pass). The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.
+
+**What it keeps:** the drafting subagent and its self-review, your own re-review and any cross-doc consistency check, the full disposition vocabulary, the Synthesizer Self-Check, the format contract for `## Panel Review`, validation, and the human approval gate. The halt-and-rescope *disposition* is still available on the single pass — if the one pass surfaces a fundamentally-wrong scope (or an `[upstream]` tag in Phase 2/3), present the halt summary from `## Halt and Re-scope Exit` rather than waving it through; a feature too big to review lightly is exactly the signal lightweight mode must not suppress.
+
+**Mid-stream and re-approval interaction:** lightweight mode governs only the *fresh-artifact* panel. Re-Approval After Edits and mid-stream entry (their upstream panel re-review step) are governed by their own flow in `references/hash-and-cascade.md` and are unaffected; a small artifact's later edits still route through that flow normally.
+
 ## When to Skip the Panel
 
 If the only edits since the last panel pass are **mechanical** — string substitutions, file moves, validator-driven changes, or removed-already-decided content with no new semantic content — replace the panel with an automated lint check. Lint-class work doesn't need a design review; running a full panel on a sed cleanup wastes cycles and risks the panel objecting to phrasing artifacts of the cleanup itself.
@@ -386,7 +441,7 @@ If the only edits since the last panel pass are **mechanical** — string substi
    - Synthesizer self-reads the diff — every changed line must be traceable to the declared rule. If any line introduces new semantic content, the change isn't mechanical; abort the skip and run a panel.
    - Cross-doc consistency — references in sibling artifacts (e.g., `tasks.md`, `design.md`) still resolve.
 3. **If lint fails:** auto-fall-back to a normal panel pass. The lint failure means the declaration was wrong.
-4. **If lint passes:** invoke `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --skip "<reason>"` to record a skipped row in `### Trajectory` (all count columns dashed; Notes set to `skipped (mechanical: <reason>)`). No confirm prompt — the trajectory row is the audit trail. Proceed to the next pass (or to validation if convergence is met).
+4. **If lint passes:** invoke `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --skip "<reason>"` to record a skipped row in `### Trajectory` (all count columns dashed; Notes set to `skipped (mechanical: <reason>)`). No confirm prompt — the trajectory row is the audit trail. (For the terminal Phase-3 artifact `tasks.md`, add `--terminal` to the command above — `archive_pass.py` hard-rejects that filename without it; see the Terminal-archive invocation in `## The Loop`, step 6.) Proceed to the next pass (or to validation if convergence is met).
 
 **User override (out-of-band, optional):**
 - *Pre-empt:* user instructs "run a panel even though this is mechanical" before the pass starts (e.g., for fragile areas where they want extra eyes).
@@ -397,3 +452,22 @@ If the only edits since the last panel pass are **mechanical** — string substi
 - Skip when the change is partly mechanical and partly semantic — split into two passes (mechanical first, semantic second).
 - Skip when the synthesizer self-check flagged a new issue that wasn't fixed.
 - Skip without lint actually running.
+
+## Handling change requests at the review gate
+
+The phase docs end with **"Stop and ask the user to review `<artifact>` before proceeding"** (`phase-{specify,design,tasks}.md` § Validation and approval). The common case at that gate is the user reading the presented artifact and saying *"no, change X"* **before** approving. This is still a panel-relevant change, so it routes back into the loop above — it does **not** get applied silently and re-presented.
+
+The artifact has **not been approved yet**, so it has no content hash. This is the load-bearing difference from `hash-and-cascade.md § "Re-Approval After Edits"` (which fires only on an *already-approved* document): there is **no re-stamp and no downstream cascade** at the pre-approval gate. You just incorporate the change, re-converge the panel, and re-present. (`Re-Approval After Edits` is the post-approval analogue — same idea, but it adds the hash re-stamp and the consistency-check cascade because approved downstreams may now be measured against stale upstream content.)
+
+**Route by the size of the requested change** (the same trivial-vs-substantive cut the loop already uses):
+
+| Requested change | Route | Records a Trajectory pass? |
+|---|---|---|
+| **Substantive** — adds/removes/reshapes a requirement, AC, scope boundary, interface contract, dependency, or any intent-bearing content | Treat as a new panel-relevant change. Re-enter the loop: apply the change (re-drafting via the phase's drafting agent if the change is large enough to warrant it), then run a fresh panel pass (§ The Loop). | **Yes** — a normal NORMAL pass via `archive_pass.py <artifact> --phase <N>`. |
+| **Trivial wording** — typo, phrasing, formatting, or other change with no new semantic content | Apply as a synthesizer fix, then run the **Synthesizer Self-Check** (§ above) against it. If the Self-Check stays clean (nothing in (a)/(b)), it is mechanical and **panel-skip-eligible** under `## When to Skip the Panel` — record a skipped Trajectory row, do not run a full panel. | **Yes** — either a NORMAL pass or a `--skip` row; never a silent edit. |
+
+**Rule of thumb:** if the change could alter what a panelist would say (a requirement, an AC, a contract, a boundary), re-run the panel. If it only changes how existing intent is *worded*, it is a candidate for the panel skip — but the Synthesizer Self-Check decides: a "wording" change that the Self-Check finds touches a contract or an implementability claim is no longer trivial, and the skip aborts to a full panel (per `## When to Skip the Panel`, "abort the skip and run a normal panel pass").
+
+**Either way, the change is recorded as a Trajectory pass** — it is another panel-relevant change to a not-yet-approved artifact, so it counts against the 5-pass cap exactly like any other pass (a skip is still a loop iteration). Dispose any concerns it surfaces with the normal vocabulary (`Addressed` / `Deferred` / `Sealed` / `Accepted as risk`). Then re-present the updated artifact at the same gate. Only when the user approves does the phase run its validator (`validate_spec.py --approve <phase>`) and stamp the first content hash — at which point any *later* edit becomes a `Re-Approval After Edits` event, not a gate change request.
+
+**What the synthesizer must not do:** apply a gate change request silently without a Trajectory row (no audit trail); re-stamp or run a cascade (no hash exists yet — those belong to the post-approval flow); or treat a substantive scope/requirement change as trivial to avoid a panel pass.

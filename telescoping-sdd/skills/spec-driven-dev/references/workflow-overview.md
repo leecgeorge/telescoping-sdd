@@ -1,3 +1,15 @@
+<!--
+SHARED REFERENCE — keep in sync with the project-blueprint copy at
+skills/project-blueprint/references/workflow-overview.md. Edits to shared content must be mirrored in BOTH copies.
+
+Intentional asymmetries vs the sibling (do NOT "sync" these away):
+- Phase model is skill-specific: blueprint has 3 phases (Scope/Architecture/Plan); spec-driven-dev has 4 (Specify/Design/Tasks/Implement) — diagram, headings, and phase count differ by design.
+- spec-driven-dev's Phase 4 (Implement) is SDD-only: extra Phase-Summary row, "Phase 4 executed directly" note, a 4th review gate, and the "Implement task" quick command have no blueprint counterpart.
+- Terminal Phase-3 artifact differs: PLAN.md (blueprint) vs tasks.md (spec-driven-dev), along with the File Layout tree (flat blueprint/ vs specs/feature-name/).
+- Blueprint-only doctrine sections (Handoff to Feature Development, Bound-Spec Immutability, Closed-Feature-Row Immutability) are PLAN/CFC-producer rules, intentionally absent from spec-driven-dev (the consumer).
+Otherwise the copies differ only cosmetically (phase names, filenames, example feature names, quick-command phrasing, Principles wording).
+-->
+
 # Spec-Driven Development — Workflow Overview
 
 ## The Four Phases
@@ -42,6 +54,15 @@ Between each phase, stop and ask the user:
 2. After Design: "Here's the design. Does this architecture make sense?"
 3. After Tasks: "Here are the tasks. Is this the right breakdown and order?"
 4. After each task in Implement: "Task T[n] is complete. Ready for the next one?"
+
+## Validation Before Approval
+
+Each document must pass validation before approval:
+
+- All required sections present
+- No `[TBD]`, `TODO`, `FIXME`, `???` markers
+- No unchecked open questions (`- [ ] Q1:`)
+- Previous phase approved (for Design and Tasks)
 
 ## Quick Commands
 

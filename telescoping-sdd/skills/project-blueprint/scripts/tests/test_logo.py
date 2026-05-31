@@ -60,20 +60,19 @@ def test_logo_payload_size_within_cap(monkeypatch):
     assert len(payload) <= render_business_brief._LOGO_DATA_URL_MAX_BYTES
 
 
-def test_logo_payload_oversized_case(monkeypatch, tmp_path):
-    """A pretend-oversized PNG produces base64 longer than the cap.
-
-    Verifies the cap is meaningful (the test row asserts >, not <=, when the
-    PNG is intentionally too large)."""
+def test_logo_payload_oversized_case(monkeypatch, tmp_path, capsys):
+    """An oversized PNG (over `_LOGO_DATA_URL_MAX_BYTES`) is NOT embedded: the
+    loader warns and returns the empty string, so the rendered HTML is not
+    bloated by an unbounded base64 payload. The cap is enforced, not a dead
+    constant (review finding Scripts D5-3)."""
     oversized = tmp_path / "oversized.png"
     oversized.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 500_000)
     monkeypatch.setattr(render_business_brief, "_LOGO_ASSET_PATH", oversized)
     tag = render_business_brief._load_logo_img_tag()
-    prefix = 'src="data:image/png;base64,'
-    start = tag.index(prefix) + len(prefix)
-    end = tag.index('"', start)
-    payload = tag[start:end]
-    assert len(payload) > render_business_brief._LOGO_DATA_URL_MAX_BYTES
+    assert tag == ""
+    captured = capsys.readouterr()
+    assert "exceeding the" in captured.err and "data-URL cap" in captured.err
+    assert str(len(b"\x89PNG\r\n\x1a\n") + 500_000) in captured.err
 
 
 def test_load_logo_img_tag_missing_file_degrades(monkeypatch, tmp_path, capsys):

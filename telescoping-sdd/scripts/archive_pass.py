@@ -196,6 +196,17 @@ def parse_table(lines, start, end):
         cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
         if len(cells) == len(header):
             rows.append(dict(zip(header, cells)))
+        elif lines[i].strip():
+            # A non-blank row whose cell count != header — almost always an
+            # unescaped `|` in a Concern/Notes cell. Do NOT drop it silently:
+            # a dropped row vanishes from the HIGH/Deferred/Sealed counts and
+            # the audit trail. Warn, naming the 1-based line and the offender.
+            print(
+                f"warning: panel table row at line {i + 1} has {len(cells)} "
+                f"cells, expected {len(header)} — unescaped '|'? escape it as "
+                f"'\\|'. Row not counted: {lines[i].strip()[:100]}",
+                file=sys.stderr,
+            )
     return rows, table
 
 

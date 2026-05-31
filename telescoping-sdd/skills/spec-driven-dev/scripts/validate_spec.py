@@ -37,6 +37,7 @@ from blueprint_common import (  # noqa: E402
     compute_content_hash,
     content_for_hashing,
     trim_trajectory_table,
+    verify_content_hash,
 )
 from cfc_parser import (  # noqa: E402
     CFC_HEADER_PATTERN as CFC_HEADER_RE,
@@ -118,7 +119,9 @@ DESIGN_REQUIRED_SECTIONS = [
 TASK_ENTRY_PATTERN = re.compile(r"^###\s+(?:- \[[ x]\] )?T\d+:", re.MULTILINE)
 
 # Regex to match GIVEN/WHEN/THEN patterns
-GWT_PATTERN = re.compile(r"GIVEN\s+.+\n\s*WHEN\s+.+\n\s*THEN\s+.+", re.MULTILINE)
+GWT_PATTERN = re.compile(
+    r"GIVEN\s+.+\n\s*(?:[-*]\s+)?WHEN\s+.+\n\s*(?:[-*]\s+)?THEN\s+.+", re.MULTILINE
+)
 
 # Regex to match unchecked open questions (e.g., "- [ ] Q1: ...")
 UNCHECKED_QUESTION_PATTERN = re.compile(r"^-\s*\[ \]\s*Q\d+:", re.MULTILINE)
@@ -357,17 +360,20 @@ def validate_panel_review(content: str, filename: str, result: ValidationResult)
 # Approval helpers
 # ---------------------------------------------------------------------------
 
-APPROVAL_SECTION_PATTERN = re.compile(
-    r"^## Approval\s*\n.*?(?=\n^## |\Z)",
-    re.MULTILINE | re.DOTALL,
+# Canonical approval-detection constants — kept identical to
+# validate_blueprint.py's (APPROVAL_HEADER / APPROVAL_CHECKBOX /
+# APPROVAL_HASH_LINE) so the two skills' validators interpret the approval format
+# identically: `- [x]` / `- [X]`, an upper- or lower-case hex hash, and a
+# `## Approval` header with flexible surrounding whitespace. Hash comparison
+# routes through the shared blueprint_common.verify_content_hash (case-insensitive).
+# `content_for_hashing` / `compute_content_hash` are imported from
+# blueprint_common (above), sharing the producer-side implementation for hash
+# coherence across both validators.
+APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
+APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
+APPROVAL_HASH_LINE = re.compile(
+    r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
 )
-APPROVAL_HASH_PATTERN = re.compile(r"\*\*Content Hash:\*\*\s*`([a-f0-9]+|pending)`")
-APPROVAL_CHECKBOX_PATTERN = re.compile(r"- \[( |x)\] Approved to proceed")
-
-
-# `content_for_hashing` and `compute_content_hash` are imported from
-# blueprint_common (above). They share the same implementation as the
-# producer side, ensuring hash coherence across both validators.
 
 
 def check_approval(content: str, filename: str, result: ValidationResult) -> bool:
@@ -375,32 +381,31 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
     Returns True if the document is approved and hash matches.
     """
-    has_sect = bool(APPROVAL_SECTION_PATTERN.search(content))
-    if not has_sect:
+    if not APPROVAL_HEADER.search(content):
         result.add(f"{filename} has Approval section", False, "Missing ## Approval section")
         return False
 
     result.add(f"{filename} has Approval section", True)
 
-    checkbox_match = APPROVAL_CHECKBOX_PATTERN.search(content)
-    is_approved = checkbox_match is not None and checkbox_match.group(1) == "x"
+    is_approved = bool(APPROVAL_CHECKBOX.search(content))
     result.add(f"{filename} is approved", is_approved)
 
     if not is_approved:
         return False
 
-    hash_match = APPROVAL_HASH_PATTERN.search(content)
+    hash_match = APPROVAL_HASH_LINE.search(content)
     if not hash_match:
         result.add(f"{filename} approval hash present", False, "No content hash found")
         return False
 
     stored_hash = hash_match.group(1)
-    current_hash = compute_content_hash(content)
-    hashes_match = stored_hash == current_hash
+    hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
     result.add(
         f"{filename} has not been modified since approval",
         hashes_match,
-        f"Stored: {stored_hash}, Current: {current_hash}" if not hashes_match else "",
+        f"Stored: {stored_hash}, Current: {compute_content_hash(content)}"
+        if not hashes_match
+        else "",
     )
     return hashes_match
 
@@ -583,11 +588,11 @@ def validate_tasks(spec_dir: Path, language: str = "python") -> ValidationResult
         return result
 
     # Count task entries
-    tasks = TASK_ENTRY_PATTERN.findall(content)
+    task_matches = list(TASK_ENTRY_PATTERN.finditer(content))
     result.add(
         "tasks.md has task entries (### T1:, T2:, ...)",
-        len(tasks) > 0,
-        f"Found {len(tasks)} task(s)" if tasks else "No tasks found",
+        len(task_matches) > 0,
+        f"Found {len(task_matches)} task(s)" if task_matches else "No tasks found",
     )
 
     # Check for summary table
@@ -597,14 +602,73 @@ def validate_tasks(spec_dir: Path, language: str = "python") -> ValidationResult
         has_summary,
     )
 
-    # Check for requirement traceability
-    has_req = bool(re.search(r"\*\*Requirement:\*\*\s*R\d+", content))
+    # Per-task field checks. These run PER TASK rather than document-wide: a
+    # document-wide `re.search` passes when ANY single task carries the field,
+    # silently masking other tasks that omit it. Each task body spans its
+    # `### T<n>:` heading to the next task heading or the next `## ` section,
+    # whichever comes first; a failing check names the offending task IDs.
+    section_break = re.compile(r"^## ", re.MULTILINE)
+    task_bodies: list[tuple[str, str]] = []
+    for i, m in enumerate(task_matches):
+        id_match = re.search(r"T\d+", content[m.start() : m.end()])
+        task_id = id_match.group(0) if id_match else f"task#{i + 1}"
+        body_end = (
+            task_matches[i + 1].start() if i + 1 < len(task_matches) else len(content)
+        )
+        sec = section_break.search(content, m.end(), body_end)
+        if sec:
+            body_end = sec.start()
+        task_bodies.append((task_id, content[m.start() : body_end]))
+
+    def _tasks_missing(pattern):
+        return [tid for tid, body in task_bodies if not pattern.search(body)]
+
+    # Required per-task fields (FAIL). Mirrors the tasks template and the
+    # "Required per-task fields" list in SKILL.md / phase-tasks.md. (Test
+    # function names are checked separately, below, as an advisory warning.)
+    required_task_fields = [
+        ("Requirement", re.compile(r"\*\*Requirement:\*\*\s*R\d+")),
+        ("Description", re.compile(r"\*\*Description:\*\*")),
+        ("Files", re.compile(r"\*\*Files:\*\*")),
+        ("Dependencies", re.compile(r"\*\*Dependencies:\*\*")),
+        ("Parallel", re.compile(r"\*\*Parallel:\*\*")),
+        ("Verification", re.compile(r"\*\*Verification:\*\*")),
+    ]
+    for field_name, field_pattern in required_task_fields:
+        missing = _tasks_missing(field_pattern) if task_bodies else []
+        result.add(
+            f"tasks.md every task has **{field_name}:**",
+            not missing,
+            f"Missing in: {', '.join(missing)}" if missing else "",
+        )
+
+    # Acceptance Criteria + GIVEN/WHEN/THEN, per task.
+    ac_missing = (
+        _tasks_missing(re.compile(r"\*\*Acceptance Criteria")) if task_bodies else []
+    )
     result.add(
-        "tasks.md tasks have requirement traceability (R1, R2, ...)",
-        has_req,
+        "tasks.md every task has **Acceptance Criteria**",
+        not ac_missing,
+        f"Missing in: {', '.join(ac_missing)}" if ac_missing else "",
+    )
+    gwt_missing = _tasks_missing(GWT_PATTERN) if task_bodies else []
+    result.add(
+        "tasks.md every task's acceptance criteria use GIVEN/WHEN/THEN format",
+        not gwt_missing,
+        f"Missing GIVEN/WHEN/THEN in: {', '.join(gwt_missing)}" if gwt_missing else "",
+    )
+
+    # Test function/method names (language-aware) — advisory (warn), per task.
+    test_missing = _tasks_missing(profile["test_name_pattern"]) if task_bodies else []
+    result.add(
+        "tasks.md every task names test functions/methods",
+        not test_missing,
+        f"Missing in: {', '.join(test_missing)}" if test_missing else "",
+        warn_only=True,
     )
 
     # Requirement coverage — check all spec R-numbers are covered by tasks
+    has_req = bool(TASK_REQUIREMENT_REF_PATTERN.search(content))
     spec_content = read_file(spec_dir / "spec.md")
     if spec_content is not None and has_req:
         spec_reqs = set(REQUIREMENT_ID_PATTERN.findall(spec_content))
@@ -628,43 +692,6 @@ def validate_tasks(spec_dir: Path, language: str = "python") -> ValidationResult
                 True,
                 f"All {len(spec_reqs)} requirement(s) covered",
             )
-
-    # Check that tasks have acceptance criteria
-    has_ac = bool(re.search(r"Acceptance Criteria", content, re.IGNORECASE))
-    result.add(
-        "tasks.md tasks have acceptance criteria",
-        has_ac,
-    )
-
-    # Check for GIVEN/WHEN/THEN in acceptance criteria
-    has_gwt = bool(GWT_PATTERN.search(content))
-    result.add(
-        "tasks.md acceptance criteria use GIVEN/WHEN/THEN format",
-        has_gwt,
-        "At least one GIVEN/WHEN/THEN block expected" if not has_gwt else "",
-    )
-
-    # Check for dependency information
-    has_deps = bool(re.search(r"Dependenc", content, re.IGNORECASE))
-    result.add(
-        "tasks.md tasks have dependency info",
-        has_deps,
-    )
-
-    # Check for verification commands
-    has_verify = bool(re.search(r"\*\*Verification:\*\*", content))
-    result.add(
-        "tasks.md tasks have verification commands",
-        has_verify,
-    )
-
-    # Check for test function/method names (language-aware, advisory)
-    has_test_names = bool(profile["test_name_pattern"].search(content))
-    result.add(
-        "tasks.md tasks have specific test function/method names",
-        has_test_names,
-        warn_only=True,
-    )
 
     validate_resolved(content, "tasks.md", result)
     validate_panel_review(content, "tasks.md", result)

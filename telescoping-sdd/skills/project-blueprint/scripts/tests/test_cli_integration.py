@@ -63,6 +63,13 @@ def test_independent_hash_oracle_parity():
         "_independent_hash has drifted from blueprint_common.compute_content_hash"
     )
 
+    # Capital-[X] checkbox: exercises the `[ xX]` neutralisation class in BOTH
+    # the oracle and compute_content_hash (they must agree on either case).
+    sample_capital = sample.replace("- [x] Approved to proceed", "- [X] Approved to proceed")
+    assert _independent_hash(sample_capital) == compute_content_hash(sample_capital), (
+        "_independent_hash and compute_content_hash disagree on a capital [X] checkbox"
+    )
+
 
 # NOTE: fixture_approved_triple_frozen is now defined in conftest.py
 # (shared across test_filter / test_render / test_cli_integration).
