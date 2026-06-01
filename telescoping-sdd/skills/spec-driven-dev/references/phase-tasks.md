@@ -7,9 +7,10 @@ Drafts `specs/<feature-name>/tasks.md` — atomic, testable, sequenced implement
 Delegate drafting to the `telescoping-sdd:feature-task-analyst` subagent via the Agent tool (`subagent_type: telescoping-sdd:feature-task-analyst`).
 
 When invoking the agent, provide:
-- The detected project language (Python or Java) and the matching template path:
+- The resolved stack profile and the matching template path:
   - Python: `references/tasks-template-python.md`
   - Java: `references/tasks-template-java.md`
+  - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/tasks-template-python.md` for the structural skeleton (task fields and formatting are identical across profiles), but instruct the agent to populate Tests/Verification with the stack's real checks (a runnable assertion like `nginx -t` / `terraform validate` / `grep` / `test -f`, or a precise manual/review step) rather than `pytest`/`mvn` test functions. The per-task field set, GIVEN/WHEN/THEN, and the hash/approval blocks are unchanged.
 - The required per-task fields (below) — the agent must produce exactly these
 - The approved `specs/<feature-name>/spec.md` and `specs/<feature-name>/design.md` as authoritative upstream context
 - The task sizing rules (below) and the instruction that every spec requirement and every design component must be covered by at least one task
@@ -27,8 +28,8 @@ Each task must include:
 - **Dependencies** — Which tasks must complete first
 - **Parallel** — Whether this task can run concurrently with other tasks, and which ones (e.g., "Yes (with T3)")
 - **Acceptance Criteria** — GIVEN/WHEN/THEN format, matching the spec style
-- **Tests** (advisory — the validator warns, does not fail) — Specific test function/method names and what they verify
-- **Verification** — A concrete command to prove the task is done (e.g., `pytest tests/test_X.py -v` for Python, `mvn test -Dtest=XTest` for Java)
+- **Tests** (advisory — the validator warns, does not fail) — For a stack with a test harness, specific test function/method names and what they verify. For a `generic`/architecture-neutral stack with no unit-test surface (infra, static site, config, docs, skill authoring), name the concrete check instead (a runnable assertion, a manual step, or a review check) — don't invent test functions.
+- **Verification** — A concrete way to prove the task is done. Prefer a runnable command — `pytest tests/test_X.py -v` (Python), `mvn test -Dtest=XTest` (Java), or for a `generic` stack `nginx -t` / `terraform validate` / `docker compose config` / a `grep`/`test -f` assertion. Where no automatable surface exists, a precise, repeatable manual or visual/review step is acceptable (never a vague "test manually").
 
 Group tasks into phases (Foundation, Core Logic, etc.) when there are more than a few tasks.
 
@@ -46,7 +47,7 @@ After the agent returns the draft, write it to `specs/<feature-name>/tasks.md` a
 Review the tasks.md you just wrote, checking for:
 
 1. **Inconsistencies** — Do task dependencies form a valid DAG (no circular dependencies)? Do parallel annotations match the dependency graph? Does the summary table match the detailed task descriptions?
-2. **Inaccuracies** — Do file paths in each task match the design's file structure? Are test file locations and verification commands correct for the project's build tool? Do task IDs in dependencies reference tasks that exist?
+2. **Inaccuracies** — Do file paths in each task match the design's file structure? Are test/verification locations and commands correct for the project's tooling (build tool for a code stack; the stack's real check tooling — `nginx -t`, `terraform validate`, a `grep`/`test -f` assertion, or a manual/review step — for a `generic` stack)? Do task IDs in dependencies reference tasks that exist?
 3. **Gaps** — Does every requirement from the spec have at least one task covering it? Does every component from the design have tasks to build and test it? Are there missing integration or wiring tasks between components?
 
 For each issue found:

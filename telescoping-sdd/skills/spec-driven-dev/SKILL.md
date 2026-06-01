@@ -1,6 +1,6 @@
 ---
 name: spec-driven-dev
-description: Guides spec-driven development workflow for Python and Java projects. Use when user says "create a spec", "design a feature", "break down tasks", "implement from spec", "spec-driven", or "SDD workflow". Walks through four phases — Specify, Design, Tasks, Implement — with human review gates between each phase.
+description: Guides spec-driven development workflow for Python, Java, or architecture-neutral (generic) projects — including infrastructure, static sites, and Claude-skill authoring. Use when user says "create a spec", "design a feature", "break down tasks", "implement from spec", "spec-driven", or "SDD workflow". Walks through four phases — Specify, Design, Tasks, Implement — with human review gates between each phase.
 metadata:
   status: stable
 ---
@@ -45,14 +45,31 @@ Phase 4 (implementation) is executed directly by the calling Claude with no dele
 
 **The shared panel-review machinery — the loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract for `## Panel Review`, and when to skip the panel — lives in `references/panel-review.md`. Read that reference before running any phase's panel.**
 
-## Language Detection
+## Language / Architecture Detection
 
-Before starting any phase, detect the project language:
+Before starting any phase, detect the project's stack:
 
 - **Java** — Look for `pom.xml`, `build.gradle`, `build.gradle.kts`, or `src/main/java/` directory
-- **Python** — Look for `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, or `src/` with `.py` files
+- **Python** — Look for `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`
+- **Generic (architecture-neutral)** — Anything else: infrastructure / IaC (Terraform, Ansible, Docker Compose, nginx config), static sites (HTML/CSS), frontend projects without a recognized Python/Java marker, Claude-skill authoring, etc.
 
-State the detected language to the user at the start of the first phase you enter. If both are present or neither is detected, ask the user which language to use. Use the detected language to select the correct conventions, templates, and validation rules throughout all phases.
+**Resolution order (the validator and you must agree — use the same precedence):**
+
+1. **Explicit override** — an explicit per-run choice (the validator's `--language` flag; for you, an instruction from the user this session) wins over everything below.
+2. **Persisted store** — otherwise, if `.sdd/architecture.json` exists at the project root, it is authoritative. Read it and use its `language`; do not re-derive. (The validator does the same: persisted config wins over auto-detection.)
+3. **Detect** — otherwise detect from markers (above). If both Python and Java markers are present, ask the user which to use. **If neither is detected, use `generic` — do NOT default to Python.**
+
+`generic` is the architecture-neutral profile: the full structural skeleton (required sections, GIVEN/WHEN/THEN acceptance criteria, `[CFC-N]` tags, the hash block) still applies, but the two language-specific advisory checks (type annotations, test-function names) are skipped because they don't fit a non-code or non-Python/Java deliverable.
+
+**Persist the decision once.** As soon as the stack is known (especially after resolving a Python-vs-Java ambiguity, or confirming `generic` for an infra / static-site / skill project), persist it so it stops being re-derived and can't drift between runs:
+
+```bash
+python <script-path>/validate_spec.py specs/<feature-name>/ --set-language {python|java|generic}
+```
+
+This writes `.sdd/architecture.json` (the declare-once store) at the project root and exits. It touches no content hash and is independent of `--approve`, so it never interacts with the CFC cascade. It is the single explicit write path — nothing writes this file silently. Commit the file; it is project state, like other config. Thereafter every validate run resolves the stack from it (`Language: … (from config)`), and you should too. State the resolved stack to the user at the start of the first phase you enter.
+
+> **Blueprint→SDD seam.** When a project has a `blueprint/`, the stack is declared there once via the `**Architecture token:**` field in `ARCHITECTURE.md § Technology Choices` and persisted with `validate_blueprint.py blueprint/ --write-arch-config`, which writes the same `.sdd/architecture.json` this skill reads. So a blueprint-driven project arrives here with the store already populated (`source: blueprint`) — just resolve from it. For a standalone SDD project with no blueprint, populate the store SDD-side with `--set-language` as above.
 
 ## Phase 1: Specify
 
@@ -89,14 +106,14 @@ Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telesc
 Execute tasks sequentially following this cycle for each task:
 
 1. Read the task from tasks.md
-2. Write tests first that encode the acceptance criteria
-3. Implement the code to make tests pass
-4. Run the full test suite to check for regressions
+2. Establish the check first: for a stack with a test harness, write the tests that encode the acceptance criteria (they fail initially); for a `generic`/architecture-neutral stack with no harness, write down the task's concrete Verification check (the runnable assertion, manual step, or review step) before doing the work
+3. Do the work to satisfy the acceptance criteria — implement the code (and make the tests pass), or produce the config / page / infra / doc / skill artifact
+4. Run the check: the full test suite for a code stack (watch for regressions); the task's Verification command or the stated manual/review check for a `generic` stack
 5. Update tasks.md immediately — do both of the following before moving to the next task:
    - Change the task's Status in the Summary table from `Not Started` to `Done`
    - Check off the task's checkbox in the heading (e.g., `### - [ ] T1:` becomes `### - [x] T1:`)
 
-### Language Conventions
+### Stack Conventions
 
 **Python**
 - Use type hints on all function signatures
@@ -111,8 +128,14 @@ Execute tasks sequentially following this cycle for each task:
 - Run linters/formatters if configured (Checkstyle, SpotBugs, google-java-format)
 - Build and test with `mvn test` or `gradle test` depending on the build tool
 
+**Generic (architecture-neutral — infra, static sites, config, docs, skill authoring)**
+- There is usually no unit-test harness; verify with the stack's real tooling instead of inventing one
+- Use each task's Verification check: a runnable assertion (`nginx -t`, `terraform validate`, `docker compose config`, `grep`/`test -f`), a reproducible manual step, or a visual/review check
+- Follow existing project conventions and any linters/validators the stack provides (e.g. `hadolint`, `ansible-lint`, an HTML/markdown linter, `claude plugin validate`)
+- "Run the full test suite" means "re-run the relevant checks and confirm nothing previously passing now fails"
+
 After completing all tasks, do a final check:
-- All tests pass
+- All verification passes — the full test suite for a code stack; every task's Verification check (and any stack linters/validators) for a `generic` stack
 - All acceptance criteria from spec.md are met
 - All tasks in tasks.md are checked off and all summary table statuses are `Done` (or `Skipped` for invalidated tasks)
 - **Re-stamp `tasks.md` once**: first run `python <script-path>/validate_spec.py specs/<feature-name>/` and confirm structural validity (no `[TBD]`, no `TODO`/`FIXME` leaked into task descriptions, all required sections present, `## Panel Review` populated). If any structural check fails, halt and fix before re-stamping — re-stamping a structurally broken `tasks.md` would silently approve known-bad content. Once structural checks pass, run `python <script-path>/validate_spec.py specs/<feature-name>/ --approve tasks`. This is the completion re-stamp called out in `references/hash-and-cascade.md` (intro paragraph: Phase 4 cadence) — it refreshes the hash that's been stale since the first tick. No cascade follows (tasks.md has no downstream).

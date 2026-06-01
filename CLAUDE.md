@@ -11,6 +11,8 @@ This repo serves two purposes:
 
 **Telescoping Spec-Driven Development.** `project-blueprint` and `spec-driven-dev` compose into one methodology at two altitudes: `project-blueprint` emits `blueprint/PLAN.md` (which decomposes the project into ordered features), and `spec-driven-dev` consumes one feature from `PLAN.md` to drive its Specify → Design → Tasks → Implement loop. `PLAN.md` is the seam between the two tiers — a sequential handoff, not containment. A secondary seam runs through **Cross-Feature Contracts** (PLAN's optional `## Cross-Feature Contracts` section): each `### CFC-N` entry binds multiple features at PLAN time and surfaces in each participating feature's SDD cycle via `[CFC-N]` tags on acceptance criteria (spec.md) and enforcement tasks (tasks.md). The shared `scripts/cfc_parser.py` enforces format symmetry between producer and consumer; full design in `telescoping-sdd/documentation/CFC.md`.
 
+**Stack profiles and the architecture-config seam.** `spec-driven-dev` selects a stack *profile* — `python`, `java`, or the architecture-neutral `generic` (for infra, static sites, Claude-skill authoring, and anything without a Python/Java marker; it disables the two language-specific advisory checks). The profile is resolved once via the precedence `explicit --language flag > persisted .sdd/architecture.json > marker auto-detect` (auto-detect falls back to `generic`, never silently to `python`) and persisted by an explicit op: `validate_spec.py --set-language` (SDD side) or `validate_blueprint.py --write-arch-config`, which reads the `**Architecture token:**` from `ARCHITECTURE.md` and writes the same store (blueprint side). The shared `scripts/arch_config.py` owns the read/write/resolve logic and the token grammar so the prose layer and both validators can't drift; `scripts/tests/test_arch_config.py` asserts the round-trip + producer/consumer vocabulary symmetry. The store is deliberately advisory-only and out-of-band from every content hash, so it never interacts with the `--approve`/CFC cascade.
+
 ## Repository Layout
 
 | Path | Purpose |
@@ -20,7 +22,7 @@ This repo serves two purposes:
 | `telescoping-sdd/skills/<name>/SKILL.md` | Plugin skills (`project-blueprint`, `spec-driven-dev`) — invoked as `/telescoping-sdd:<name>` |
 | `telescoping-sdd/agents/*.md` | Every executor + persona invoked by a skill (auto-discovered by Claude Code at plugin tier 4) |
 | `telescoping-sdd/agent-references/` | Shared discipline files read by the executor agents at runtime (kept OUT of `agents/` so the plugin loader does not mis-discover them as subagents) |
-| `telescoping-sdd/scripts/` | Shared validators (`archive_pass.py`, `blueprint_common.py`, `cfc_parser.py`) and their tests |
+| `telescoping-sdd/scripts/` | Shared validators (`archive_pass.py`, `blueprint_common.py`, `cfc_parser.py`, `arch_config.py`) and their tests |
 | `telescoping-sdd/documentation/CFC.md` | Cross-Feature Contracts design spec (shared between the two skills) |
 
 ## Skill Structure

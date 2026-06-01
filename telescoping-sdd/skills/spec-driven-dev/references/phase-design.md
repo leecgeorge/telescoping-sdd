@@ -7,9 +7,10 @@ Drafts `specs/<feature-name>/design.md` — how to build the feature. Requires a
 Delegate drafting to the `telescoping-sdd:feature-architecture-analyst` subagent via the Agent tool (`subagent_type: telescoping-sdd:feature-architecture-analyst`).
 
 When invoking the agent, provide:
-- The detected project language (Python or Java) and the matching template path:
+- The resolved stack profile and the matching template path:
   - Python: `references/design-template-python.md`
   - Java: `references/design-template-java.md`
+  - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/design-template-python.md` for the structural skeleton (the section list is identical across profiles), but instruct the agent to *reinterpret* the stack-shaped sections for the actual deliverable rather than inventing code — e.g. Data Models → config-file schemas / resource topology, Interfaces → shell-script or cross-component contracts, Testing Strategy → the command/manual/review checks the stack supports. All required section headings stay present (the validator checks presence); only their content adapts.
 - The required sections (below) — the agent must produce exactly these
 - The approved `specs/<feature-name>/spec.md` as authoritative upstream context
 - A clear instruction that the design must address every requirement and respect every boundary from the spec

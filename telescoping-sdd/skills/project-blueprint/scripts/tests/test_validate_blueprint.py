@@ -241,6 +241,10 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     dst_scripts.mkdir(exist_ok=True)
     shutil.copy2(src_scripts / "blueprint_common.py", dst_scripts / "blueprint_common.py")
     shutil.copy2(src_scripts / "cfc_parser.py", dst_scripts / "cfc_parser.py")
+    # arch_config.py is a runtime import of validate_blueprint (the --write-arch-config
+    # seam); a published install ships it in the shared scripts dir, so the synthetic
+    # layout must include it too or `parents[3] / "scripts"` import resolution fails.
+    shutil.copy2(src_scripts / "arch_config.py", dst_scripts / "arch_config.py")
 
     src_validator = (
         _REPO_ROOT / "telescoping-sdd" / "skills" / "project-blueprint" / "scripts"

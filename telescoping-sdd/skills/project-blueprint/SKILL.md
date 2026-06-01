@@ -120,6 +120,14 @@ Once the implementation plan is approved, each feature (F1, F2, etc.) in PLAN.md
 3. Implement the feature
 4. Move to the next feature
 
+**Carry the declared stack across the seam (once, before the first feature).** `ARCHITECTURE.md` declares the project's stack via its `**Architecture token:**` field (`python` / `java` / `generic`). Persist it so spec-driven-dev resolves it instead of re-detecting the language per feature:
+
+```bash
+python <script-path>/validate_blueprint.py blueprint/ --write-arch-config
+```
+
+This reads the token and writes `<project-root>/.sdd/architecture.json` (the declare-once store spec-driven-dev reads). It is a standalone step — it touches no content hash and is independent of `--approve`, so it never interacts with the PLAN approval or the CFC cascade. Commit the file. Re-run it only if the token changes.
+
 The blueprint documents remain the source of truth for project direction. If scope changes, update SCOPE.md first and cascade changes through ARCHITECTURE.md and PLAN.md.
 
 ## Entering the Workflow Mid-Stream
