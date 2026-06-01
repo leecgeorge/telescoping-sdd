@@ -62,6 +62,16 @@ from cfc_parser import (  # noqa: E402
     normalize_for_hash as _normalize_for_hash,
     parse_cfc_entries as _shared_parse_cfc_entries,
 )
+from arch_config import (  # noqa: E402
+    parse_arch_token,
+    write_arch_config,
+)
+
+# Stack vocabulary the blueprint may declare. Mirrors validate_spec.py's
+# LANGUAGE_PROFILES keys; kept as a literal here (project-blueprint does not
+# import the consumer) and asserted equal by the arch-config contract test, so a
+# divergence is caught mechanically rather than drifting silently.
+KNOWN_ARCH_TOKENS = ["python", "java", "generic"]
 
 
 # ---------------------------------------------------------------------------
@@ -1682,6 +1692,14 @@ def main():
         help="Skip the pre-approval validation gate (use after manually reviewing FAIL items)",
     )
     parser.add_argument(
+        "--write-arch-config",
+        action="store_true",
+        help="Read the '**Architecture token:**' from ARCHITECTURE.md and persist "
+        "it to <project-root>/.sdd/architecture.json so the declared stack crosses "
+        "the blueprint→SDD seam. Standalone op (does NOT run during --approve and "
+        "touches no content hash).",
+    )
+    parser.add_argument(
         "--output",
         choices=["text", "json"],
         default="text",
@@ -1693,6 +1711,42 @@ def main():
     if not blueprint_dir.is_dir():
         print(f"Error: {blueprint_dir} is not a directory")
         sys.exit(2)
+
+    # Handle --write-arch-config: carry the blueprint's declared stack across the
+    # blueprint→SDD seam. Standalone and explicit — NOT folded into --approve, so
+    # it never interacts with the PLAN content hash or the CFC cascade. Writes via
+    # the SAME shared writer the SDD side uses (source="blueprint"), to the project
+    # root (parent of blueprint/).
+    if args.write_arch_config:
+        arch_path = blueprint_dir / "ARCHITECTURE.md"
+        content = read_file(arch_path)
+        if content is None:
+            print(f"Error: {arch_path} does not exist")
+            sys.exit(2)
+        token = parse_arch_token(content)
+        if token is None:
+            print(
+                "Error: ARCHITECTURE.md has no '**Architecture token:** `<value>`' "
+                "line. Add one under ## Technology Choices (e.g. "
+                "`**Architecture token:** \\`generic\\``)."
+            )
+            sys.exit(2)
+        if token not in KNOWN_ARCH_TOKENS:
+            print(
+                f"Error: architecture token '{token}' is not recognized; "
+                f"must be one of {sorted(KNOWN_ARCH_TOKENS)}."
+            )
+            sys.exit(2)
+        project_root = blueprint_dir.parent
+        written = write_arch_config(
+            project_root,
+            token,
+            KNOWN_ARCH_TOKENS,
+            source="blueprint",
+            detected_from="ARCHITECTURE.md",
+        )
+        print(f"Persisted stack '{token}' (from ARCHITECTURE.md) to {written}")
+        sys.exit(0)
 
     # Handle --approve
     if args.approve:

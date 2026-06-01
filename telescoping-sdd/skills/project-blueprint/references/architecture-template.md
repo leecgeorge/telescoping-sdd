@@ -63,6 +63,18 @@ Example:
 | Database | [Choice] | [Alternatives] | [Rationale] |
 | Infrastructure | [Choice] | [Alternatives] | [Rationale] |
 
+**Architecture token:** `generic`
+
+<!-- A single controlled-vocabulary token that names the SDD stack profile for
+     this project: `python`, `java`, or `generic` (architecture-neutral — use for
+     infrastructure, static sites, frontend without a Python/Java marker, Claude-
+     skill authoring, etc.). This is NOT free-form prose: it must be exactly one
+     of those tokens. It exists so the stack declared here crosses the blueprint→
+     SDD seam — run `validate_blueprint.py blueprint/ --write-arch-config` to
+     persist it to `.sdd/architecture.json`, which spec-driven-dev then resolves
+     instead of re-detecting. Keep it consistent with the Language/Infrastructure
+     rows above. -->
+
 ## Data Architecture
 
 ### Data Models (High-Level)

@@ -7,9 +7,10 @@ Drafts `specs/<feature-name>/spec.md` — what to build and why. This is the fir
 Delegate drafting to the `telescoping-sdd:feature-spec-analyst` subagent via the Agent tool (`subagent_type: telescoping-sdd:feature-spec-analyst`).
 
 When invoking the agent, provide:
-- The detected project language (Python or Java) and the matching template path:
+- The resolved stack profile and the matching template path:
   - Python: `references/spec-template-python.md`
   - Java: `references/spec-template-java.md`
+  - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/spec-template-python.md` for the structural skeleton (identical across profiles), but instruct the agent to ignore its Python-specific examples — the Project Structure and Commands content must reflect the actual stack (e.g. `docker-compose.yml`/`nginx.conf` paths, `nginx -t`/`terraform validate` commands), not `src/*.py`/`pytest`. The structural sections, GIVEN/WHEN/THEN, and the hash/approval blocks are unchanged.
 - The required sections (below) — the agent must produce exactly these
 - Everything the user has told you about the feature so far
 - Any prior artifacts in `specs/<feature-name>/` if the user is resuming mid-stream

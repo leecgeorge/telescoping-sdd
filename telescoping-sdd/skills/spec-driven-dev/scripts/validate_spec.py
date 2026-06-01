@@ -5,9 +5,15 @@ Checks that spec.md, design.md, and tasks.md have required sections
 and follow the expected structure. Can also approve documents for
 phase transitions using content hashes to detect post-approval edits.
 
-Supports Python and Java projects via --language flag. If omitted,
+Supports Python and Java projects via --language flag, plus an
+architecture-neutral "generic" profile for everything else (infra,
+static sites, Claude-skill authoring, etc.). If --language is omitted,
 auto-detects by looking for pom.xml/build.gradle (Java) or
-pyproject.toml/setup.py (Python) in the project root.
+pyproject.toml/setup.py (Python) in the project root; when no recognized
+language marker is found it resolves to "generic" rather than assuming
+Python. The "generic" profile disables the two language-specific advisory
+checks (type annotations, test-function names) so they do not misfire on
+non-code or non-Python/Java deliverables.
 
 Usage:
     python validate_spec.py <spec-directory>
@@ -48,6 +54,11 @@ from cfc_parser import (  # noqa: E402
     find_misplaced_cfc_tags,
     parse_cfc_entries,
 )
+from arch_config import (  # noqa: E402
+    find_project_root as arch_find_project_root,
+    resolve_language,
+    write_arch_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +93,31 @@ LANGUAGE_PROFILES: dict[str, dict] = {
         "source_layout": "src/main/java/",
         "test_layout": "src/test/java/",
     },
+    # Architecture-neutral fallback for stacks that are neither Python nor Java
+    # (infrastructure, static sites, Claude-skill authoring, TypeScript before a
+    # dedicated profile exists, etc.). It carries NO marker lists, so it is never
+    # auto-detected — it is only ever selected as the explicit fallback when no
+    # recognized language marker is found, or via `--language generic`. Its
+    # `type_pattern`/`test_name_pattern` are None, which the two advisory checks
+    # treat as "skip this check" rather than misfiring a Python/Java regex against
+    # a stack that has neither type annotations nor xUnit-style test names.
+    "generic": {
+        "label": "generic (architecture-neutral)",
+        "project_markers": [],
+        "dir_markers": [],
+        "type_pattern": None,
+        "test_name_pattern": None,
+        "test_framework": None,
+        "test_command": None,
+        "source_layout": None,
+        "test_layout": None,
+    },
 }
+
+# The language key used when auto-detection finds no recognized marker. A
+# neutral profile, NOT "python" — defaulting an unknown stack to Python stamps a
+# wrong "Language: python" banner and fires two spurious advisory warnings.
+NEUTRAL_LANGUAGE = "generic"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +224,7 @@ def detect_language(spec_dir: Path, project_root: Optional[Path] = None) -> str:
                 return lang
             if any((project_root / d).is_dir() for d in profile["dir_markers"]):
                 return lang
-        return "python"  # default fallback
+        return NEUTRAL_LANGUAGE  # neutral fallback — not "python"
 
     search_dir = spec_dir.resolve()
     for _ in range(10):  # max 10 levels up
@@ -202,12 +237,17 @@ def detect_language(spec_dir: Path, project_root: Optional[Path] = None) -> str:
         if parent == search_dir:
             break
         search_dir = parent
-    return "python"  # default fallback
+    return NEUTRAL_LANGUAGE  # neutral fallback — not "python"
 
 
 def get_profile(language: str) -> dict:
-    """Get the language profile, falling back to Python."""
-    return LANGUAGE_PROFILES.get(language, LANGUAGE_PROFILES["python"])
+    """Get the language profile, falling back to the neutral 'generic' profile.
+
+    An unknown key resolves to 'generic' (advisory checks disabled), NOT to
+    'python' — falling back to Python is what silently mislabels a non-Python
+    project and fires spurious advisory warnings against it.
+    """
+    return LANGUAGE_PROFILES.get(language, LANGUAGE_PROFILES[NEUTRAL_LANGUAGE])
 
 
 # Severity and ValidationResult are imported from blueprint_common (above)
@@ -538,7 +578,7 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     return result
 
 
-def validate_design(spec_dir: Path, language: str = "python") -> ValidationResult:
+def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> ValidationResult:
     """Validate design.md for required sections."""
     result = ValidationResult()
     profile = get_profile(language)
@@ -558,14 +598,18 @@ def validate_design(spec_dir: Path, language: str = "python") -> ValidationResul
             has_section(content, section),
         )
 
-    # Check for type annotations (language-aware, advisory)
-    has_types = bool(profile["type_pattern"].search(content))
-    result.add(
-        f"design.md includes {profile['label']} type annotations in models/interfaces",
-        has_types,
-        "Expected type annotations in code blocks" if not has_types else "",
-        warn_only=True,
-    )
+    # Check for type annotations (language-aware, advisory). Skipped entirely
+    # for profiles with no type_pattern (e.g. "generic") — an architecture-neutral
+    # deliverable need not contain language type annotations, so the check would
+    # only emit noise.
+    if profile["type_pattern"] is not None:
+        has_types = bool(profile["type_pattern"].search(content))
+        result.add(
+            f"design.md includes {profile['label']} type annotations in models/interfaces",
+            has_types,
+            "Expected type annotations in code blocks" if not has_types else "",
+            warn_only=True,
+        )
 
     validate_resolved(content, "design.md", result)
     validate_panel_review(content, "design.md", result)
@@ -573,7 +617,7 @@ def validate_design(spec_dir: Path, language: str = "python") -> ValidationResul
     return result
 
 
-def validate_tasks(spec_dir: Path, language: str = "python") -> ValidationResult:
+def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> ValidationResult:
     """Validate tasks.md for proper task entries."""
     result = ValidationResult()
     profile = get_profile(language)
@@ -659,13 +703,17 @@ def validate_tasks(spec_dir: Path, language: str = "python") -> ValidationResult
     )
 
     # Test function/method names (language-aware) — advisory (warn), per task.
-    test_missing = _tasks_missing(profile["test_name_pattern"]) if task_bodies else []
-    result.add(
-        "tasks.md every task names test functions/methods",
-        not test_missing,
-        f"Missing in: {', '.join(test_missing)}" if test_missing else "",
-        warn_only=True,
-    )
+    # Skipped for profiles with no test_name_pattern (e.g. "generic"): a static
+    # site, infra, or skill-authoring task is verified by a command/manual check,
+    # not an xUnit-style test function, so this check would only emit noise.
+    if profile["test_name_pattern"] is not None:
+        test_missing = _tasks_missing(profile["test_name_pattern"]) if task_bodies else []
+        result.add(
+            "tasks.md every task names test functions/methods",
+            not test_missing,
+            f"Missing in: {', '.join(test_missing)}" if test_missing else "",
+            warn_only=True,
+        )
 
     # Requirement coverage — check all spec R-numbers are covered by tasks
     has_req = bool(TASK_REQUIREMENT_REF_PATTERN.search(content))
@@ -1010,7 +1058,15 @@ def main():
         "--language",
         choices=list(LANGUAGE_PROFILES.keys()),
         default=None,
-        help="Project language (default: auto-detect from project files)",
+        help="Project language for THIS run (default: persisted config, else "
+        "auto-detect). Does not persist; use --set-language to persist.",
+    )
+    parser.add_argument(
+        "--set-language",
+        choices=list(LANGUAGE_PROFILES.keys()),
+        default=None,
+        help="Persist the project's stack to .sdd/architecture.json (the "
+        "declare-once store) and exit. The single, explicit write path.",
     )
     parser.add_argument(
         "--project-root",
@@ -1046,19 +1102,43 @@ def main():
         approve_document(target)
         sys.exit(0)
 
-    # Detect or use specified language
-    language = args.language or detect_language(spec_dir, project_root)
+    # Handle --set-language: the single, explicit write path for the declare-once
+    # store. Deliberately separate from --approve — it touches NO content hash and
+    # does NOT run during approval, so it cannot collide with the CFC cascade.
+    if args.set_language:
+        root = arch_find_project_root(spec_dir, project_root)
+        written = write_arch_config(
+            root,
+            args.set_language,
+            list(LANGUAGE_PROFILES.keys()),
+            source="user",
+        )
+        print(f"Persisted stack '{args.set_language}' to {written}")
+        sys.exit(0)
+
+    # Resolve the stack via the shared resolver: explicit flag > persisted config
+    # > marker auto-detect (which itself falls back to the neutral profile). This
+    # is the SAME code path any other consumer uses, so the prose layer and the
+    # script layer cannot drift to different answers.
+    language, language_source = resolve_language(
+        spec_dir,
+        explicit=args.language,
+        detector=detect_language,
+        known_languages=list(LANGUAGE_PROFILES.keys()),
+        project_root=project_root,
+    )
     use_json = args.output == "json"
 
     if not use_json:
         print(f"Validating: {spec_dir}")
-        print(f"Language:   {language}\n")
+        print(f"Language:   {language} (from {language_source})\n")
 
     all_passed = True
     has_any_warnings = False
     json_output: dict = {
         "spec_dir": str(spec_dir),
         "language": language,
+        "language_source": language_source,
         "phases": {},
     }
     validators = {
