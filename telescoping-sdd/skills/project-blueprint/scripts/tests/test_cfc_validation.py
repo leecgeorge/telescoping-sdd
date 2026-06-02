@@ -134,6 +134,13 @@ def _build_plan(cfc_section: str = "") -> str:
     )
 
 
+# Feature-id -> bound spec-directory name (1.7.0 grammar: specs/F<n>-<slug>/).
+# Migrated from the pre-1.7.0 bare `specs/F<n>/` form so walk_specs no longer
+# emits a `malformed-spec-dirname` WARN on these fixtures. Only the directory
+# NAME changes — the in-file `**PLAN feature identifier:** F<n>` stays bare.
+FEATURE_DIR_MAP = {1: "F1-alpha", 2: "F2-beta", 36: "F36-enforcement", 11: "F11-lock-order"}
+
+
 def test_validate_cfc_section_missing_field_fails():
     plan = _build_plan(
         "## Cross-Feature Contracts\n\n"
@@ -585,7 +592,7 @@ def test_coverage_walk_fully_bound(tmp_path: Path):
             f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
         )
         full = full.replace("`pending`", f"`{compute_content_hash(full)}`")
-        _make_spec(project_root / "specs" / f"F{fid}", spec_md=full)
+        _make_spec(project_root / "specs" / FEATURE_DIR_MAP[fid], spec_md=full)
 
     spec_states = vb.walk_specs(project_root)
     coverages = vb.compute_coverage(entries, spec_states)
@@ -616,7 +623,7 @@ def test_coverage_walk_partially_bound(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     f1 = f1.replace("`pending`", f"`{compute_content_hash(f1)}`")
-    _make_spec(project_root / "specs" / "F1", spec_md=f1)
+    _make_spec(project_root / "specs" / "F1-alpha", spec_md=f1)
     # F2 lacks the tag
     body_f2 = "R1\n\n**Acceptance Criteria:**\n\n- GIVEN x\n  WHEN y\n  THEN z\n"
     f2 = (
@@ -625,7 +632,7 @@ def test_coverage_walk_partially_bound(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     f2 = f2.replace("`pending`", f"`{compute_content_hash(f2)}`")
-    _make_spec(project_root / "specs" / "F2", spec_md=f2)
+    _make_spec(project_root / "specs" / "F2-beta", spec_md=f2)
 
     spec_states = vb.walk_specs(project_root)
     coverages = vb.compute_coverage(entries, spec_states)
@@ -670,7 +677,7 @@ def test_orphan_tag_tasks_md_enforcement_owner_not_departed(tmp_path: Path):
     tasks_md = tasks_md_body.replace(
         "`pending`", f"`{compute_content_hash(tasks_md_body)}`"
     )
-    _make_spec(tmp_path / "specs" / "F36", spec_md=spec_md, tasks_md=tasks_md)
+    _make_spec(tmp_path / "specs" / "F36-enforcement", spec_md=spec_md, tasks_md=tasks_md)
 
     spec_states = vb.walk_specs(tmp_path)
     orphans = vb.scan_orphan_tags(entries, spec_states, {})
@@ -712,7 +719,7 @@ def test_orphan_tag_spec_md_still_requires_participating(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     spec_md = spec_md.replace("`pending`", f"`{compute_content_hash(spec_md)}`")
-    _make_spec(tmp_path / "specs" / "F36", spec_md=spec_md)
+    _make_spec(tmp_path / "specs" / "F36-enforcement", spec_md=spec_md)
 
     spec_states = vb.walk_specs(tmp_path)
     orphans = vb.scan_orphan_tags(entries, spec_states, {})
@@ -730,7 +737,7 @@ def test_walk_specs_skips_symlinks(tmp_path: Path):
     """
     (tmp_path / "specs").mkdir()
     # Real directory: F1
-    real = tmp_path / "specs" / "F1"
+    real = tmp_path / "specs" / "F1-alpha"
     real.mkdir()
     # Symlinked directory: F99 → somewhere outside.
     outside = tmp_path / "outside"
@@ -795,7 +802,7 @@ def test_orphan_tag_missing_cfc(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     full = full.replace("`pending`", f"`{compute_content_hash(full)}`")
-    _make_spec(tmp_path / "specs" / "F1", spec_md=full)
+    _make_spec(tmp_path / "specs" / "F1-alpha", spec_md=full)
 
     spec_states = vb.walk_specs(tmp_path)
     orphans = vb.scan_orphan_tags([], spec_states, {})
@@ -825,7 +832,7 @@ def test_orphan_tag_departed(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     full = full.replace("`pending`", f"`{compute_content_hash(full)}`")
-    _make_spec(tmp_path / "specs" / "F1", spec_md=full)
+    _make_spec(tmp_path / "specs" / "F1-alpha", spec_md=full)
 
     spec_states = vb.walk_specs(tmp_path)
     orphans = vb.scan_orphan_tags(entries, spec_states, {})
@@ -854,7 +861,7 @@ def test_orphan_tag_stale_content(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     full = full.replace("`pending`", f"`{compute_content_hash(full)}`")
-    _make_spec(tmp_path / "specs" / "F1", spec_md=full)
+    _make_spec(tmp_path / "specs" / "F1-alpha", spec_md=full)
 
     spec_states = vb.walk_specs(tmp_path)
     # Prior hash differs from current → stale.
@@ -885,7 +892,7 @@ def test_orphan_tag_scan_empty_when_no_drift(tmp_path: Path):
         f"## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     full = full.replace("`pending`", f"`{compute_content_hash(full)}`")
-    _make_spec(tmp_path / "specs" / "F1", spec_md=full)
+    _make_spec(tmp_path / "specs" / "F1-alpha", spec_md=full)
 
     spec_states = vb.walk_specs(tmp_path)
     orphans = vb.scan_orphan_tags(entries, spec_states, {1: current_hash})

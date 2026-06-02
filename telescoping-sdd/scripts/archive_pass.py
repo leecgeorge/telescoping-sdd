@@ -554,6 +554,42 @@ def replace_block(lines, start, end, new_block):
     return lines[:start] + new_block + lines[end:]
 
 
+def _apply_edits(lines, edits):
+    """Apply a set of disjoint line-range replacements to ``lines``.
+
+    Each edit is ``(start, end, new_block)``: replace ``lines[start:end]`` with
+    ``new_block``. An insertion is expressed as ``start == end`` (replacing an
+    empty range). Edits MUST be pairwise non-overlapping (asserted).
+
+    They are applied sorted by ``start`` DESCENDING, so each applied edit only
+    shifts lines BELOW an as-yet-unapplied edit's range — every edit's
+    ``(start, end)`` therefore stays valid against the original ``lines``
+    coordinate basis. This is the fix for the multi-section reassembly
+    corruption (R6/AD9): the previous code applied four section edits
+    sequentially using pre-edit offsets, so promoting a Sealed entry (above the
+    Deferred section in file order) shifted Deferred and the subsequent Deferred
+    edit wrote at a stale offset.
+
+    Returns a new list; does not mutate the input.
+
+    Raises:
+        AssertionError: if any two edit ranges overlap (a programming error —
+        the four panel sections occupy disjoint spans by construction).
+    """
+    ordered = sorted(edits, key=lambda e: e[0])
+    for (a_start, a_end, _), (b_start, b_end, _) in zip(ordered, ordered[1:]):
+        assert a_end <= b_start, (
+            f"overlapping edits: ({a_start}, {a_end}) and ({b_start}, {b_end})"
+        )
+    # Apply in DESCENDING start order — reversed(ordered), reusing the single sort
+    # above — so each applied edit only shifts lines below an as-yet-unapplied
+    # edit's range, keeping every (start, end) valid against the original basis.
+    result = lines[:]
+    for start, end, new_block in reversed(ordered):
+        result = result[:start] + list(new_block) + result[end:]
+    return result
+
+
 def write_or_diff(path, old_content, new_content, dry_run):
     if dry_run:
         diff = difflib.unified_diff(
@@ -951,41 +987,48 @@ def main():
 
     new_latest_block = render_table(LATEST_COLS, [])
 
-    new_lines = lines[:]
+    # R6 (AD9/I6): express each section rewrite UNIFORMLY as a disjoint
+    # (start, end, new_block) replacement tuple against the post-auto-insert
+    # `lines`, then apply them all via _apply_edits sorted descending-by-start.
+    # An empty-section insertion is just (anchor, anchor, block) with
+    # start == end — collapsing the heading-anchor-vs-table-index split into one
+    # coordinate basis. Each tuple is appended ONLY under its existing guard, so
+    # a --skip / converged-empty pass still yields as few as one edit (Trajectory
+    # only). This replaces the previous sequential replace_block/insert calls
+    # that used stale pre-edit offsets (corrupting Deferred when Sealed shifted).
+    edits = []
 
     if latest_to_clear:
         if latest_table is not None:
             h, _, _, last = latest_table
-            new_lines = replace_block(new_lines, h, last, new_latest_block)
+            edits.append((h, last, new_latest_block))
         else:
-            block = [""] + new_latest_block
-            new_lines = new_lines[:l_start + 1] + block + new_lines[l_start + 1:]
+            edits.append((l_start + 1, l_start + 1, [""] + new_latest_block))
 
     if new_seals:
         if seal_entries:
             first_seal = seal_entries[0]["line_idx"]
             last_seal = seal_entries[-1]["line_idx"] + 1
-            new_lines = replace_block(new_lines, first_seal, last_seal, new_sealed_lines)
+            edits.append((first_seal, last_seal, new_sealed_lines))
         else:
-            block = [""] + new_sealed_lines
-            new_lines = new_lines[:s_start + 1] + block + new_lines[s_start + 1:]
+            edits.append((s_start + 1, s_start + 1, [""] + new_sealed_lines))
 
     # T5 (R2): write Deferred-section promotions
     if new_defs and d_start is not None:
         if def_entries:
             first_def = def_entries[0]["line_idx"]
             last_def = def_entries[-1]["line_idx"] + 1
-            new_lines = replace_block(new_lines, first_def, last_def, new_def_lines)
+            edits.append((first_def, last_def, new_def_lines))
         else:
-            block = [""] + new_def_lines
-            new_lines = new_lines[:d_start + 1] + block + new_lines[d_start + 1:]
+            edits.append((d_start + 1, d_start + 1, [""] + new_def_lines))
 
     if traj_table is not None:
         h, _, _, last = traj_table
-        new_lines = replace_block(new_lines, h, last, new_traj_block)
+        edits.append((h, last, new_traj_block))
     else:
-        block = [""] + new_traj_block
-        new_lines = new_lines[:t_start + 1] + block + new_lines[t_start + 1:]
+        edits.append((t_start + 1, t_start + 1, [""] + new_traj_block))
+
+    new_lines = _apply_edits(lines, edits)
 
     new_content = "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
     write_or_diff(art, content, new_content, args.dry_run)

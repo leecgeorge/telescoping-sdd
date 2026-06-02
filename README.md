@@ -98,7 +98,7 @@ The loop above is calibrated for substantial, long-lived, multi-feature work. Fo
 | Aspect | `project-blueprint` | `spec-driven-dev` |
 |---|---|---|
 | Scope | Whole project | Single feature |
-| Output dir | `blueprint/` | `specs/<feature-name>/` |
+| Output dir | `blueprint/` | `specs/F<n>-<slug>/` |
 | Phases with panels | 3 (Scope, Architecture, Plan) | 3 (Specify, Design, Tasks) |
 | Implementation phase | — (hands off to `spec-driven-dev`) | Phase 4, no panel, interactive TDD |
 | Optional Phase 4 | Business Brief — self-contained HTML render of the three approved documents for stakeholder consumption | — |

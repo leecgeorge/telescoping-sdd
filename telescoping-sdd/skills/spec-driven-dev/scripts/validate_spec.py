@@ -17,9 +17,9 @@ non-code or non-Python/Java deliverables.
 
 Usage:
     python validate_spec.py <spec-directory>
-    python validate_spec.py specs/my-feature/ --phase spec
-    python validate_spec.py specs/my-feature/ --approve spec
-    python validate_spec.py specs/my-feature/ --language java
+    python validate_spec.py specs/F1-checkout-flow/ --phase spec
+    python validate_spec.py specs/F1-checkout-flow/ --approve spec
+    python validate_spec.py specs/F1-checkout-flow/ --language java
 """
 
 from __future__ import annotations
@@ -58,6 +58,13 @@ from arch_config import (  # noqa: E402
     find_project_root as arch_find_project_root,
     resolve_language,
     write_arch_config,
+)
+from spec_dirname import (  # noqa: E402
+    SLUGIFY_CLI_HINT,
+    classify_dirname,
+    display_safe,
+    parse_bound,
+    parse_feature_number,
 )
 
 
@@ -532,6 +539,141 @@ def check_previous_phase_approved(
         )
 
 
+def _read_plan_identifier(
+    spec_dir: Path, spec_content: Optional[str] = None
+) -> Optional[str]:
+    """Return the in-file PLAN feature identifier ('F<n>' or 'n/a') from
+    spec.md, or None if spec.md is absent/unreadable or has no identifier line.
+
+    If ``spec_content`` (already-read spec.md text) is supplied, it is parsed
+    directly — avoiding a redundant disk read on the ``validate_spec()`` path,
+    which already holds the content. When reading from disk it uses
+    encoding='utf-8' with an `except (OSError, UnicodeDecodeError)` guard — a
+    non-UTF-8 spec.md is treated as unreadable (None), NOT decoded with
+    errors='replace' (which could let the identifier line parse as garbage and
+    produce a wrong result instead of cannot-cross-check). Never raises.
+    """
+    if spec_content is None:
+        try:
+            with open(spec_dir / "spec.md", encoding="utf-8") as fh:
+                spec_content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            return None
+    m = PLAN_FEATURE_ID_LINE_RE.search(spec_content)
+    return m.group(1) if m else None
+
+
+def check_dir_identifier(
+    spec_dir: Path, spec_content: Optional[str] = None
+) -> ValidationResult:
+    """Cross-check the spec directory name against the in-file PLAN feature
+    identifier (R2). Returns a ValidationResult with zero checks (PASS) or one
+    FAIL check. Never raises.
+
+    Dispatches through `classify_dirname`; the bound (number, slug) pair comes
+    from `spec_dirname.parse_bound` — the single grammar-owned decomposition, so
+    no second interpretation of the bound form lives here. Names embedded in
+    messages are escaped via `spec_dirname.display_safe` so a control char in a
+    directory name cannot spoof the validator's stdout. Feature-number
+    comparison is numeric (so a non-canonical `F03` identifier vs an `F3`
+    directory is not a false mismatch). If `spec_content` (already-read spec.md
+    text) is supplied, the identifier is parsed from it instead of re-reading
+    the file. FAIL codes: dir-identifier-mismatch / missing-slug / invalid-slug
+    / cannot-cross-check.
+    """
+    result = ValidationResult()
+    name = spec_dir.name
+    escaped = display_safe(name)
+    category = classify_dirname(name)
+    hash_safe = (
+        "Renaming a spec directory does not invalidate any existing approval or "
+        "content hash."
+    )
+
+    if category == "bare":
+        # Bare token F<n>. Suggest the CANONICAL bound rename: parse_feature_number
+        # strips a leading zero (F03 -> 3). Feature 0 (F0/F00) has no valid bound
+        # form (the bound grammar is F[1-9]\d*), so steer those to n>=1 or a bare
+        # standalone slug rather than the impossible 'F0-<slug>'.
+        num = parse_feature_number(name)
+        if num and num >= 1:
+            result.add(
+                "missing-slug", False,
+                f"spec directory '{escaped}' is missing a slug. Rename it to "
+                f"'F{num}-<slug>' (e.g. 'F{num}-checkout-flow'). To generate a "
+                f"slug from the feature title, run:\n  {SLUGIFY_CLI_HINT}\n{hash_safe}",
+            )
+        else:
+            result.add(
+                "missing-slug", False,
+                f"spec directory '{escaped}' is missing a slug and implies feature "
+                f"number 0, which is not a valid feature number (bound names start "
+                f"at F1). Rename it to 'F<n>-<slug>' with n >= 1 for a PLAN-bound "
+                f"feature, or to a bare '<slug>' for a standalone feature. To "
+                f"generate a slug, run:\n  {SLUGIFY_CLI_HINT}\n{hash_safe}",
+            )
+        return result
+    if category == "invalid":
+        result.add(
+            "invalid-slug", False,
+            f"spec directory '{escaped}' is not a valid name. Valid forms are "
+            f"'F<n>-<slug>' (bound, e.g. 'F3-checkout-flow') or '<slug>' "
+            f"(standalone, e.g. 'cli-notes-app') where <slug> is lowercase "
+            f"kebab-case, max 50 characters. To generate a slug, run:\n  {SLUGIFY_CLI_HINT}\n"
+            f"{hash_safe}",
+        )
+        return result
+
+    # "bound" or "standalone": the decision depends on the in-file identifier.
+    identifier = _read_plan_identifier(spec_dir, spec_content)
+    if identifier is None:
+        result.add(
+            "cannot-cross-check", False,
+            "cannot read the PLAN feature identifier from spec.md. Ensure spec.md "
+            "has a '**PLAN feature identifier:**' line with its value filled in — "
+            "`F<n>` for a PLAN-bound feature or `n/a` for a standalone feature. "
+            "The spec template ships with the literal placeholder `F<n>`; replace "
+            "it with your feature number or `n/a`. (If spec.md is missing "
+            "entirely, approve the spec phase first.)",
+        )
+        return result
+
+    if category == "bound":
+        dir_num, slug = parse_bound(name)  # name is classified bound -> never None
+        if identifier == "n/a":
+            result.add(
+                "dir-identifier-mismatch", False,
+                f"spec directory '{escaped}' uses the bound form (implying PLAN "
+                f"feature F{dir_num}) but the in-file identifier is 'n/a'. "
+                f"Decision: if this feature is part of a blueprint/PLAN.md, set "
+                f"the in-file identifier to `F{dir_num}`; if it is standalone, "
+                f"rename the directory to the bare slug '{slug}'. {hash_safe}",
+            )
+        else:
+            id_num = int(identifier[1:])  # identifier is 'F<digits>' (n/a handled above)
+            if id_num != dir_num:
+                result.add(
+                    "dir-identifier-mismatch", False,
+                    f"spec directory '{escaped}' implies feature F{dir_num} but the "
+                    f"in-file identifier is '{identifier}'. Rename the directory to "
+                    f"'F{id_num}-{slug}' or correct the in-file identifier. {hash_safe}",
+                )
+            # else same feature number -> PASS (no check added)
+        return result
+
+    # category == "standalone"
+    if identifier != "n/a":
+        id_num = int(identifier[1:])
+        result.add(
+            "dir-identifier-mismatch", False,
+            f"spec directory '{escaped}' uses the standalone form but the in-file "
+            f"identifier is '{identifier}'. Decision: if this feature is part of a "
+            f"blueprint/PLAN.md, rename the directory to 'F{id_num}-{escaped}'; "
+            f"if it is standalone, change the in-file identifier to `n/a`. {hash_safe}",
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Phase validators
 # ---------------------------------------------------------------------------
@@ -574,6 +716,11 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     # broken spec.md fails for the right reason first. See
     # documentation/CFC.md § Validator for the full ruleset.
     validate_cfc_consumer(spec_dir, content, "spec", result)
+
+    # Directory<->identifier cross-check (R2). Runs AFTER the spec.md-exists
+    # early-return above, so a missing spec.md does not reach cannot-cross-check
+    # via this path — only the --approve path (which has no such guard) can.
+    result.checks.extend(check_dir_identifier(spec_dir, spec_content=content).checks)
 
     return result
 
@@ -1036,12 +1183,12 @@ def validate_cfc_consumer(
 def main():
     parser = argparse.ArgumentParser(
         description="Validate spec-driven development artifacts.",
-        epilog="Example: python validate_spec.py specs/my-feature/",
+        epilog="Example: python validate_spec.py specs/F1-checkout-flow/",
     )
     parser.add_argument(
         "spec_dir",
         type=Path,
-        help="Path to the spec directory (e.g., specs/my-feature/)",
+        help="Path to the spec directory (e.g., specs/F1-checkout-flow/)",
     )
     parser.add_argument(
         "--phase",
@@ -1099,6 +1246,18 @@ def main():
         if not target.is_file():
             print(f"Error: {target} does not exist")
             sys.exit(2)
+        # Directory<->identifier cross-check gates ALL three approve targets
+        # (spec/design/tasks). It reads the identifier from spec.md, so it runs
+        # for design/tasks approvals too; a mismatch blocks approval before any
+        # file is written.
+        dir_check = check_dir_identifier(spec_dir)
+        if not dir_check.passed:
+            print(dir_check.summary())
+            print(
+                f"Refusing to approve {target.name}: spec-directory cross-check "
+                f"FAILed. Fix the directory name or in-file identifier above."
+            )
+            sys.exit(1)
         approve_document(target)
         sys.exit(0)
 

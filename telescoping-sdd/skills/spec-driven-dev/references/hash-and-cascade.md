@@ -25,7 +25,7 @@ Do both without prompting for permission — the user has already authorized the
 
 ## Entering the Workflow Mid-Stream
 
-Run `python <script-path>/validate_spec.py specs/<feature-name>/`. Output lines are `  [<SEVERITY>] <name> — <detail>`.
+Run `python <script-path>/validate_spec.py specs/F<n>-<slug>/`. Output lines are `  [<SEVERITY>] <name> — <detail>`.
 
 1. **Fix structural FAILs first** (missing sections, `[TBD]`/`TODO`/`FIXME`, unchecked open questions). Self-correct trivial breaks; escalate when content judgment is needed. Re-run the validator to confirm before continuing. Do not re-stamp a structurally broken document.
 2. **Then handle approval-state FAILs:**
@@ -44,7 +44,7 @@ Run `python <script-path>/validate_spec.py specs/<feature-name>/`. Output lines 
 When an approved document changes, run this flow against it:
 
 1. **Verify structural validity.** Run the validator. If a structural check fails on the edited document, self-correct trivial breaks; escalate when content judgment is needed. Do not re-stamp until structural checks pass.
-2. **Re-stamp silently.** `python <script-path>/validate_spec.py specs/<feature-name>/ --approve <phase>` for the edited document. Emit a one-line note in the source-tagged format: `<file> re-stamped after <source-tag>: hash <old> → <new>` where `<source-tag>` is one of `user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch` (determined at step-2 emit time by inspecting the immediate trigger that brought the flow into Re-Approval After Edits). Example: `spec.md re-stamped after user-edit: hash abc123 → def456`. No prompt. This is the **writer side** of the source-tag contract; the new step 3 (Upstream panel re-review) reads the tag to determine source classification per AD1.
+2. **Re-stamp silently.** `python <script-path>/validate_spec.py specs/F<n>-<slug>/ --approve <phase>` for the edited document. Emit a one-line note in the source-tagged format: `<file> re-stamped after <source-tag>: hash <old> → <new>` where `<source-tag>` is one of `user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch` (determined at step-2 emit time by inspecting the immediate trigger that brought the flow into Re-Approval After Edits). Example: `spec.md re-stamped after user-edit: hash abc123 → def456`. No prompt. This is the **writer side** of the source-tag contract; the new step 3 (Upstream panel re-review) reads the tag to determine source classification per AD1.
 3. **Upstream panel re-review.** Before cascading, decide whether to stress-test the edited upstream itself with a panel pass. This step fires only on **top-level entries** of `Re-Approval After Edits` (a human keystroke edit, a Claude-drafted edit at the user's request, or a `git pull`/`merge`/branch-switch). When this flow is **re-entered** as a result of the downstream-revision recursion described in the "Resolution has two paths" block below, this step does NOT fire — the existing downstream optional panel re-review block at the end of this section remains the mechanism for stress-testing revised downstreams. When a single trigger (e.g., one `git pull`) brings new content into N approved documents simultaneously, each edited document is its own top-level entry; the step fires once per edited document, not once per pull.
 
    a. **Recommendation formation.** Determine edit source by deterministic precedence (highest first):

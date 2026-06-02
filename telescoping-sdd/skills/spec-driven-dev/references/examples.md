@@ -37,7 +37,7 @@ Actions:
 1. Read the existing spec.md
 2. Validate it has all required sections and is approved
 3. Invoke the `feature-architecture-analyst` subagent to draft `design.md`, passing spec.md as authoritative upstream context
-4. Write the returned draft to `specs/<feature-name>/design.md`
+4. Write the returned draft to `specs/F<n>-<slug>/design.md`
 5. Self-review design.md (up to 5 passes)
 6. Cross-reference design.md against spec.md for consistency
 7. Run the design panel (`telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, `telescoping-sdd:security-reviewer`) against design.md following the loop in `references/panel-review.md`
@@ -51,7 +51,7 @@ User says: "Break the design into tasks"
 Actions:
 1. Read spec.md and design.md
 2. Invoke the `feature-task-analyst` subagent to draft `tasks.md`, passing spec.md and design.md as authoritative upstream context
-3. Write the returned draft to `specs/<feature-name>/tasks.md`
+3. Write the returned draft to `specs/F<n>-<slug>/tasks.md`
 4. Self-review tasks.md (up to 5 passes)
 5. Cross-reference tasks.md against spec.md and design.md for consistency
 6. Run the tasks panel (`telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`) against tasks.md following the loop in `references/panel-review.md`. Concerns cannot be deferred forward at this phase — they must land on `Addressed`, `Sealed`, or `Accepted as risk`.

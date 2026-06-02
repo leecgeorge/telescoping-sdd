@@ -1,6 +1,6 @@
 # Phase 3: Tasks
 
-Drafts `specs/<feature-name>/tasks.md` — atomic, testable, sequenced implementation steps. Requires approved `spec.md` and `design.md` as upstream context. This is the last artifact phase before implementation — concerns cannot be deferred forward.
+Drafts `specs/F<n>-<slug>/tasks.md` — atomic, testable, sequenced implementation steps. Requires approved `spec.md` and `design.md` as upstream context. This is the last artifact phase before implementation — concerns cannot be deferred forward.
 
 ## Drafting
 
@@ -12,7 +12,7 @@ When invoking the agent, provide:
   - Java: `references/tasks-template-java.md`
   - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/tasks-template-python.md` for the structural skeleton (task fields and formatting are identical across profiles), but instruct the agent to populate Tests/Verification with the stack's real checks (a runnable assertion like `nginx -t` / `terraform validate` / `grep` / `test -f`, or a precise manual/review step) rather than `pytest`/`mvn` test functions. The per-task field set, GIVEN/WHEN/THEN, and the hash/approval blocks are unchanged.
 - The required per-task fields (below) — the agent must produce exactly these
-- The approved `specs/<feature-name>/spec.md` and `specs/<feature-name>/design.md` as authoritative upstream context
+- The approved `specs/F<n>-<slug>/spec.md` and `specs/F<n>-<slug>/design.md` as authoritative upstream context
 - The task sizing rules (below) and the instruction that every spec requirement and every design component must be covered by at least one task
 - If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, pass its contents. The agent's CFC enforcement-task obligation (below) depends on this input.
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `tasks.md`, including the summary table at the top and phase groupings if there are more than a few tasks
@@ -40,7 +40,7 @@ Task sizing rules:
 - A task should touch no more than 3-5 files
 - If a task feels too large, split it
 
-After the agent returns the draft, write it to `specs/<feature-name>/tasks.md` and perform the self-review yourself before presenting it to the user.
+After the agent returns the draft, write it to `specs/F<n>-<slug>/tasks.md` and perform the self-review yourself before presenting it to the user.
 
 ## Tasks Self-Review
 
@@ -72,7 +72,7 @@ For each issue found:
 
 ## Tasks Panel Review
 
-After the spec-design-tasks consistency check is complete, run the tasks panel against `specs/<feature-name>/tasks.md` following the loop described in `references/panel-review.md`.
+After the spec-design-tasks consistency check is complete, run the tasks panel against `specs/F<n>-<slug>/tasks.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
 
@@ -83,7 +83,7 @@ Pass the current tasks.md and the approved spec.md and design.md. This is the la
 After the panel review is complete, run validation:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/
+python <script-path>/validate_spec.py specs/F<n>-<slug>/
 ```
 
 **Stop and ask the user to review tasks.md before proceeding.**
@@ -93,5 +93,5 @@ If the user requests a change at this gate (before approving), do not apply it s
 When the user approves, run:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/ --approve tasks
+python <script-path>/validate_spec.py specs/F<n>-<slug>/ --approve tasks
 ```

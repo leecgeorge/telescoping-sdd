@@ -5,7 +5,7 @@ skills/spec-driven-dev/references/workflow-overview.md. Edits to shared content 
 Intentional asymmetries vs the sibling (do NOT "sync" these away):
 - Phase model is skill-specific: blueprint has 3 phases (Scope/Architecture/Plan); spec-driven-dev has 4 (Specify/Design/Tasks/Implement) — diagram, headings, and phase count differ by design.
 - spec-driven-dev's Phase 4 (Implement) is SDD-only: extra Phase-Summary row, "Phase 4 executed directly" note, a 4th review gate, and the "Implement task" quick command have no blueprint counterpart.
-- Terminal Phase-3 artifact differs: PLAN.md (blueprint) vs tasks.md (spec-driven-dev), along with the File Layout tree (flat blueprint/ vs specs/feature-name/).
+- Terminal Phase-3 artifact differs: PLAN.md (blueprint) vs tasks.md (spec-driven-dev), along with the File Layout tree (flat blueprint/ vs specs/F<n>-<slug>/).
 - Blueprint-only doctrine sections (Handoff to Feature Development, Bound-Spec Immutability, Closed-Feature-Row Immutability) are PLAN/CFC-producer rules, intentionally absent from spec-driven-dev (the consumer).
 Otherwise the copies differ only cosmetically (phase names, filenames, example feature names, quick-command phrasing, Principles wording).
 -->
@@ -78,10 +78,10 @@ Once the blueprint is complete:
 ```
 PLAN.md Feature List          spec-driven-dev
 ┌─────────────────────┐      ┌─────────────────────┐
-│ F1: User Auth       │─────>│ specs/user-auth/     │
-│ F2: Data Models     │─────>│ specs/data-models/   │
-│ F3: API Endpoints   │─────>│ specs/api-endpoints/  │
-│ F4: Dashboard       │─────>│ specs/dashboard/      │
+│ F1: User Auth       │─────>│ specs/F1-user-auth/  │
+│ F2: Data Models     │─────>│ specs/F2-data-models/│
+│ F3: API Endpoints   │─────>│ specs/F3-api-endpoints/ │
+│ F4: Dashboard       │─────>│ specs/F4-dashboard/  │
 └─────────────────────┘      └─────────────────────┘
 ```
 
