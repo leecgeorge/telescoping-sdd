@@ -1693,3 +1693,208 @@ def test_template_deferred_dispositions_present():
         assert "Terminal Phase: must NOT contain" in text, (
             f"{rel}: missing prohibition HTML comment"
         )
+
+
+# ============================================================================
+# T8 (R6, AD9/I6) — multi-section reassembly corruption regression matrix.
+# When ONE pass promotes a new Sealed AND (re)writes Deferred, the pre-fix
+# code applied the four section edits sequentially using PRE-EDIT offsets:
+# the Sealed promotion (above Deferred in file order) shifted the Deferred
+# section down, so the subsequent Deferred edit wrote at stale offsets —
+# duplicating [DEF-NN] entries and clobbering the Deferred / Approval headings.
+# These tests are RED against the pre-refactor code and GREEN after AD9.
+# ============================================================================
+
+
+def _artifact_with_seals_and_defs(
+    tmp_path, sealed_body, deferred_body, latest_rows, name="spec.md"
+):
+    """Panel doc with configurable Sealed + Deferred section bodies + Latest rows.
+
+    `sealed_body` / `deferred_body` are the text BETWEEN the section heading
+    (followed by its blank line) and the next heading — "" for an empty section,
+    or pre-populated `[SEAL-NN]` / `[DEF-NN]` entry lines (each newline-terminated,
+    ending with a trailing blank line).
+    """
+    artifact = tmp_path / name
+    artifact.write_text(
+        "# Doc\n\n"
+        "## Panel Review\n\n"
+        "### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        "\n"
+        "### Sealed dispositions\n\n"
+        f"{sealed_body}"
+        "### Deferred dispositions\n\n"
+        f"{deferred_body}"
+        "### Latest pass detail\n\n"
+        "| Severity | Source | Concern | Disposition | Notes |\n"
+        "|----------|--------|---------|-------------|-------|\n"
+        f"{latest_rows}"
+        "\n"
+        "## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    return artifact
+
+
+def _assert_panel_intact(text):
+    """Structural invariants that the simultaneous Sealed+Deferred promotion
+    must preserve. Each heading appears exactly once; every `[DEF-NN]` token
+    lives strictly inside the unique Deferred window and is never duplicated.
+    """
+    import re
+
+    for h in (
+        "### Sealed dispositions",
+        "### Deferred dispositions",
+        "### Latest pass detail",
+        "## Approval",
+    ):
+        # Count headings independently and BEFORE any window scan — a duplicated
+        # heading is itself a corruption symptom that a .find()-based window
+        # would silently mask.
+        n = text.count(h)
+        assert n == 1, f"{h!r} appears {n} time(s), expected exactly 1"
+
+    lines = text.splitlines()
+    d_idx = next(
+        i for i, ln in enumerate(lines) if ln.strip() == "### Deferred dispositions"
+    )
+    # The Deferred window ends at the NEXT ##/### heading (computed by scan, NOT
+    # hard-coded to ### Latest — a DEF orphaned past Latest must not escape).
+    next_h = next(
+        (i for i in range(d_idx + 1, len(lines)) if re.match(r"^#{2,3}\s", lines[i])),
+        len(lines),
+    )
+    def_token = re.compile(r"\[DEF-\d+\]")
+    for i, ln in enumerate(lines):
+        if def_token.search(ln):
+            assert d_idx < i < next_h, (
+                f"[DEF-NN] token outside the Deferred window "
+                f"({d_idx} < {i} < {next_h} failed): {ln!r}"
+            )
+    tokens = def_token.findall(text)
+    assert len(tokens) == len(set(tokens)), f"duplicate [DEF-NN] tokens: {tokens}"
+
+
+_NEW_SEAL_PLUS_DEFERRED_LATEST = (
+    "| [HIGH] | critic | new sealed concern | Sealed | Defense: user-directed keep |\n"
+    "| [MED] | pragmatist | new deferred concern | Deferred → tasks.md | "
+    "Routed because: belongs later |\n"
+)
+
+_TWO_EXISTING_DEFS = (
+    "- `[DEF-01]` **First deferred** → tasks.md (pass 1) — Routed because: a.\n"
+    "- `[DEF-02]` **Second deferred** → tasks.md (pass 1) — Routed because: b.\n\n"
+)
+
+
+def test_reassembly_empty_sealed_populated_deferred(tmp_path):
+    """Empty Sealed (insert branch) + populated Deferred (replace branch) +
+    simultaneous new Sealed + new Deferred. This is the case that lost the
+    heading in the wild. RED pre-fix, GREEN post-fix.
+    """
+    artifact = _artifact_with_seals_and_defs(
+        tmp_path,
+        sealed_body="",  # empty -> Sealed insert branch
+        deferred_body=_TWO_EXISTING_DEFS,  # [DEF-01]/[DEF-02] -> Deferred replace branch
+        latest_rows=_NEW_SEAL_PLUS_DEFERRED_LATEST,
+    )
+    proc = _run_archive_pass([str(artifact), "--phase", "2"])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    _assert_panel_intact(text)
+    # The new SEAL landed under Sealed; the new DEF is sequential (DEF-03).
+    assert "[SEAL-01]" in text
+    assert "[DEF-01]" in text and "[DEF-02]" in text and "[DEF-03]" in text
+    # Latest cleared (the promoted rows no longer appear as Latest table rows).
+    assert "Deferred → tasks.md | Routed because: belongs later" not in text
+    assert "| [HIGH] | critic | new sealed concern |" not in text
+    # The new SEAL is under ### Sealed dispositions, not orphaned into Deferred.
+    lines = text.splitlines()
+    s_idx = lines.index("### Sealed dispositions")
+    d_idx = lines.index("### Deferred dispositions")
+    seal_line = next(i for i, ln in enumerate(lines) if "[SEAL-01]" in ln)
+    assert s_idx < seal_line < d_idx, "[SEAL-01] not in the Sealed section"
+
+
+def test_reassembly_populated_sealed_populated_deferred(tmp_path):
+    """Both sections pre-populated (both replace branches). The new Sealed row
+    grows the Sealed block by one line (net +1 delta), shifting Deferred — the
+    stale-offset trigger. RED pre-fix, GREEN post-fix.
+    """
+    artifact = _artifact_with_seals_and_defs(
+        tmp_path,
+        sealed_body=(
+            "- `[SEAL-01]` **Existing seal** (pass 1, user-directed) — Defense: x.\n\n"
+        ),
+        deferred_body=_TWO_EXISTING_DEFS,
+        latest_rows=_NEW_SEAL_PLUS_DEFERRED_LATEST,
+    )
+    proc = _run_archive_pass([str(artifact), "--phase", "2"])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    _assert_panel_intact(text)
+    # Existing + new seal both present and sequential.
+    assert "[SEAL-01]" in text and "[SEAL-02]" in text
+    assert "[DEF-03]" in text
+    # Deferred section ends with all three DEF entries in order.
+    lines = text.splitlines()
+    d_idx = lines.index("### Deferred dispositions")
+    next_h = next(
+        i for i in range(d_idx + 1, len(lines)) if lines[i].startswith("#")
+    )
+    window = "\n".join(lines[d_idx:next_h])
+    assert window.index("[DEF-01]") < window.index("[DEF-02]") < window.index("[DEF-03]")
+
+
+def test_reassembly_legacy_auto_insert_deferred(tmp_path):
+    """Legacy artifact with NO ### Deferred dispositions heading (triggers the
+    auto-insert) PLUS a simultaneous new Sealed + new Deferred. The auto-insert
+    adds the section, then both promotions must land correctly in one pass.
+    RED pre-fix, GREEN post-fix.
+    """
+    artifact = _legacy_artifact_without_deferred_section(
+        tmp_path, _NEW_SEAL_PLUS_DEFERRED_LATEST
+    )
+    proc = _run_archive_pass([str(artifact), "--phase", "2"])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    _assert_panel_intact(text)
+    assert "### Deferred dispositions" in text  # auto-inserted
+    assert "[SEAL-01]" in text
+    assert "[DEF-01]" in text  # first DEF in a freshly-inserted section
+    # Section order preserved.
+    assert (
+        text.find("### Sealed dispositions")
+        < text.find("### Deferred dispositions")
+        < text.find("### Latest pass detail")
+        < text.find("## Approval")
+    )
+
+
+def test_apply_edits_rejects_overlapping_ranges():
+    """_apply_edits asserts pairwise non-overlap (AD9/I6 precondition)."""
+    import pytest
+
+    ap = _load_archive_pass()
+    with pytest.raises(AssertionError):
+        ap._apply_edits(["a", "b", "c", "d"], [(0, 2, ["X"]), (1, 3, ["Y"])])
+
+
+def test_apply_edits_applies_descending():
+    """Two disjoint edits with different line-count deltas land correctly
+    regardless of input order (descending-by-start application)."""
+    ap = _load_archive_pass()
+    lines = ["0", "1", "2", "3", "4", "5"]
+    edits = [(4, 5, ["X"]), (1, 2, ["A1", "A2", "A3"])]
+    expected = ["0", "A1", "A2", "A3", "2", "3", "X", "5"]
+    assert ap._apply_edits(lines, edits) == expected
+    # Order-independent: reversed input yields the identical result.
+    assert ap._apply_edits(lines, list(reversed(edits))) == expected
+    # Input list is not mutated.
+    assert lines == ["0", "1", "2", "3", "4", "5"]

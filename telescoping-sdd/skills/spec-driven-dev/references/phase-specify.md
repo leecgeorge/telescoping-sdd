@@ -1,6 +1,6 @@
 # Phase 1: Specify
 
-Drafts `specs/<feature-name>/spec.md` — what to build and why. This is the first artifact; design and tasks depend on its approval.
+Drafts `specs/F<n>-<slug>/spec.md` — what to build and why. This is the first artifact; design and tasks depend on its approval.
 
 ## Drafting
 
@@ -13,7 +13,7 @@ When invoking the agent, provide:
   - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/spec-template-python.md` for the structural skeleton (identical across profiles), but instruct the agent to ignore its Python-specific examples — the Project Structure and Commands content must reflect the actual stack (e.g. `docker-compose.yml`/`nginx.conf` paths, `nginx -t`/`terraform validate` commands), not `src/*.py`/`pytest`. The structural sections, GIVEN/WHEN/THEN, and the hash/approval blocks are unchanged.
 - The required sections (below) — the agent must produce exactly these
 - Everything the user has told you about the feature so far
-- Any prior artifacts in `specs/<feature-name>/` if the user is resuming mid-stream
+- Any prior artifacts in `specs/F<n>-<slug>/` if the user is resuming mid-stream
 - The PLAN feature identifier for this feature (`F<n>`), if this feature originated from a `blueprint/PLAN.md`'s Feature Breakdown. If the feature is standalone (no upstream PLAN), pass `n/a`. The agent writes this verbatim into the `**PLAN feature identifier:**` line at the top of the spec.
 - If `blueprint/PLAN.md` exists at the project root, also pass the contents of its `## Cross-Feature Contracts` section (if any). The agent's CFC binding obligation (below) requires this input.
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `spec.md` (not a partial or diff)
@@ -31,7 +31,7 @@ Required sections:
 - **Boundaries** — "Always do", "Ask first", "Never do" lists
 - **Success Criteria** — Measurable conditions for done
 
-After the agent returns the draft, write it to `specs/<feature-name>/spec.md` and perform the self-review yourself before presenting it to the user.
+After the agent returns the draft, write it to `specs/F<n>-<slug>/spec.md` and perform the self-review yourself before presenting it to the user.
 
 ## Spec Self-Review
 
@@ -49,7 +49,7 @@ If any issues were fixed, repeat the self-review on the updated spec — fixes c
 
 ## Spec Panel Review
 
-After the spec self-review is complete, run the spec panel against `specs/<feature-name>/spec.md` following the loop described in `references/panel-review.md`.
+After the spec self-review is complete, run the spec panel against `specs/F<n>-<slug>/spec.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`.
 
@@ -60,10 +60,10 @@ There are no upstream approved artifacts at this phase — pass the current spec
 After the panel review is complete, run validation:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/
+python <script-path>/validate_spec.py specs/F<n>-<slug>/
 ```
 
-Where `<script-path>` is the path to the skill's `scripts/` directory (either relative from the project, e.g. `specs/<feature-name>/../../spec-driven-dev/scripts`, or the global install location).
+Where `<script-path>` is the path to the skill's `scripts/` directory (either relative from the project, e.g. `specs/F<n>-<slug>/../../spec-driven-dev/scripts`, or the global install location).
 
 **Stop and ask the user to review spec.md before proceeding.**
 
@@ -72,7 +72,7 @@ If the user requests a change at this gate (before approving), do not apply it s
 When the user approves, run:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/ --approve spec
+python <script-path>/validate_spec.py specs/F<n>-<slug>/ --approve spec
 ```
 
 This marks the spec as approved with a content hash. If the spec is edited after approval, the hash will no longer match — the skill detects this on next entry (or immediately, if Claude made the edit) and triggers the auto-cascade flow described in `hash-and-cascade.md` § "Re-Approval After Edits": structural validity is checked, the hash is re-stamped silently, and the consistency check ripples downstream. Cosmetic edits proceed without interruption; substantive edits halt at the consistency-check boundary so the user can decide whether to revise the downstream artifacts.

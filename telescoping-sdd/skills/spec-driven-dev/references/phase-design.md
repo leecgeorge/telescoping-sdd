@@ -1,6 +1,6 @@
 # Phase 2: Design
 
-Drafts `specs/<feature-name>/design.md` — how to build the feature. Requires an approved `spec.md` as upstream context.
+Drafts `specs/F<n>-<slug>/design.md` — how to build the feature. Requires an approved `spec.md` as upstream context.
 
 ## Drafting
 
@@ -12,7 +12,7 @@ When invoking the agent, provide:
   - Java: `references/design-template-java.md`
   - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/design-template-python.md` for the structural skeleton (the section list is identical across profiles), but instruct the agent to *reinterpret* the stack-shaped sections for the actual deliverable rather than inventing code — e.g. Data Models → config-file schemas / resource topology, Interfaces → shell-script or cross-component contracts, Testing Strategy → the command/manual/review checks the stack supports. All required section headings stay present (the validator checks presence); only their content adapts.
 - The required sections (below) — the agent must produce exactly these
-- The approved `specs/<feature-name>/spec.md` as authoritative upstream context
+- The approved `specs/F<n>-<slug>/spec.md` as authoritative upstream context
 - A clear instruction that the design must address every requirement and respect every boundary from the spec
 - If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, pass its contents (or at minimum the CFC entries naming this feature in their Participating features). The agent's CFC obligation (below) requires this input.
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `design.md` that fits into the existing codebase (the agent will read the repo to ground file paths and integration points)
@@ -34,7 +34,7 @@ Required sections:
 - **Risks** — What could go wrong and concrete mitigation actions
 - **Implementation Sequence** — High-level build order for components
 
-After the agent returns the draft, write it to `specs/<feature-name>/design.md` and perform the self-review yourself before presenting it to the user.
+After the agent returns the draft, write it to `specs/F<n>-<slug>/design.md` and perform the self-review yourself before presenting it to the user.
 
 ## Design Self-Review
 
@@ -66,7 +66,7 @@ For each issue found:
 
 ## Design Panel Review
 
-After the spec-design consistency check is complete, run the design panel against `specs/<feature-name>/design.md` following the loop described in `references/panel-review.md`.
+After the spec-design consistency check is complete, run the design panel against `specs/F<n>-<slug>/design.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, `telescoping-sdd:security-reviewer`.
 
@@ -77,7 +77,7 @@ Pass the current design.md and the approved spec.md. Deferred concerns from this
 After the panel review is complete, run validation:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/
+python <script-path>/validate_spec.py specs/F<n>-<slug>/
 ```
 
 **Stop and ask the user to review design.md before proceeding.**
@@ -87,5 +87,5 @@ If the user requests a change at this gate (before approving), do not apply it s
 When the user approves, run:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/ --approve design
+python <script-path>/validate_spec.py specs/F<n>-<slug>/ --approve design
 ```

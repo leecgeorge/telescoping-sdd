@@ -20,9 +20,26 @@ Every feature follows four phases. **Always get user approval before moving to t
 3. **Tasks** — Break it into atomic steps (`tasks.md`) — drafted by the `telescoping-sdd:feature-task-analyst` agent
 4. **Implement** — Execute tasks with TDD (no delegation — the calling Claude implements directly)
 
-All spec documents live in `specs/<feature-name>/` at the project root.
+All spec documents live in the feature's spec directory at the project root (see **Spec directory naming** below).
 
 Read `references/workflow-overview.md` for a quick-reference diagram of the full process.
+
+### Spec directory naming
+
+A spec directory's name takes one of two forms, and it MUST agree with the `**PLAN feature identifier:**` line inside `spec.md`:
+
+- **Bound** — `specs/F<n>-<slug>/` (uppercase `F`, a positive feature number with no leading zero, then a lowercase-kebab `<slug>` of ≤ 50 chars). Use this for a feature that appears in `blueprint/PLAN.md`; its in-file identifier is `` `F<n>` ``. Example: directory `specs/F3-checkout-flow/` pairs with the line `**PLAN feature identifier:** `F3``.
+- **Standalone** — `specs/<slug>/` (a bare lowercase-kebab slug, no `F<n>-` prefix). Use this for a feature with no PLAN; its in-file identifier is `` `n/a` ``. Example: directory `specs/checkout-flow/` pairs with `**PLAN feature identifier:** `n/a``.
+
+`validate_spec.py` enforces this agreement as a **blocking FAIL** — it owns the authoring gate, so a bare `specs/F<n>/` directory (missing slug), an invalid name, or a directory↔identifier mismatch refuses both validation and `--approve`. `validate_blueprint.py` is deliberately more lenient: a bare `specs/F<n>/` still resolves to its feature for CFC coverage but earns only a `malformed-spec-dirname` **WARN**. Same root cause, different severity — blueprint stays non-blocking so older projects keep resolving coverage, while the spec owns the authoring gate.
+
+To generate a slug from a feature title, run (by file path, not `-m`):
+
+```bash
+python telescoping-sdd/scripts/spec_dirname.py slugify "My Feature Title"
+```
+
+**Migration (pre-1.7.0 → 1.7.0):** rename any bare `specs/F<n>/` directory to `specs/F<n>-<slug>/`. Renaming a spec directory is **hash-safe** — it never invalidates any existing approval or content hash. Lowercase `specs/f<digits>-…/` directories are already valid standalone slugs (the bound form is uppercase-`F` only) and need **no** migration.
 
 ### When to use this — and when a lighter path fits
 
@@ -64,7 +81,7 @@ Before starting any phase, detect the project's stack:
 **Persist the decision once.** As soon as the stack is known (especially after resolving a Python-vs-Java ambiguity, or confirming `generic` for an infra / static-site / skill project), persist it so it stops being re-derived and can't drift between runs:
 
 ```bash
-python <script-path>/validate_spec.py specs/<feature-name>/ --set-language {python|java|generic}
+python <script-path>/validate_spec.py specs/F<n>-<slug>/ --set-language {python|java|generic}
 ```
 
 This writes `.sdd/architecture.json` (the declare-once store) at the project root and exits. It touches no content hash and is independent of `--approve`, so it never interacts with the CFC cascade. It is the single explicit write path — nothing writes this file silently. Commit the file; it is project state, like other config. Thereafter every validate run resolves the stack from it (`Language: … (from config)`), and you should too. State the resolved stack to the user at the start of the first phase you enter.
@@ -73,7 +90,7 @@ This writes `.sdd/architecture.json` (the declare-once store) at the project roo
 
 ## Phase 1: Specify
 
-Output: `specs/<feature-name>/spec.md`. Drafted by `telescoping-sdd:feature-spec-analyst`.
+Output: `specs/F<n>-<slug>/spec.md`. Drafted by `telescoping-sdd:feature-spec-analyst`.
 
 Required sections: Objective, Requirements (with per-requirement **Acceptance Criteria** sub-labels), Project Structure, Boundaries, Success Criteria.
 
@@ -83,7 +100,7 @@ Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `
 
 ## Phase 2: Design
 
-Output: `specs/<feature-name>/design.md`. Drafted by `telescoping-sdd:feature-architecture-analyst`. Requires approved `spec.md`.
+Output: `specs/F<n>-<slug>/design.md`. Drafted by `telescoping-sdd:feature-architecture-analyst`. Requires approved `spec.md`.
 
 Required sections: Goals and Non-Goals, Architecture Decisions, Component Design, Data Models, Interfaces, Error Handling, Testing Strategy, File Structure, Dependencies, Integration Points, Risks, Implementation Sequence.
 
@@ -93,7 +110,7 @@ Panelists: `telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, 
 
 ## Phase 3: Tasks
 
-Output: `specs/<feature-name>/tasks.md`. Drafted by `telescoping-sdd:feature-task-analyst`. Requires approved `spec.md` and `design.md`.
+Output: `specs/F<n>-<slug>/tasks.md`. Drafted by `telescoping-sdd:feature-task-analyst`. Requires approved `spec.md` and `design.md`.
 
 Required per-task fields: Task ID, Requirement, Description, Files, Dependencies, Parallel, Acceptance Criteria, Verification (the validator FAILs if any is missing from a task), plus Tests (advisory — the validator warns rather than fails, since specific test names are often refined during implementation).
 
@@ -138,7 +155,7 @@ After completing all tasks, do a final check:
 - All verification passes — the full test suite for a code stack; every task's Verification check (and any stack linters/validators) for a `generic` stack
 - All acceptance criteria from spec.md are met
 - All tasks in tasks.md are checked off and all summary table statuses are `Done` (or `Skipped` for invalidated tasks)
-- **Re-stamp `tasks.md` once**: first run `python <script-path>/validate_spec.py specs/<feature-name>/` and confirm structural validity (no `[TBD]`, no `TODO`/`FIXME` leaked into task descriptions, all required sections present, `## Panel Review` populated). If any structural check fails, halt and fix before re-stamping — re-stamping a structurally broken `tasks.md` would silently approve known-bad content. Once structural checks pass, run `python <script-path>/validate_spec.py specs/<feature-name>/ --approve tasks`. This is the completion re-stamp called out in `references/hash-and-cascade.md` (intro paragraph: Phase 4 cadence) — it refreshes the hash that's been stale since the first tick. No cascade follows (tasks.md has no downstream).
+- **Re-stamp `tasks.md` once**: first run `python <script-path>/validate_spec.py specs/F<n>-<slug>/` and confirm structural validity (no `[TBD]`, no `TODO`/`FIXME` leaked into task descriptions, all required sections present, `## Panel Review` populated). If any structural check fails, halt and fix before re-stamping — re-stamping a structurally broken `tasks.md` would silently approve known-bad content. Once structural checks pass, run `python <script-path>/validate_spec.py specs/F<n>-<slug>/ --approve tasks`. This is the completion re-stamp called out in `references/hash-and-cascade.md` (intro paragraph: Phase 4 cadence) — it refreshes the hash that's been stale since the first tick. No cascade follows (tasks.md has no downstream).
 
 <!-- The two sections below mention a Phase 4 carve-out / Phase 4 exception that is intentional asymmetry vs project-blueprint/SKILL.md. spec-driven-dev has a Phase 4 (Implement) where tasks.md is edited continuously; project-blueprint has no analogous phase. Do not "sync" these pointer paragraphs by removing the Phase 4 references — the full asymmetry rationale lives in references/hash-and-cascade.md (intro paragraph). -->
 

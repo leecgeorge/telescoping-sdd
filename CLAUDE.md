@@ -93,7 +93,7 @@ claude plugin validate ./telescoping-sdd
 # plugin.json is authoritative — the marketplace entry mirror exists for metadata display.
 
 # Validate skill-specific artifacts (end-user facing)
-python telescoping-sdd/skills/spec-driven-dev/scripts/validate_spec.py specs/<feature>/
+python telescoping-sdd/skills/spec-driven-dev/scripts/validate_spec.py specs/F1-<slug>/
 python telescoping-sdd/skills/project-blueprint/scripts/validate_blueprint.py blueprint/
 
 # Run the test suite (python/pip are NOT on PATH — use the venv directly).

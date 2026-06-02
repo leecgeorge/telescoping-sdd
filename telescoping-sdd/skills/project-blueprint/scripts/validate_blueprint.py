@@ -53,7 +53,6 @@ from cfc_parser import (  # noqa: E402
     CFC_FIELD_PATTERNS,
     CFC_HEADER_PATTERN,
     CFC_PARTICIPATING_VALUE_PATTERN,
-    CFC_TAG_PATTERN,
     FEATURE_ID_WORD_PATTERN,
     CFCEntry as _SharedCFCEntry,
     detect_near_miss_cfc_header,
@@ -65,6 +64,12 @@ from cfc_parser import (  # noqa: E402
 from arch_config import (  # noqa: E402
     parse_arch_token,
     write_arch_config,
+)
+from spec_dirname import (  # noqa: E402
+    SLUGIFY_CLI_HINT,
+    classify_dirname,
+    display_safe,
+    parse_feature_number,
 )
 
 # Stack vocabulary the blueprint may declare. Mirrors validate_spec.py's
@@ -350,9 +355,13 @@ def classify_spec(spec_dir: Path) -> SpecState:
       - in-flight: spec.md approved, Phase 4 not yet complete
       - shipped: all phases approved + all tasks ticked + tasks.md hash matches content
     """
-    # Feature number is the trailing digits of the spec_dir name.
-    m = re.match(r"F(\d+)$", spec_dir.name)
-    feature_id = int(m.group(1)) if m else -1
+    # Feature number via the shared grammar: bound (F<n>-<slug>) and bare
+    # (F<n>) forms both resolve to their int; standalone/invalid names -> None,
+    # adapted to the existing -1 sentinel. SpecState.feature_id is typed int and
+    # used as a sort key and dict key, so it must NEVER be None (a None would
+    # raise TypeError on the sort and misbehave as a membership/dict key).
+    fid = parse_feature_number(spec_dir.name)
+    feature_id = fid if fid is not None else -1
 
     spec_path = spec_dir / "spec.md"
     design_path = spec_dir / "design.md"
@@ -433,30 +442,141 @@ def classify_spec(spec_dir: Path) -> SpecState:
     )
 
 
-def walk_specs(project_root: Path) -> list[SpecState]:
-    """Walk every specs/F<n>/ directory under project_root and classify each.
+def _classified_spec_entries(project_root: Path) -> list[tuple[Path, str]]:
+    """Walk specs/ ONCE and return ``(entry, classify_dirname(entry.name))`` for
+    each non-symlink subdirectory, sorted by name.
 
-    Returns a list ordered by feature ID ascending. Directories that don't
-    match the `F<n>` pattern are skipped. Symlinks are also skipped — they
-    can point outside the project tree, and following them would let a
-    maliciously- or accidentally-placed symlink coerce the validator to
-    read arbitrary files. Real specs live as real directories; if a project
-    legitimately needs to symlink a spec dir, the user can run with the
-    symlink target as `project_root`.
+    Single source of the specs/ listing + per-entry classification, so both
+    spec_states derivation (`_states_from_entries`) and the malformed-dirname
+    WARNs (`_emit_malformed_dirname_warns`) run off ONE walk instead of each
+    iterating and re-classifying every entry (they were two separate walks
+    before). Symlinks are skipped before classification — they can point outside
+    the project tree, and following them would let a stray symlink coerce the
+    validator into reading arbitrary files.
     """
     specs_root = project_root / "specs"
     if not specs_root.is_dir():
         return []
-    results: list[SpecState] = []
-    for entry in sorted(specs_root.iterdir()):
-        if entry.is_symlink():
+    try:
+        entries = sorted(specs_root.iterdir())
+    except OSError:
+        return []
+    classified: list[tuple[Path, str]] = []
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_dir():
             continue
-        if not entry.is_dir():
+        classified.append((entry, classify_dirname(entry.name)))
+    return classified
+
+
+def _states_from_entries(entries: list[tuple[Path, str]]) -> list[SpecState]:
+    """Build the SpecState list from pre-classified specs/ entries, sorted by
+    feature_id ascending. Admits "bound" (F<n>-<slug>) and "bare" (F<n>,
+    backward-compat); skips "standalone" (correctly not a PLAN-bound feature)
+    and "invalid" (surfaced as a malformed-spec-dirname WARN instead)."""
+    states = [
+        classify_spec(entry)
+        for entry, category in entries
+        if category in ("bound", "bare")
+    ]
+    return sorted(states, key=lambda s: s.feature_id)
+
+
+def walk_specs(project_root: Path) -> list[SpecState]:
+    """Walk every PLAN-bound spec directory under project_root and classify each.
+
+    Dispatches on `classify_dirname` (the single shared grammar dispatch point):
+      * "bound" (F<n>-<slug>) — admitted.
+      * "bare" (F<n>) — admitted for backward-compatibility (pre-1.7.0 form);
+        `_emit_malformed_dirname_warns` surfaces a migration WARN separately.
+      * "standalone" (<slug>) — skipped silently (a valid standalone feature is
+        correctly NOT a PLAN-bound feature).
+      * "invalid" — skipped silently (WARN emitted separately in validate_plan).
+
+    Returns a list ordered by feature ID ascending. Implemented over the shared
+    single-walk `_classified_spec_entries`, so `validate_plan` can derive both
+    the SpecStates and the malformed-dirname WARNs from one walk. Symlinks are
+    skipped before classification (see `_classified_spec_entries`). Kept as a
+    standalone helper because tests classify a specs/ tree directly via it.
+    """
+    return _states_from_entries(_classified_spec_entries(project_root))
+
+
+def _emit_malformed_dirname_warns(
+    entries: list[tuple[Path, str]], result: ValidationResult
+) -> None:
+    """Emit a `malformed-spec-dirname` WARN for each bare-token or invalid spec
+    directory, from the pre-classified `_classified_spec_entries` list (shares
+    the single specs/ walk with spec_states derivation, so walk and warn read
+    the SAME classification — they can never disagree on a directory's category).
+
+    "bare" (F<n>, incl. F0/F007) and "invalid" (e.g. My_Feature) earn a WARN;
+    "bound" and "standalone" are silent. WARN (not FAIL) keeps backward-
+    compatible bare-token directories in the coverage map while surfacing the
+    migration prompt. Embedded directory names are escaped via
+    `spec_dirname.display_safe` (the shared spoofing guard).
+    """
+    for entry, category in entries:
+        if category not in ("bare", "invalid"):
             continue
-        if not re.match(r"F\d+$", entry.name):
+        escaped = display_safe(entry.name)
+        if category == "bare":
+            # Suggest the CANONICAL bound rename: parse_feature_number strips a
+            # leading zero (F03 -> 3). Feature 0 (F0/F00) has no valid bound form
+            # (bound names start at F1), so steer those to n>=1 or a standalone.
+            num = parse_feature_number(entry.name)
+            if num and num >= 1:
+                rename_to = f"'F{num}-<slug>' (e.g. 'F{num}-checkout-flow')"
+            else:
+                rename_to = (
+                    "'F<n>-<slug>' with n >= 1 (feature numbers start at F1), or to "
+                    "a bare '<slug>' for a standalone feature"
+                )
+            detail = (
+                f"'specs/{escaped}' uses the old bare-token form. Rename to "
+                f"{rename_to}. To generate a slug, run:\n  {SLUGIFY_CLI_HINT}\n"
+                f"Renaming does not invalidate any existing approval or content hash."
+            )
+        else:  # "invalid"
+            detail = (
+                f"'specs/{escaped}' is not a valid spec directory name and will "
+                f"not be included in feature resolution. Rename to 'F<n>-<slug>' "
+                f"(if bound to a PLAN feature) or '<slug>' (standalone). To "
+                f"generate a slug, run:\n  {SLUGIFY_CLI_HINT}"
+            )
+        result.add("malformed-spec-dirname", False, detail, warn_only=True)
+
+
+def _emit_duplicate_feature_dir_warns(
+    spec_states: list[SpecState], result: ValidationResult
+) -> None:
+    """Emit a `duplicate-feature-dir` WARN for each feature_id shared by two or
+    more walked spec directories (e.g. specs/F3-alpha/ + specs/F3/, or two bound
+    dirs specs/F3-alpha/ + specs/F3-beta/).
+
+    The lenient `parse_feature_number` admits both forms as the same id, which
+    would silently drop one entry from any id-keyed dict — exactly the
+    silent-skip class this feature exists to kill. Builds its OWN id->dirs map
+    (it must NOT rely on `compute_coverage`'s `state_by_id`, which is built
+    inside a conditional that may not run). Both names are escaped via
+    unicode_escape. Call exactly once at the post-`if/else` join, OUTSIDE the
+    subsequent `if cfc_entries or has_any_cfc_tags:` coverage block.
+    """
+    by_id: dict[int, list[str]] = {}
+    for s in spec_states:
+        if s.feature_id == -1:
             continue
-        results.append(classify_spec(entry))
-    return sorted(results, key=lambda s: s.feature_id)
+        by_id.setdefault(s.feature_id, []).append(s.spec_dir.name)
+    for fid, names in by_id.items():
+        if len(names) < 2:
+            continue
+        escaped = ", ".join(f"'{display_safe(n)}'" for n in sorted(names))
+        detail = (
+            f"feature id {fid} is claimed by multiple spec directories: {escaped}. "
+            f"Each PLAN feature must map to exactly one spec directory — rename or "
+            f"remove the duplicates so the feature resolves unambiguously."
+        )
+        result.add("duplicate-feature-dir", False, detail, warn_only=True)
 
 
 class CFCCoverage:
@@ -1582,28 +1702,24 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
     # the owner-silent Enforcement WARN.
     cfc_entries = validate_cfc_section(content, result)
 
-    # Cross-artifact CFC checks (coverage walk + orphan-tag scan). Only run
-    # if a Cross-Feature Contracts section was declared OR specs/ has
-    # bound files with [CFC-N] tags (so we still flag orphans on a PLAN
-    # that removed all its CFCs). Per P2-7 from the post-implementation
-    # review: short-circuit BEFORE walking specs/ when there's clearly no
-    # CFC work to do — cheap substring scan over PLAN.md tells us if any
-    # [CFC-N] tag could possibly be relevant.
+    # Cross-artifact CFC checks (coverage walk + orphan-tag scan). specs/ is
+    # walked unconditionally — even a PLAN with no CFCs must be scanned for
+    # orphan [CFC-N] tags (it may have removed its CFCs and left orphans behind).
+    # ONE walk of specs/ (`_classified_spec_entries`) feeds BOTH the SpecState
+    # classification AND the malformed-dirname WARNs, so each entry is listed and
+    # classified once (it was iterated/classified twice before).
     project_root = blueprint_dir.parent
-    plan_has_cfc_tags = bool(CFC_TAG_PATTERN.search(content))
-    if cfc_entries or plan_has_cfc_tags:
-        spec_states = walk_specs(project_root)
-        has_any_cfc_tags = any(
-            s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
-        )
-    else:
-        # Fast path: PLAN declares no CFCs and references no tags. Still
-        # check specs/ for orphan tags (PLAN may have removed its CFCs and
-        # left orphans behind), but only via a cheap substring scan first.
-        spec_states = walk_specs(project_root) if (project_root / "specs").is_dir() else []
-        has_any_cfc_tags = any(
-            s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
-        )
+    spec_entries = _classified_spec_entries(project_root)
+    _emit_malformed_dirname_warns(spec_entries, result)
+    spec_states = _states_from_entries(spec_entries)
+    has_any_cfc_tags = any(
+        s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
+    )
+
+    # Duplicate-feature-dir detection runs ONCE here — OUTSIDE the coverage block
+    # below (which only runs when there is CFC work) — so a non-CFC PLAN with
+    # colliding spec directories still gets the WARN.
+    _emit_duplicate_feature_dir_warns(spec_states, result)
 
     if cfc_entries or has_any_cfc_tags:
         prior_hashes = read_cfc_hashes(content)

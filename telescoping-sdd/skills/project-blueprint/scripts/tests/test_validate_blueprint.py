@@ -245,6 +245,10 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     # seam); a published install ships it in the shared scripts dir, so the synthetic
     # layout must include it too or `parents[3] / "scripts"` import resolution fails.
     shutil.copy2(src_scripts / "arch_config.py", dst_scripts / "arch_config.py")
+    # spec_dirname.py is imported by validate_blueprint (classify_dirname /
+    # parse_feature_number for spec-directory grammar); same synthetic-layout
+    # requirement as arch_config.
+    shutil.copy2(src_scripts / "spec_dirname.py", dst_scripts / "spec_dirname.py")
 
     src_validator = (
         _REPO_ROOT / "telescoping-sdd" / "skills" / "project-blueprint" / "scripts"

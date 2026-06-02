@@ -396,7 +396,7 @@ def test_cli_orphaned_stale_content_round_trip(tmp_path):
         "## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
     )
     spec_hash = vb.compute_content_hash(spec_md)
-    spec_dir = tmp_path / "specs" / "F11"
+    spec_dir = tmp_path / "specs" / "F11-lock-order"
     spec_dir.mkdir(parents=True)
     (spec_dir / "spec.md").write_text(
         spec_md.replace("`pending`", f"`{spec_hash}`"), encoding="utf-8"
