@@ -380,3 +380,148 @@ def test_trim_trajectory_custom_keep_value():
     assert "| 3 | 2026-05-03 |" not in trimmed
     assert "| 4 | 2026-05-04 |" in trimmed
     assert "| 8 | 2026-05-08 |" in trimmed
+
+
+# ---------------------------------------------------------------------------
+# Relocated approval predicates + is_shipped (T9a)
+# ---------------------------------------------------------------------------
+#
+# `has_approval`, `approval_hash`, `approval_hash_matches`, `all_tasks_ticked`,
+# `read_file`, `is_shipped_from_contents`, and `is_shipped` were relocated here
+# from validate_blueprint.py so reconcile.py can share them without importing a
+# skill validator. The validator's own classify_spec test suite is the
+# behavioral regression guard; these tests pin the predicates at their new home.
+
+
+def _stamp(body: str) -> str:
+    """Return `body` with its `pending` Content Hash replaced by the real hash."""
+    return body.replace("`pending`", f"`{bc.compute_content_hash(body)}`")
+
+
+def _approved_doc(inner: str = "stuff") -> str:
+    """A minimal approved document (checkbox + matching Content Hash)."""
+    body = (
+        f"# Doc\n\n{inner}\n\n## Approval\n\n"
+        "- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    return _stamp(body)
+
+
+def test_has_approval_true_false():
+    assert bc.has_approval(_approved_doc()) is True
+    assert bc.has_approval("# Doc\n\nwip\n") is False
+    # Header present but checkbox unticked → not approved.
+    unticked = "# Doc\n\n## Approval\n\n- [ ] Approved to proceed to next phase\n"
+    assert bc.has_approval(unticked) is False
+
+
+def test_approval_hash_value_and_pending():
+    doc = _approved_doc()
+    assert bc.approval_hash(doc) == bc.compute_content_hash(doc)
+    # Absent line → None.
+    assert bc.approval_hash("# Doc\n\nwip\n") is None
+    # Literal 'pending' → None.
+    pending = (
+        "# Doc\n\n## Approval\n\n- [x] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n"
+    )
+    assert bc.approval_hash(pending) is None
+
+
+def test_approval_hash_matches_true_and_stale():
+    doc = _approved_doc()
+    assert bc.approval_hash_matches(doc) is True
+    # Mutate the body after stamping → stale hash → no match.
+    stale = doc.replace("stuff", "stuff edited")
+    assert bc.approval_hash_matches(stale) is False
+    # Unapproved doc → False.
+    assert bc.approval_hash_matches("# Doc\n\nwip\n") is False
+
+
+def test_narrow_hash_regex_distinct_from_broad():
+    """The relocated narrow APPROVAL_HASH_LINE_STRICT only matches hex-or-pending;
+    the module's broad APPROVAL_HASH_LINE captures any backtick body. They are
+    deliberately NOT unified (broad surfaces corruption verbatim for
+    read_stored_hash; narrow is a clean approval gate)."""
+    corrupt = (
+        "# Doc\n\n## Approval\n\n- [x] Approved to proceed to next phase\n"
+        "- **Content Hash:** `not-hex!!`\n"
+    )
+    # Narrow strict regex does NOT match a non-hex value → approval_hash None.
+    assert bc.approval_hash(corrupt) is None
+    # Broad regex (used by read_stored_hash) DOES surface the corrupt value.
+    assert bc.read_stored_hash(corrupt) == "not-hex!!"
+    assert bc.APPROVAL_HASH_LINE_STRICT is not bc.APPROVAL_HASH_LINE
+
+
+def test_all_tasks_ticked_matrix():
+    # All ticked (before Approval) → True.
+    ticked = "# Tasks\n\n- [x] A\n- [x] B\n\n## Approval\n\n- [x] Approved to proceed\n"
+    assert bc.all_tasks_ticked(ticked) is True
+    # One unticked → False.
+    one_open = "# Tasks\n\n- [x] A\n- [ ] B\n\n## Approval\n\n- [x] Approved to proceed\n"
+    assert bc.all_tasks_ticked(one_open) is False
+    # Narrative-only (zero task checkboxes) → False (vacuous-truth rejected).
+    narrative = "# Tasks\n\nDocs only.\n\n## Approval\n\n- [x] Approved to proceed\n"
+    assert bc.all_tasks_ticked(narrative) is False
+    # The Approval checkbox must NOT count as a task: a tasks.md whose only
+    # checkbox is the Approval marker is narrative-only → False.
+    only_approval = "# Tasks\n\nDocs only.\n\n## Approval\n\n- [x] Approved to proceed to next phase\n"
+    assert bc.all_tasks_ticked(only_approval) is False
+
+
+def test_read_file_present_and_absent(tmp_path):
+    p = tmp_path / "x.md"
+    p.write_text("hi\n", encoding="utf-8")
+    assert bc.read_file(p) == "hi\n"
+    assert bc.read_file(tmp_path / "missing.md") is None
+
+
+def _shipped_triple():
+    """Return (spec_md, design_md, tasks_md) for a fully-shipped feature."""
+    spec_md = _approved_doc("spec body")
+    design_md = _approved_doc("design body")
+    tasks_body = (
+        "# Tasks\n\n- [x] Implement\n- [x] Test\n\n## Approval\n\n"
+        "- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    tasks_md = _stamp(tasks_body)
+    return spec_md, design_md, tasks_md
+
+
+def test_is_shipped_from_contents_true():
+    spec_md, design_md, tasks_md = _shipped_triple()
+    assert bc.is_shipped_from_contents(spec_md, design_md, tasks_md) is True
+
+
+def test_is_shipped_from_contents_false_cases():
+    spec_md, design_md, tasks_md = _shipped_triple()
+    # Missing any artifact → False.
+    assert bc.is_shipped_from_contents(None, design_md, tasks_md) is False
+    assert bc.is_shipped_from_contents(spec_md, None, tasks_md) is False
+    assert bc.is_shipped_from_contents(spec_md, design_md, None) is False
+    # design not approved → False.
+    assert bc.is_shipped_from_contents(spec_md, "# Design\n\nwip\n", tasks_md) is False
+    # tasks approved but a box unticked → False.
+    tasks_open = _stamp(
+        "# Tasks\n\n- [x] A\n- [ ] B\n\n## Approval\n\n"
+        "- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    assert bc.is_shipped_from_contents(spec_md, design_md, tasks_open) is False
+
+
+def test_is_shipped_path_wrapper(tmp_path):
+    spec_md, design_md, tasks_md = _shipped_triple()
+    d = tmp_path / "F1-feature"
+    d.mkdir()
+    (d / "spec.md").write_text(spec_md, encoding="utf-8")
+    (d / "design.md").write_text(design_md, encoding="utf-8")
+    (d / "tasks.md").write_text(tasks_md, encoding="utf-8")
+    assert bc.is_shipped(d) is True
+    # Remove tasks.md → not shipped.
+    (d / "tasks.md").unlink()
+    assert bc.is_shipped(d) is False
+    # Empty dir → not shipped, no raise.
+    empty = tmp_path / "F2-empty"
+    empty.mkdir()
+    assert bc.is_shipped(empty) is False
