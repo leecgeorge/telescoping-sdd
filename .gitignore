@@ -24,3 +24,12 @@ Thumbs.db
 # Claude Code
 .claude
 .claude/settings.local.json
+
+# SDD pending-review marker (per-machine runtime state) + its atomic-write temps.
+# Ignore the FILE, not the .sdd/ dir — .sdd/architecture.json stays tracked.
+/.sdd/pending-review.json
+/.sdd/*.tmp
+
+# SDD working artifacts — author-side specs/design/tasks, NOT part of the
+# shipped plugin (the plugin is telescoping-sdd/). Do not ship.
+/specs/

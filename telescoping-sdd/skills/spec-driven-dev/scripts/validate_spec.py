@@ -38,11 +38,20 @@ _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
+    REAPPROVAL_REMINDER,
+    MarkerCorruptError,
     Severity,
     ValidationResult,
+    changed_since_stamp,
+    clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    now_iso_utc,
+    read_stored_hash,
+    reconcile_to_result,
+    stamped_at_pass_from_content,
     trim_trajectory_table,
+    upsert_pending_entry,
     verify_content_hash,
 )
 from cfc_parser import (  # noqa: E402
@@ -457,20 +466,65 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
     return hashes_match
 
 
-def approve_document(file_path: Path) -> None:
+def _resolve_marker_root_and_key(
+    path: Path, project_root: Optional[Path]
+) -> "tuple[Path, str]":
+    """Resolve the `.sdd/` marker root and `path`'s project-root-relative key.
+
+    Uses `project_root` when given, else the aliased `arch_find_project_root`
+    (NOT the local `find_project_root`, which targets blueprint/PLAN.md — AD3).
+    Write-side containment guard: if `path` is NOT under the resolved root (a
+    misconfigured `--project-root` that isn't an ancestor would otherwise yield a
+    `../…` key that reconcile permanently rejects -> stuck-pending deadlock),
+    fall back to walking up from `path` (guaranteed an ancestor) and WARN.
+    """
+    start = path if path.is_dir() else path.parent
+    root = (
+        project_root
+        if project_root is not None
+        else arch_find_project_root(start)
+    )
+    rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
+    if rel.startswith("..") or os.path.isabs(rel):
+        print(
+            f"WARNING: project root {root} is not an ancestor of {path}; "
+            f"resolving the .sdd/ marker root by walking up from the document "
+            f"instead (ignoring the supplied root for the marker).",
+            file=sys.stderr,
+        )
+        root = arch_find_project_root(start)
+        rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
+    return Path(root), rel
+
+
+def approve_document(
+    file_path: Path,
+    *,
+    task_tick: bool = False,
+    project_root: Optional[Path] = None,
+) -> None:
     """Mark a document as approved by checking the box and writing the content hash.
 
     Writes are atomic (temp-file + os.replace) to guard against partial-state
     corruption on Ctrl-C / disk-full / process kill mid-write.
+
+    On a CHANGED-document re-stamp (R1/R2 — the freshly-computed hash differs
+    from the stored one on a previously-approved doc) this prints the
+    REAPPROVAL_REMINDER and writes a `.sdd/pending-review.json` marker entry,
+    UNLESS ``task_tick`` is set (the Phase-4 task-tick carve-out, which
+    suppresses both and prints a stdout audit line). Keyword-only params with
+    safe defaults keep existing 1-arg callers unaffected.
     """
-    content = file_path.read_text(encoding="utf-8")
+    original_content = file_path.read_text(encoding="utf-8")
+    # Read the prior stored hash BEFORE the trim/rewrite mutates the file (DEF-06).
+    stored_hash = read_stored_hash(original_content)
 
     # Trim the `### Trajectory` table to the latest 15 data rows BEFORE
     # computing the document hash — the trimmed table is part of the
     # approved content. Older rows are replaced with a single elided
     # summary row at the top of the data section; re-approval merges
     # the existing elided count with new elisions.
-    content = trim_trajectory_table(content)
+    content = trim_trajectory_table(original_content)
 
     # Compute hash before modifying approval section
     content_hash = compute_content_hash(content)
@@ -513,6 +567,28 @@ def approve_document(file_path: Path) -> None:
         )
         raise
     print(f"Approved: {file_path} (hash: {content_hash})")
+
+    # R1/R2: changed-document re-stamp handling (printed AFTER the Approved line).
+    if task_tick:
+        # Phase-4 task-tick carve-out (DEF-01/RI-11): suppress reminder + marker.
+        # v1-posture: the bypass is stdout-audited + fail-closed (absent flag ->
+        # the gate fires). A git-durable Trajectory tag is a v2 enhancement, out
+        # of v1 scope.
+        print(
+            f"task-tick: pending-review suppressed for {file_path} "
+            f"(Phase-4 carve-out)"
+        )
+        return
+    if changed_since_stamp(content_hash, stored_hash, original_content):
+        root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
+        upsert_pending_entry(
+            root,
+            doc_rel,
+            content_hash,
+            now_iso_utc(),
+            stamped_at_pass_from_content(original_content),
+        )
+        print(REAPPROVAL_REMINDER)
 
 
 def check_previous_phase_approved(
@@ -679,7 +755,12 @@ def check_dir_identifier(
 # ---------------------------------------------------------------------------
 
 def validate_spec(spec_dir: Path) -> ValidationResult:
-    """Validate spec.md for required sections."""
+    """Validate spec.md for required sections.
+
+    Note: the R2 pending-review gate is NOT checked here — it is reconciled ONCE
+    at dispatch level in main() (so it fires under every --phase, and an absent
+    spec.md does not make the obligation vanish). See main().
+    """
     result = ValidationResult()
     spec_path = spec_dir / "spec.md"
     content = read_file(spec_path)
@@ -1202,6 +1283,18 @@ def main():
         help="Approve a phase document (marks it approved with content hash)",
     )
     parser.add_argument(
+        "--task-tick",
+        action="store_true",
+        help="Phase-4 task-tick re-stamp of tasks.md: suppress the re-approval "
+        "reminder + pending-review marker (only valid with --approve tasks).",
+    )
+    parser.add_argument(
+        "--decline-pending",
+        action="store_true",
+        help="Clear this spec dir's pending-review obligations — an explicit, "
+        "auditable decision to skip the upstream panel re-review.",
+    )
+    parser.add_argument(
         "--language",
         choices=list(LANGUAGE_PROFILES.keys()),
         default=None,
@@ -1239,6 +1332,38 @@ def main():
         print(f"Error: --project-root {project_root} is not a directory")
         sys.exit(2)
 
+    # --task-tick is the Phase-4 carve-out; it is meaningful ONLY on a tasks
+    # re-stamp. Reject it anywhere else (fail-closed; Never-Do).
+    if args.task_tick and args.approve != "tasks":
+        print("Error: --task-tick is only valid with --approve tasks")
+        sys.exit(2)
+
+    # Handle --decline-pending: clear this spec dir's pending obligations. An
+    # auditable user decision (logged to stdout), the validator-owned lifecycle
+    # for the marker (no hand-edited JSON).
+    # DEF-01 / RI-11 v1-posture: the bypass trace is stdout-audited + fail-closed
+    # (the gate fires by default). A git-durable Trajectory tag for declines is a
+    # recorded v2 enhancement, deliberately out of v1 scope.
+    if args.decline_pending:
+        root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
+        try:
+            removed = clear_pending_entries_for_prefix(root, spec_rel)
+        except MarkerCorruptError as exc:
+            print(
+                f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
+                f".sdd/pending-review.json manually."
+            )
+            sys.exit(1)
+        if removed:
+            noun = "entry" if len(removed) == 1 else "entries"
+            print(
+                f"Declined upstream panel re-review; cleared {len(removed)} pending "
+                f"{noun}: {', '.join(removed)}"
+            )
+        else:
+            print(f"No pending-review entries found for {spec_dir}.")
+        sys.exit(0)
+
     # Handle --approve
     if args.approve:
         file_map = {"spec": "spec.md", "design": "design.md", "tasks": "tasks.md"}
@@ -1258,7 +1383,7 @@ def main():
                 f"FAILed. Fix the directory name or in-file identifier above."
             )
             sys.exit(1)
-        approve_document(target)
+        approve_document(target, task_tick=args.task_tick, project_root=project_root)
         sys.exit(0)
 
     # Handle --set-language: the single, explicit write path for the declare-once
@@ -1338,6 +1463,27 @@ def main():
             all_passed = False
         if result.has_warnings:
             has_any_warnings = True
+
+    # R2 (dispatch-level): reconcile pending-review ONCE for this spec dir,
+    # regardless of --phase (so --phase design/tasks can't bypass the gate, and
+    # an absent spec.md doesn't make a design/tasks obligation vanish). Surfaced
+    # as a top-level `pending_review` result — uniform with validate_blueprint.
+    root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
+    pending_result = reconcile_to_result(
+        root, spec_rel, decline_cmd=f"validate_spec.py {spec_dir} --decline-pending"
+    )
+    if pending_result.checks:
+        if use_json:
+            json_output["pending_review"] = pending_result.to_dict()
+        else:
+            print(
+                f"Pending-review: "
+                f"{'FAILED' if not pending_result.passed else 'PASSED'}"
+            )
+            print(pending_result.summary())
+            print()
+        if not pending_result.passed:
+            all_passed = False
 
     if use_json:
         if all_passed and not has_any_warnings:

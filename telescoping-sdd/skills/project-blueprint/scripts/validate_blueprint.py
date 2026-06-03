@@ -33,16 +33,25 @@ sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
     PANEL_UNRESOLVED_DISPOSITION,
+    REAPPROVAL_REMINDER,
+    MarkerCorruptError,
     Severity,
     UnresolvedMarker,
     ValidationResult,
+    changed_since_stamp,
+    clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
     extract_panel_section,
     has_section,
+    now_iso_utc,
+    read_stored_hash,
+    reconcile_to_result,
     scan_unresolved_markers,
     section_has_content,
+    stamped_at_pass_from_content,
     trim_trajectory_table,
+    upsert_pending_entry,
     validate_panel_review,
     verify_content_hash,
 )
@@ -62,6 +71,7 @@ from cfc_parser import (  # noqa: E402
     parse_cfc_entries as _shared_parse_cfc_entries,
 )
 from arch_config import (  # noqa: E402
+    find_project_root as arch_find_project_root,
     parse_arch_token,
     write_arch_config,
 )
@@ -1167,7 +1177,35 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
     return hashes_match
 
 
-def approve_document(file_path: Path) -> None:
+def _resolve_marker_root_and_key(
+    path: Path, project_root: Optional[Path]
+) -> "tuple[Path, str]":
+    """Resolve the `.sdd/` marker root and `path`'s project-root-relative key.
+
+    Uses `project_root` when given, else walks up from `path` via
+    `arch_find_project_root`. Write-side containment guard: if `path` is NOT
+    under the resolved root (a misconfigured `--project-root` that isn't an
+    ancestor would otherwise yield a `../…` key that reconcile permanently
+    rejects -> stuck-pending), fall back to walking up from `path` and WARN.
+    """
+    start = path if path.is_dir() else path.parent
+    root = (
+        project_root if project_root is not None else arch_find_project_root(start)
+    )
+    rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
+    if rel.startswith("..") or os.path.isabs(rel):
+        print(
+            f"WARNING: project root {root} is not an ancestor of {path}; "
+            f"resolving the .sdd/ marker root by walking up from the document "
+            f"instead (ignoring the supplied root for the marker).",
+            file=sys.stderr,
+        )
+        root = arch_find_project_root(start)
+        rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
+    return Path(root), rel
+
+
+def approve_document(file_path: Path, *, project_root: Optional[Path] = None) -> None:
     """Mark a document as approved by checking the box and writing the content hash.
 
     For PLAN.md, additionally re-writes the per-CFC content hashes inside the
@@ -1179,15 +1217,23 @@ def approve_document(file_path: Path) -> None:
     body to prevent silent corruption of phantom `**Content Hash:**` or
     `- [ ] Approved` strings elsewhere in the document (e.g., a Feature
     Breakdown entry that happens to include a literal example).
+
+    On a CHANGED-document re-stamp (R1/R2) this prints the REAPPROVAL_REMINDER
+    and writes a `.sdd/pending-review.json` marker entry. There is no task-tick
+    carve-out here — blueprint has no Phase 4. For PLAN.md the marker hash is the
+    POST-CFC-refresh content_hash (the value written to `**Content Hash:**`), so
+    the change decision and the marker agree (H2).
     """
-    content = file_path.read_text(encoding="utf-8")
+    original_content = file_path.read_text(encoding="utf-8")
+    # Read the prior stored hash BEFORE trim/CFC-refresh mutates the content (DEF-06).
+    stored_hash = read_stored_hash(original_content)
 
     # Trim the `### Trajectory` table to the latest 15 data rows BEFORE
     # computing the document hash — the trimmed table is part of the
     # approved content. Older rows are replaced with a single elided
     # summary row at the top of the data section; re-approval merges
     # the existing elided count with new elisions.
-    content = trim_trajectory_table(content)
+    content = trim_trajectory_table(original_content)
 
     # For PLAN.md, refresh the per-CFC content-hash sub-block BEFORE computing
     # the document-level hash — the sub-block is part of the approved content.
@@ -1220,6 +1266,21 @@ def approve_document(file_path: Path) -> None:
 
     _atomic_write(file_path, content)
     print(f"Approved: {file_path} (hash: {content_hash})")
+
+    # R1/R2: changed-document re-stamp handling (printed AFTER the Approved line).
+    # `content_hash` is post-CFC-refresh for PLAN.md, so the comparison and the
+    # stored marker hash agree (H2). No task-tick carve-out (blueprint has no
+    # Phase 4).
+    if changed_since_stamp(content_hash, stored_hash, original_content):
+        root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
+        upsert_pending_entry(
+            root,
+            doc_rel,
+            content_hash,
+            now_iso_utc(),
+            stamped_at_pass_from_content(original_content),
+        )
+        print(REAPPROVAL_REMINDER)
 
 
 def _atomic_write(target: Path, content: str) -> None:
@@ -1821,12 +1882,52 @@ def main():
         default="text",
         help="Output format (default: text)",
     )
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help="Project root for the .sdd/ pending-review marker (default: walk up "
+        "from blueprint_dir)",
+    )
+    parser.add_argument(
+        "--decline-pending",
+        action="store_true",
+        help="Clear this blueprint's pending-review obligations — an explicit, "
+        "auditable decision to skip the upstream panel re-review.",
+    )
     args = parser.parse_args()
 
     blueprint_dir = args.blueprint_dir.resolve()
     if not blueprint_dir.is_dir():
         print(f"Error: {blueprint_dir} is not a directory")
         sys.exit(2)
+
+    project_root = args.project_root.resolve() if args.project_root else None
+    if project_root is not None and not project_root.is_dir():
+        print(f"Error: --project-root {project_root} is not a directory")
+        sys.exit(2)
+
+    # Handle --decline-pending: clear this blueprint's pending obligations (an
+    # auditable user decision, logged to stdout; validator-owned marker lifecycle).
+    if args.decline_pending:
+        root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
+        try:
+            removed = clear_pending_entries_for_prefix(root, bp_rel)
+        except MarkerCorruptError as exc:
+            print(
+                f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
+                f".sdd/pending-review.json manually."
+            )
+            sys.exit(1)
+        if removed:
+            noun = "entry" if len(removed) == 1 else "entries"
+            print(
+                f"Declined upstream panel re-review; cleared {len(removed)} pending "
+                f"{noun}: {', '.join(removed)}"
+            )
+        else:
+            print(f"No pending-review entries found for {blueprint_dir}.")
+        sys.exit(0)
 
     # Handle --write-arch-config: carry the blueprint's declared stack across the
     # blueprint→SDD seam. Standalone and explicit — NOT folded into --approve, so
@@ -1920,7 +2021,7 @@ def main():
                 print(f"  [{s}] {n}" + (f" — {d}" if d else ""))
             print()
 
-        approve_document(target)
+        approve_document(target, project_root=project_root)
         sys.exit(0)
 
     use_json = args.output == "json"
@@ -1982,6 +2083,31 @@ def main():
             all_passed = False
         if result.has_warnings:
             has_any_warnings = True
+
+    # R2 (dispatch-level): reconcile pending-review ONCE and surface still-pending
+    # obligations as a dedicated result — NOT inside each validate_* (which would
+    # auto-clear up to 3x and let an absent/skipped phase's FAIL vanish). AD7/I10/H1.
+    root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
+    scan_prefix = (
+        bp_rel if args.phase == "all" else f"{bp_rel}/{phase_file_map[args.phase]}"
+    )
+    pending_result = reconcile_to_result(
+        root,
+        scan_prefix,
+        decline_cmd=f"validate_blueprint.py {blueprint_dir} --decline-pending",
+    )
+    if pending_result.checks:
+        if use_json:
+            json_output["pending_review"] = pending_result.to_dict()
+        else:
+            print(
+                f"Pending-review: "
+                f"{'FAILED' if not pending_result.passed else 'PASSED'}"
+            )
+            print(pending_result.summary())
+            print()
+        if not pending_result.passed:
+            all_passed = False
 
     if use_json:
         if all_passed and not has_any_warnings:
