@@ -16,6 +16,17 @@ from pathlib import Path
 
 import pytest
 
+# Import the shared panel-doc helpers (extracted to one module in T12 so this
+# file and test_panel_review_autonomy.py share one definition — no drift).
+_TESTS = Path(__file__).resolve().parent
+if str(_TESTS) not in sys.path:
+    sys.path.insert(0, str(_TESTS))
+from _panel_doc_helpers import (  # noqa: E402
+    PB_FORBIDDEN_SDD_VOCABULARY,
+    extract_section as _extract_section,
+    extract_step_3_block as _extract_step_3_block,
+)
+
 # Locate the repo root so the test runs from any cwd.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 SDD_PATH = _REPO_ROOT / "telescoping-sdd/skills/spec-driven-dev/references/hash-and-cascade.md"
@@ -105,14 +116,7 @@ FORBIDDEN_PANELIST_NAMES_INLINE = (
     "ops-reviewer",
 )
 
-PB_FORBIDDEN_SDD_VOCABULARY = (
-    "spec.md",
-    "design.md",
-    "tasks.md",
-    "Specify",
-    "Design phase",
-    "Tasks phase",
-)
+# PB_FORBIDDEN_SDD_VOCABULARY is imported from _panel_doc_helpers (T12 extraction).
 
 # Vocabulary swap map: SDD → PB (applied to the SDD section for structural parity).
 VOCABULARY_SWAP_MAP = {
@@ -133,6 +137,10 @@ PB_ONLY_EXCISION_ANCHOR = "**PLAN.md special handling — closed-feature scope d
 
 SECTION_RE_APPROVAL_HEADING = "## Re-Approval After Edits"
 
+# R4 (T13): the factual-edit-shortcut anti-pattern subsection. Placed OUTSIDE the
+# step-3 block (in the Deferred Dispositions section, alongside ### Staleness cleanup).
+FACTUAL_EDIT_SHORTCUT_HEADING = "### Common failure: the factual-edit shortcut"
+
 
 # ============================================================================
 # Helpers
@@ -142,26 +150,8 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _extract_section(content: str, heading: str) -> str:
-    """Return the section starting at `heading` until the next `## ` heading."""
-    pattern = re.compile(
-        rf"({re.escape(heading)}\n.*?)(?=\n## |\Z)", re.DOTALL
-    )
-    m = pattern.search(content)
-    if not m:
-        pytest.fail(f"Section heading not found: {heading!r}")
-    return m.group(1)
-
-
-def _extract_step_3_block(section: str) -> str:
-    """Return the step-3 (Upstream panel re-review) block content."""
-    pattern = re.compile(
-        r"(3\. \*\*Upstream panel re-review\.?\*\*.*?)(?=\n4\. \*\*)", re.DOTALL
-    )
-    m = pattern.search(section)
-    if not m:
-        pytest.fail("Step 3 (Upstream panel re-review) block not found")
-    return m.group(1)
+# _extract_section / _extract_step_3_block are imported from _panel_doc_helpers
+# (T12 extraction) above, aliased to their original underscore names.
 
 
 def _dedent_block(text: str) -> str:
@@ -410,3 +400,26 @@ def test_structural_parity() -> None:
                         "4. **Cascade"):
         assert step_marker in sdd_normalized, f"SDD missing step marker: {step_marker}"
         assert step_marker in pb_section_excised, f"PB missing step marker: {step_marker}"
+
+
+# ============================================================================
+# R4 (T13): factual-edit-shortcut anti-pattern subsection presence + placement.
+# ============================================================================
+
+
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_factual_edit_shortcut_heading_present(path: Path, _name: str) -> None:
+    """The `### Common failure: the factual-edit shortcut` subsection is present."""
+    assert FACTUAL_EDIT_SHORTCUT_HEADING in _read(path), (
+        f"R4 anti-pattern subsection heading not found in {path}"
+    )
+
+
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_factual_edit_shortcut_outside_step_3_block(path: Path, _name: str) -> None:
+    """The R4 subsection must be OUTSIDE the numbered step-3 block (RI-6 guard)."""
+    section = _extract_section(_read(path), SECTION_RE_APPROVAL_HEADING)
+    step_3 = _extract_step_3_block(section)
+    assert FACTUAL_EDIT_SHORTCUT_HEADING not in step_3, (
+        f"R4 anti-pattern subsection leaked INTO the step-3 block in {path}"
+    )

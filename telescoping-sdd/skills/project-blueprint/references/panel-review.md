@@ -81,6 +81,29 @@ Load on demand: **strict-bar** mode (only when `archive_pass.py` emits `STRICT-B
 
 Cap-pressure also tilts toward **domain ignorance**: authoring contract prose that names code-shape commitments (e.g., "this CFC binds 6 consumers including F<n>", "the seed list contains these 5 keys") without grep-verifying each named feature or mechanism against the source text. Sharpened Self-Check (b) extends to claims about the project's own approved artifacts (PLAN.md, SCOPE.md, ARCHITECTURE.md, sibling specs); for intra-artifact claims, "the citation exists" is not sufficient — the cited text must literally support the specific claim. When in doubt under cap pressure: **quote the source verbatim in the self-check record before applying the fix**. The verbatim quote is the forcing function — without it, the synthesizer can pattern-match on adjacency; with it, the source text is physically in front of the synthesizer and the gap (e.g., a Participating-features list that names a feature the cited authoritative enumeration excludes) becomes visible. CFC authoring is the most drift-prone surface for this class — see Self-Check (f) for the two structural sub-checks (Enforcement scope alignment, seed/registry traceability) that (b) cannot cover.
 
+## Autonomy Boundary
+
+The panel loop is mostly Claude's to run without asking. The most common way the loop gets silently skipped is by **re-routing a mandated step through a fake approval gate** — pausing to "ask permission" to run a pass that doctrine already requires. This section draws the line between what Claude executes autonomously and the narrow set that genuinely needs the user.
+
+| Execute autonomously (never ask) | Stop and ask the user |
+|----------------------------------|------------------------|
+| Running the next pass while any HIGH concern remains | The phase-boundary approval gate (e.g. approve SCOPE.md before Architecture) |
+| Archiving between passes (`archive_pass.py`) | A single concern whose disposition is a genuine judgment call (architecture choice, ambiguous requirement, scope change) |
+| The mechanical dispositions doctrine can assign (Addressed / Deferred / Sealed) | `Halt and re-scope` |
+| The cross-check EXIT pass (the one NORMAL pass run when a STRICT-BAR pass returns 0 HIGH) | The 5-pass cap gate ("continue reviewing, or move on?" when HIGH remain after 5 passes) |
+| | The STRICT-BAR ENTRY mode-switch (the `STRICT-BAR-SIGNAL` is fire-and-**ask**: put the yes/no to the user before switching modes) |
+
+Phase-name examples above use this skill's phases (Scope / Architecture / Plan); the rules are identical across phases.
+
+**STRICT-BAR ENTRY belongs on the stop-and-ask side; only the cross-check EXIT pass is autonomous.** Conflating the two — treating "strict-bar transitions" as autonomous — would hand a future Claude a lever to skip a real user consultation, the precise prose-drift this boundary exists to prevent.
+
+Four load-bearing rules:
+
+- **(a) Loop continuation is mechanical: `running the next pass is not a user decision`.** When a pass returns HIGH concerns, the next pass is required by the loop, not chosen by the user. Do not pause to ask whether to continue.
+- **(b) `no doctrine-shortcut menus`.** Never present a doctrine-MANDATED step as an optional choice — in particular, never offer an "approve now vs. run the next pass" menu. This does NOT ban the doctrine's own sanctioned prompts (the phase-gate approval, the STRICT-BAR yes/no, the 5-pass cap continue/move-on, the Halt acknowledge/override), which are REQUIRED prompts, not banned menus. (The single-concern judgment-call gate is an ad-hoc question, not a recurring mandated-step menu, so it is intentionally not in that exception list.)
+- **(c) `operational concerns never override doctrine`.** Token budget, session length, and time are never grounds to interrupt or truncate the loop. If the user wants to stop, they interrupt; Claude does not pre-emptively offer to cut doctrine-mandated work. This does NOT override the sanctioned 5-pass cap gate, which is a doctrine-internal stop, not an operational concession.
+- **(d) Pre-flight contract.** At the start of a phase, state the contract once: you will `run the loop to convergence autonomously`, pausing only at the real gates enumerated above (the phase gate, a genuine judgment call, Halt, the 5-pass cap, the STRICT-BAR entry).
+
 ## Panel Review section format
 
 Each artifact ends with a `## Panel Review` section placed immediately before the Approval section. The section has four sub-sections, in this order (the terminal Phase-3 artifact `PLAN.md` omits `### Deferred dispositions` — the `--terminal` archive suppresses it, since a terminal artifact has no later phase to defer to):

@@ -9,7 +9,13 @@ container belongs here too). Callers add presentation-layer concerns
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
@@ -384,3 +390,419 @@ def trim_trajectory_table(content: str, keep: int = TRAJECTORY_KEEP_DEFAULT) -> 
     new_data_block = [elided_row, *kept_rows]
     new_lines = lines[:data_start] + new_data_block + lines[data_end:]
     return "\n".join(new_lines)
+
+
+# ---------------------------------------------------------------------------
+# Pending-review marker (R1 reminder + R2 marker) — shared by both validators.
+#
+# NOTE: this section adds filesystem I/O (json read/write, os.replace) to a
+# module that was otherwise pure. The helpers are grouped here so both
+# validators import ONE canonical implementation (AD1); a future extraction to
+# a dedicated pending_review.py is a clean mechanical refactor.
+# ---------------------------------------------------------------------------
+
+# Promoted from the validators (was per-file, hex-only). The capture is
+# BROADENED to `([^`]*)` so read_stored_hash surfaces a present-but-malformed
+# value verbatim instead of collapsing it to 'pending' (a hex-only capture
+# would hide corruption -> fail-open). [T1; design C1/read_stored_hash]
+APPROVAL_HASH_LINE = re.compile(
+    r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([^`]*)`", re.MULTILINE
+)
+
+MARKER_RELPATH = Path(".sdd") / "pending-review.json"
+MARKER_SCHEMA_VERSION = 1
+
+# Tag the agent stamps into a Trajectory Notes cell after the upstream panel
+# (hash-and-cascade.md step 3e); the R2 clear matches it.
+UPSTREAM_PANEL_TAG_RE = re.compile(r"upstream-panel ([0-9a-f]{8})")
+
+# The loud reminder printed AFTER the `Approved:` line on a changed-document
+# re-stamp (R1). Contains the four spec-mandated verbatim strings.
+REAPPROVAL_REMINDER = (
+    "!" * 70 + "\n"
+    "RE-APPROVAL REMINDER\n"
+    "Step 3 (upstream panel re-review) is REQUIRED before cascade unless the diff is visibly trivial.\n"
+    "Conservative default: lean=yes unless the diff is visibly trivial.\n"
+    "Classify the edit source per hash-and-cascade.md AD1 (claude-edit + non-trivial -> lean-yes).\n"
+    + "!" * 70
+)
+
+
+class MarkerCorruptError(Exception):
+    """Raised when .sdd/pending-review.json exists but is unparseable.
+
+    Distinguishes a corrupt enforcement marker (a fail-closed error) from an
+    absent one (a legitimately-empty state). [AD11]
+    """
+
+
+def now_iso_utc() -> str:
+    """Current UTC time as an ISO-8601 string (shared so both validators agree)."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ----- changed-since-stamp detection (R1) ---------------------------------
+
+
+def read_stored_hash(content: str) -> str:
+    """Value in the document's `**Content Hash:**` line, or 'pending'. [T1]
+
+    Captures the backtick content broadly so a present-but-malformed value is
+    returned VERBATIM (not collapsed to 'pending') — that lets
+    changed_since_stamp fail closed on corruption. Returns 'pending' only when
+    the line is absent or literally holds 'pending'.
+    """
+    m = APPROVAL_HASH_LINE.search(content)
+    if not m:
+        return "pending"
+    return m.group(1).strip()
+
+
+def _is_valid_16_hex(value: str) -> bool:
+    return len(value) == 16 and all(c in "0123456789abcdef" for c in value.lower())
+
+
+def _approval_checkbox_checked(content: str) -> bool:
+    return bool(re.search(r"-\s*\[[xX]\]\s*Approved to proceed", content))
+
+
+def changed_since_stamp(new_content_hash: str, stored_hash: str, content: str) -> bool:
+    """True when a previously-approved document's content has changed. [T1; I1]
+
+    Compares the ALREADY-COMPUTED new_content_hash (the value approve_document
+    is about to write — post-CFC-refresh for PLAN.md) against stored_hash; does
+    NOT re-derive the hash (avoids the PLAN.md CFC divergence). Previously-
+    approved = stored_hash present and not 'pending' AND checkbox [x].
+    Fail-closed: a present stored_hash that is not a valid 16-hex value (non-hex
+    garbage, wrong length, OR empty backticks) is treated as approved-but-
+    unverifiable -> True. The 16-hex check is case-insensitive. Only a literal
+    'pending' (read_stored_hash's value for an absent/`pending` line) is a
+    genuine first-approval and short-circuits to False.
+    """
+    if stored_hash == "pending":
+        return False
+    if not _approval_checkbox_checked(content):
+        return False
+    if not _is_valid_16_hex(stored_hash):
+        # Present on an approved doc but not a valid 16-hex value (incl. empty
+        # backticks `` -> "") -> fail closed: fire the marker.
+        return True
+    return new_content_hash.lower() != stored_hash.lower()
+
+
+# ----- Trajectory Pass parsing (R2 stamped_at_pass) -----------------------
+
+
+def _trajectory_data_rows(content: str) -> list[str]:
+    """Data-row lines of the `### Trajectory` table (incl. any elided row), or []."""
+    lines = content.split("\n")
+    header_idx = None
+    for i, line in enumerate(lines):
+        if line.rstrip() == TRAJECTORY_HEADER:
+            header_idx = i
+            break
+    if header_idx is None:
+        return []
+    section_end = len(lines)
+    for j in range(header_idx + 1, len(lines)):
+        stripped = lines[j].lstrip()
+        if stripped.startswith("#"):
+            hashes = len(stripped) - len(stripped.lstrip("#"))
+            if hashes <= 3:
+                section_end = j
+                break
+    table_header_idx = None
+    for j in range(header_idx + 1, section_end):
+        s = lines[j].strip()
+        if s.startswith("|") and s.endswith("|"):
+            table_header_idx = j
+            break
+    if table_header_idx is None or table_header_idx + 1 >= section_end:
+        return []
+    if not TRAJECTORY_SEP_RE.match(lines[table_header_idx + 1]):
+        return []
+    rows = []
+    for j in range(table_header_idx + 2, section_end):
+        s = lines[j].strip()
+        if not (s.startswith("|") and s.endswith("|")):
+            break
+        rows.append(lines[j])
+    return rows
+
+
+def _row_first_cell(row_line: str) -> str:
+    """First (Pass) cell of a table row, stripped — mirrors archive_pass's col 0."""
+    inner = row_line.strip().strip("|")
+    cells = [c.strip() for c in inner.split("|")]
+    return cells[0] if cells else ""
+
+
+def _is_ascii_int(cell: str) -> bool:
+    """True iff `cell` is a plain ASCII integer. NOT str.isdigit(), which is True
+    for non-int-convertible Unicode digits (e.g. '²') that then crash int()."""
+    return cell.isascii() and cell.isdigit()
+
+
+def stamped_at_pass_from_content(content: str) -> int:
+    """Highest integer `Pass` value in the Trajectory table, or 0. [T2; AD5]
+
+    Applies trim_trajectory_table first (matches approve_document's view), then
+    reads the Pass column at index [0] of each data row, skipping non-digit
+    cells (including the elided '…' row). Mirrors archive_pass's
+    max(pass_nums, default=0).
+    """
+    trimmed = trim_trajectory_table(content)
+    pass_nums = [
+        int(cell)
+        for row in _trajectory_data_rows(trimmed)
+        for cell in (_row_first_cell(row),)
+        if _is_ascii_int(cell)
+    ]
+    return max(pass_nums, default=0)
+
+
+# ----- marker file I/O (R2) -----------------------------------------------
+
+
+def _marker_path(project_root: Path) -> Path:
+    return Path(project_root) / MARKER_RELPATH
+
+
+def _empty_marker() -> dict:
+    return {"schemaVersion": MARKER_SCHEMA_VERSION, "pending": {}}
+
+
+def read_pending_review(project_root: Path, *, strict: bool = False) -> dict:
+    """Read .sdd/pending-review.json. [T1; I3; AD11]
+
+    ABSENT -> empty-pending dict (both modes). PRESENT-but-unparseable (bad
+    JSON / missing 'pending' / wrong type): strict=False -> empty-pending;
+    strict=True -> raise MarkerCorruptError (fail-closed; every ENFORCEMENT
+    caller — the validate FAIL check, upsert, clear, reconcile — passes
+    strict=True).
+    """
+    path = _marker_path(project_root)
+    if not path.exists():
+        return _empty_marker()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        if strict:
+            raise MarkerCorruptError(f"{path} is present but unreadable/unparseable")
+        return _empty_marker()
+    if not isinstance(data, dict) or not isinstance(data.get("pending"), dict):
+        if strict:
+            raise MarkerCorruptError(f"{path} has an invalid schema")
+        return _empty_marker()
+    # An UNKNOWN schemaVersion (a future v2 marker with a different entry shape)
+    # must not be read as v1 with .get() defaults — fail closed under strict so
+    # an old validator never silently mis-handles a newer marker. (Absent
+    # version is back-compat: treat as v1.)
+    ver = data.get("schemaVersion", MARKER_SCHEMA_VERSION)
+    if ver != MARKER_SCHEMA_VERSION:
+        if strict:
+            raise MarkerCorruptError(
+                f"{path} has unknown schemaVersion {ver!r} (this tool writes "
+                f"v{MARKER_SCHEMA_VERSION})"
+            )
+        return _empty_marker()
+    data["schemaVersion"] = MARKER_SCHEMA_VERSION
+    return data
+
+
+def write_pending_review(project_root: Path, data: dict) -> None:
+    """Atomically write .sdd/pending-review.json via mkstemp + os.replace. [T1; I4]
+
+    Uses a UNIQUE temp name (suffix '.tmp'), NOT a fixed `<file>.tmp`, because
+    the marker is shared and may be written concurrently. Creates .sdd/ if
+    absent.
+    """
+    path = _marker_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def upsert_pending_entry(
+    project_root: Path,
+    doc_path_rel: str,
+    hash_val: str,
+    stamped_at: str,
+    stamped_at_pass: int,
+) -> None:
+    """Add/replace one pending entry without disturbing others. [T1; I5]
+
+    Reads strict=True so a corrupt SHARED marker is never clobbered (refusing to
+    reset other features' obligations to {}).
+    """
+    data = read_pending_review(project_root, strict=True)
+    data["pending"][doc_path_rel] = {
+        "hash": hash_val,
+        "stamped_at": stamped_at,
+        "stamped_at_pass": stamped_at_pass,
+    }
+    write_pending_review(project_root, data)
+
+
+def clear_pending_entries_for_prefix(project_root: Path, prefix: str) -> list[str]:
+    """Remove pending entries whose key == prefix or starts with prefix + '/'. [T1; I6]
+
+    Pure string prefix-matching (no path resolution — needs no AD12 guard).
+    `startswith(prefix + '/')` avoids prefix-bleed (feat-a vs feat-a-extra).
+    Returns removed keys; deletes the marker file when `pending` becomes empty.
+    Reads strict=True (refuse to clobber a corrupt marker).
+    """
+    data = read_pending_review(project_root, strict=True)
+    pending = data["pending"]
+    removed = [k for k in list(pending) if _prefix_in_scope(k, prefix)]
+    for k in removed:
+        del pending[k]
+    if not pending:
+        path = _marker_path(project_root)
+        if path.exists():
+            path.unlink()
+    elif removed:
+        write_pending_review(project_root, data)
+    return removed
+
+
+# ----- reconcile: clear satisfied entries, return still-pending (R2 clear) --
+
+
+def _key_is_contained(project_root: Path, key: str) -> bool:
+    """True iff `key` resolves to a path inside project_root (AD12 guard)."""
+    if os.path.isabs(key) or ".." in Path(key).parts:
+        return False
+    root = Path(project_root).resolve()
+    try:
+        candidate = (root / key).resolve()
+    except OSError:
+        return False
+    try:
+        return os.path.commonpath([str(root), str(candidate)]) == str(root)
+    except ValueError:
+        return False
+
+
+def _prefix_in_scope(key: str, prefix: str) -> bool:
+    """True iff `key` falls under `prefix`. An empty or '.' prefix — the scoped
+    dir IS the project root, so its relpath is '.' — matches ALL keys (otherwise
+    a marker written with a bare key like 'PLAN.md' would never match '.' and the
+    gate would silently pass). Otherwise exact match or `prefix + '/'` startswith
+    (the latter avoids prefix-bleed: feat-a vs feat-a-extra)."""
+    if prefix in ("", "."):
+        return True
+    return key == prefix or key.startswith(prefix + "/")
+
+
+def _doc_has_qualifying_tag(content: str, hash_short: str, stamped_at_pass: int) -> bool:
+    """True iff Trajectory has `upstream-panel <hash_short>` on a Pass > stamped_at_pass."""
+    for row in _trajectory_data_rows(content):
+        first = _row_first_cell(row)
+        if not _is_ascii_int(first) or int(first) <= stamped_at_pass:
+            continue
+        notes = _trajectory_row_notes(row)
+        if any(m.group(1) == hash_short for m in UPSTREAM_PANEL_TAG_RE.finditer(notes)):
+            return True
+    return False
+
+
+def reconcile_pending_review(
+    project_root: Path, path_prefix: str
+) -> list[tuple[str, str]]:
+    """Clear satisfied pending entries; return still-pending (doc, expected_tag). [T3; I7]
+
+    For each entry whose key == path_prefix or starts with path_prefix + '/',
+    applies the AD12 containment guard, reads the doc's Trajectory, and clears
+    the entry when a qualifying `upstream-panel <hash-short>` tag appears on a
+    Pass > stamped_at_pass. Reads strict=True (corrupt marker ->
+    MarkerCorruptError; the caller converts it to a FAIL). A hostile key
+    (absolute / '..' / escapes root) is skipped with a WARN and kept pending; a
+    missing/unreadable target doc is also kept pending (both fail-closed).
+    The read-modify-write is not globally atomic; last-writer-wins is fine
+    because a cleared entry is idempotently re-derivable from the Trajectory.
+    """
+    data = read_pending_review(project_root, strict=True)
+    pending = data["pending"]
+    root = Path(project_root)
+    still_pending: list[tuple[str, str]] = []
+    changed = False
+    for key in list(pending):
+        if not _prefix_in_scope(key, path_prefix):
+            continue
+        entry = pending[key]
+        hash_short = str(entry.get("hash", ""))[:8]
+        anchor = entry.get("stamped_at_pass", 0)
+        if not isinstance(anchor, int):
+            anchor = 0
+        expected_tag = f"upstream-panel {hash_short}"
+        if not _key_is_contained(root, key):
+            print(
+                f"WARNING: pending-review marker key {key!r} escapes the project "
+                f"root; skipping (not read).",
+                file=sys.stderr,
+            )
+            still_pending.append((key, expected_tag))
+            continue
+        try:
+            doc_content = (root / key).read_text(encoding="utf-8")
+        except OSError:
+            still_pending.append((key, expected_tag))
+            continue
+        if _doc_has_qualifying_tag(doc_content, hash_short, anchor):
+            del pending[key]
+            changed = True
+        else:
+            still_pending.append((key, expected_tag))
+    if changed:
+        if not pending:
+            mpath = _marker_path(root)
+            if mpath.exists():
+                mpath.unlink()
+        else:
+            write_pending_review(root, data)
+    return still_pending
+
+
+def reconcile_to_result(
+    project_root: Path, path_prefix: str, *, decline_cmd: str
+) -> ValidationResult:
+    """Reconcile pending obligations under `path_prefix` and fold the outcome
+    into a `ValidationResult` (one `pending-review` FAIL per still-pending doc).
+
+    Shared by both validators so the FAIL prose cannot drift. `decline_cmd` is
+    the validator-specific command shown in the FAIL detail. A corrupt marker
+    yields a single fail-closed FAIL (AD11) rather than an unhandled crash.
+    """
+    result = ValidationResult()
+    try:
+        still_pending = reconcile_pending_review(project_root, path_prefix)
+    except MarkerCorruptError as exc:
+        result.add(
+            "pending-review",
+            False,
+            f"`.sdd/pending-review.json` is unreadable/corrupt ({exc}). Cannot "
+            f"verify upstream-panel obligations — inspect it, or clear with "
+            f"`{decline_cmd}`.",
+        )
+        return result
+    for doc_rel, expected_tag in still_pending:
+        result.add(
+            "pending-review",
+            False,
+            f"upstream panel re-review pending for {doc_rel}. Expected Trajectory "
+            f"Notes tag: `{expected_tag}`. Resolve by running the panel and "
+            f"stamping that tag per hash-and-cascade.md step 3e (after "
+            f"`archive_pass.py {doc_rel} --phase <N>`), OR decline: `{decline_cmd}`.",
+        )
+    return result
