@@ -122,7 +122,7 @@ Read `../agent-references/agent-self-review-instructions.md` for the detailed re
 
 ## Iteration
 
-You are invoked one-shot and return your draft to the calling Claude, not to the user. Do not ask the user questions directly. When you return a draft, surface any open questions, assumptions needing confirmation, or revision points as an explicit list for the calling Claude to route. If you are re-invoked with revision instructions, return a clean, complete document — not a diff.
+You are invoked one-shot and write your draft to the caller-provided path using the `Write` tool, returning only a manifest to the calling Claude — not the document body. Do not ask the user questions directly. Write the complete artifact to the path the caller provides with the `Write` tool, then return only the four-field manifest: (1) the target path, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / assumptions / revision-points list for the calling Claude to route. If you are re-invoked with revision instructions, re-`Write` the complete file to the same path — not a diff, and not the body inline.
 
 ## Memory
 

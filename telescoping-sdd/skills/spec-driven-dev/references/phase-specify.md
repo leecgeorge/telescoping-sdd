@@ -16,7 +16,7 @@ When invoking the agent, provide:
 - Any prior artifacts in `specs/F<n>-<slug>/` if the user is resuming mid-stream
 - The PLAN feature identifier for this feature (`F<n>`), if this feature originated from a `blueprint/PLAN.md`'s Feature Breakdown. If the feature is standalone (no upstream PLAN), pass `n/a`. The agent writes this verbatim into the `**PLAN feature identifier:**` line at the top of the spec.
 - If `blueprint/PLAN.md` exists at the project root, also pass the contents of its `## Cross-Feature Contracts` section (if any). The agent's CFC binding obligation (below) requires this input.
-- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `spec.md` (not a partial or diff)
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `spec.md` to `specs/F<n>-<slug>/spec.md` and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Success Criteria must use `- [ ]` checkboxes (not numbered lists), Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 
 ## Is this feature derived from another repo's PLAN?
@@ -42,7 +42,7 @@ Required sections:
 - **Boundaries** — "Always do", "Ask first", "Never do" lists
 - **Success Criteria** — Measurable conditions for done
 
-After the agent returns the draft, write it to `specs/F<n>-<slug>/spec.md` and perform the self-review yourself before presenting it to the user.
+The agent-written `spec.md` is already on disk. `Read` `specs/F<n>-<slug>/spec.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `specs/F<n>-<slug>/spec.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
 ## Spec Self-Review
 

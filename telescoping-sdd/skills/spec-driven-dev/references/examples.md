@@ -22,7 +22,7 @@ Actions:
 1. Detect project language and state it to the user
 2. Create `specs/cli-todo-app/` directory
 3. Invoke the `feature-spec-analyst` subagent to draft `spec.md` from the language-specific template, passing the user's requirements and the required sections
-4. Write the returned draft to `specs/cli-todo-app/spec.md`
+4. Read the agent-written `spec.md` from disk (`specs/cli-todo-app/spec.md`) — the agent already wrote it; confirm non-empty before self-review
 5. Self-review spec.md for inconsistencies, inaccuracies, and gaps (up to 5 passes)
 6. Run the spec panel (`telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`) against spec.md following the loop in `references/panel-review.md` (synthesize, dispose, populate `### Latest pass detail`, run Synthesizer Self-Check, invoke `archive_pass.py`, halt-trigger check, exit on zero HIGHs)
 7. Run validate_spec.py on the spec
@@ -37,7 +37,7 @@ Actions:
 1. Read the existing spec.md
 2. Validate it has all required sections and is approved
 3. Invoke the `feature-architecture-analyst` subagent to draft `design.md`, passing spec.md as authoritative upstream context
-4. Write the returned draft to `specs/F<n>-<slug>/design.md`
+4. Read the agent-written `design.md` from disk (`specs/F<n>-<slug>/design.md`) — the agent already wrote it; confirm non-empty before self-review
 5. Self-review design.md (up to 5 passes)
 6. Cross-reference design.md against spec.md for consistency
 7. Run the design panel (`telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, `telescoping-sdd:security-reviewer`) against design.md following the loop in `references/panel-review.md`
@@ -51,7 +51,7 @@ User says: "Break the design into tasks"
 Actions:
 1. Read spec.md and design.md
 2. Invoke the `feature-task-analyst` subagent to draft `tasks.md`, passing spec.md and design.md as authoritative upstream context
-3. Write the returned draft to `specs/F<n>-<slug>/tasks.md`
+3. Read the agent-written `tasks.md` from disk (`specs/F<n>-<slug>/tasks.md`) — the agent already wrote it; confirm non-empty before self-review
 4. Self-review tasks.md (up to 5 passes)
 5. Cross-reference tasks.md against spec.md and design.md for consistency
 6. Run the tasks panel (`telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`) against tasks.md following the loop in `references/panel-review.md`. Concerns cannot be deferred forward at this phase — they must land on `Addressed`, `Sealed`, or `Accepted as risk`.

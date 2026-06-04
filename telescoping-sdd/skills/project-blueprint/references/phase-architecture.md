@@ -10,7 +10,7 @@ When invoking the agent, provide:
 - The template path: `references/architecture-template.md`
 - The required sections (below) — the agent must produce exactly these
 - The approved `blueprint/SCOPE.md` as authoritative upstream context
-- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to return a complete, clean draft of `ARCHITECTURE.md` that addresses every goal and respects every constraint from the scope
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `ARCHITECTURE.md`, which addresses every goal and respects every constraint from the scope, to `blueprint/ARCHITECTURE.md`, and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 
 Required sections:
@@ -22,7 +22,7 @@ Required sections:
 - **External Dependencies** — Third-party services, APIs, and infrastructure
 - **Risks** — Technical risks with likelihood, impact, and mitigation strategies
 
-After the agent returns the draft, write it to `blueprint/ARCHITECTURE.md` and perform the self-review yourself before presenting it to the user.
+The agent-written `ARCHITECTURE.md` is already on disk. `Read` `blueprint/ARCHITECTURE.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `blueprint/ARCHITECTURE.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
 ## Architecture Self-Review
 
