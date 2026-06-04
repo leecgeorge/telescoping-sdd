@@ -74,6 +74,19 @@ Each document must pass validation before approval:
 | "Implement task T1" | Phase 4 — Implement (needs tasks) |
 | "Start SDD for X" | Phase 1 — Specify |
 
+<!-- CPD-START -->
+## Cross-Project Derivation
+
+Most projects are single-repo: one `blueprint/PLAN.md` drives one `specs/` tree. **Cross-Project Derivation (CPD)** is the exception — it binds one repo's *master feature* to its *derived implementation* in a **different** repo, stretching the `PLAN → spec` handoff across a repo boundary. A *master* project (e.g. `residents`) defines a feature whose work is delegated to a *derived* project (e.g. `vps-edge`): the master `### F<n>` row carries `**Implemented by:** <derived-project>`, and the derived repo implements it as a normal SDD cycle in a specially-named directory.
+
+**Derived directory form.** A derived feature lives in `specs/<project>--F<n>-<slug>/`, where `<project>` is the master-project alias, `F<n>` is the master's own feature number, and `--` is the unambiguous sentinel (the slug grammar forbids consecutive hyphens). Example: `specs/residents--F7-resident-sync/`. Its `spec.md` carries `**PLAN feature identifier:** ` + `` `n/a` `` (it is not a native feature of the derived repo's PLAN) plus two provenance fields: `**Derived from:** ` + `` `<project>:F<n>` `` (the master qualified id, the authoritative join key) and `**Master contract hash:** ` + `` `<hash>` `` (the master feature's contract hash at bind time, or the literal `` `unbound` `` until the first reconcile stamps it). The derived directory is excluded from the derived repo's own local PLAN coverage walk — it belongs to `reconcile`, not to that repo's PLAN.
+
+**Reconcile beats.** `reconcile` is the only cross-repo checker; standalone validation in each repo never reaches across the boundary. It runs only when both repos are present (located via `.sdd/projects.json`) and checks bijection (every master `Implemented by` has exactly one matching derived dir and vice-versa), contract drift (the master feature's current contract hash vs. the derived spec's stored `**Master contract hash:**`), and surfaces open Upstream Change Requests. A missing or unconfigured sibling is a WARN-skip, never a FAIL. Prompt the user to run `reconcile` at two deterministic beats: **after the master's `--approve plan`** (the master feature may have changed) and **after a derived feature ships** (stamp its first real hash if still `unbound`; confirm the bijection). A shipped feature still on `unbound` gets a distinct, louder WARN, since it has no drift detection until stamped.
+
+**UCR flow (soft-halt).** When a derived feature discovers the *master* feature is wrong, it does not hard-halt (no atomic two-repo edit exists, and the master may be owned by someone else). Instead: (1) **record** an Upstream Change Request as a `## Upstream Change Requests` stanza entry in the derived `spec.md` — id, `**Target:**` (the master qualified id), `**Status:**` (`open`/`applied`/`withdrawn`), `**Proposed change:**`, `**Rationale:**`; this is the single source of truth, no separate marker file in v1; (2) **proceed** against the current master with an `## Accepted Divergences`-style note rather than blocking; (3) **surface** the open UCR at the next reconcile, against the master; (4) the master author **applies** the change through the master's normal approve cycle (producing a new contract hash) and marks the UCR `applied`; (5) the next reconcile sees the derived spec's stored hash is now stale → drift WARN → the derived author **re-specs and re-stamps**, closing the loop. This mirrors the same-repo PLAN→spec cascade, one altitude up.
+
+<!-- CPD-END -->
+
 ## Principles
 
 - **Specs are the source of truth.** Code follows specs, not the other way around.

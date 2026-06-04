@@ -16,7 +16,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 # ---------------------------------------------------------------------------
 # Regex constants
@@ -191,6 +191,146 @@ def verify_content_hash(content: str, stored_hash: str) -> bool:
     route through, so they cannot drift on hash interpretation.
     """
     return compute_content_hash(content).lower() == stored_hash.lower()
+
+
+# ---------------------------------------------------------------------------
+# Approval-detection + shipped classification (relocated from validate_blueprint)
+# ---------------------------------------------------------------------------
+#
+# `has_approval`, `approval_hash`, `approval_hash_matches`, `all_tasks_ticked`,
+# `read_file`, and the new `is_shipped` predicate were RELOCATED here from
+# `validate_blueprint.py` (CPD I9 "shared, not re-implemented") so that
+# `reconcile.py` — a shared script that must NOT import a skill validator — can
+# derive the SAME `STATE_SHIPPED` verdict the blueprint validator uses.
+# `validate_blueprint.classify_spec` imports these back and derives its shipped
+# branch from `is_shipped`; the existing `classify_spec` test suite runs
+# UNMODIFIED as the regression guard.
+#
+# These functions need a narrow approval regex — kept DISTINCT from
+# this module's broad `APPROVAL_HASH_LINE` (defined far below, capturing
+# `([^`]*)` for read_stored_hash's fail-open detection). The narrow form here
+# captures `([0-9a-fA-F]+|pending)` exactly as the pre-relocation
+# validate_blueprint copy did, so the relocated behavior is byte-identical.
+# They are deliberately NOT unified with the broad form (the broad one surfaces
+# corruption verbatim; the narrow one is a clean match-or-miss approval gate).
+#
+# `APPROVAL_HASH_LINE_STRICT` is PUBLIC and is the SINGLE narrow approval-hash
+# grammar: both skill validators' `check_approval` import THIS object rather than
+# each compiling their own copy, so the three byte-identical narrow patterns can
+# no longer drift (tighten one, the others follow). `test_blueprint_common`
+# asserts narrow != broad; the validator suites assert they share this object.
+
+# `## Approval` section header.
+_APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
+# Strict approval-checkbox form: `- [x] Approved to proceed`.
+_APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
+# Narrow `**Content Hash:**` line — DISTINCT from the broad `APPROVAL_HASH_LINE`
+# below (this one matches only hex-or-'pending'; the broad one captures any
+# backtick body so read_stored_hash can fail-open on corruption).
+APPROVAL_HASH_LINE_STRICT = re.compile(
+    r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
+)
+# A task-list checkbox line (ticked or unticked) at the start of a line.
+_TASK_CHECKBOX_LINE = re.compile(r"^-\s+\[([ xX])\]\s+", re.MULTILINE)
+
+
+def has_approval(content: str) -> bool:
+    """Return True if the content has a `## Approval` section with a checked box."""
+    if not _APPROVAL_HEADER.search(content):
+        return False
+    return bool(_APPROVAL_CHECKBOX.search(content))
+
+
+def approval_hash(content: str) -> Optional[str]:
+    """Return the stamped `**Content Hash:**` value, or None if absent or 'pending'."""
+    m = APPROVAL_HASH_LINE_STRICT.search(content)
+    if m is None:
+        return None
+    value = m.group(1)
+    return None if value == "pending" else value
+
+
+def approval_hash_matches(content: str) -> bool:
+    """Return True if the stored Content Hash matches the current file content.
+
+    Routes through `verify_content_hash` — the single hash-coherence comparison
+    both validators use — so an approved document whose stored hash matches the
+    recomputed content hash reads as still-coherent.
+    """
+    if not has_approval(content):
+        return False
+    stored = approval_hash(content)
+    if stored is None:
+        return False
+    return verify_content_hash(content, stored)
+
+
+def all_tasks_ticked(tasks_content: str) -> bool:
+    """Return True if tasks.md has at least one task checkbox and every task
+    checkbox is ticked.
+
+    A narrative-only tasks.md (zero task checkboxes) returns False — it cannot
+    classify as `shipped` because there is no implementation work to make
+    immutable (the empty-set vacuous-truth case is rejected).
+
+    Scoping: counts only checkboxes BEFORE the `## Approval` heading. The
+    `## Approval` section's own `- [x] Approved ...` checkbox is the approval
+    marker, not a task, and must not contribute.
+    """
+    approval_match = _APPROVAL_HEADER.search(tasks_content)
+    scan_region = (
+        tasks_content[: approval_match.start()] if approval_match else tasks_content
+    )
+    boxes = list(_TASK_CHECKBOX_LINE.finditer(scan_region))
+    if not boxes:
+        return False
+    return all(b.group(1).lower() == "x" for b in boxes)
+
+
+def read_file(path: Path) -> Optional[str]:
+    """Read file contents (UTF-8) or return None if the path is not a file."""
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return None
+
+
+def is_shipped_from_contents(
+    spec_content: Optional[str],
+    design_content: Optional[str],
+    tasks_content: Optional[str],
+) -> bool:
+    """Content-core of `is_shipped`: the full STATE_SHIPPED condition.
+
+    True IFF spec.md is approved (checkbox + matching hash) AND design.md is
+    approved AND tasks.md is approved AND every task checkbox in tasks.md is
+    ticked. A missing artifact (None) fails the corresponding clause. This is
+    the exact three-artifact gate `validate_blueprint.classify_spec` reaches
+    `STATE_SHIPPED` through — kept as a pure-string core so callers that
+    already hold the file contents (e.g. reconcile, or the validator's own
+    classify_spec which reads them once) do not re-read from disk.
+    """
+    if spec_content is None or not approval_hash_matches(spec_content):
+        return False
+    if design_content is None or not approval_hash_matches(design_content):
+        return False
+    if tasks_content is None or not approval_hash_matches(tasks_content):
+        return False
+    return all_tasks_ticked(tasks_content)
+
+
+def is_shipped(spec_dir: Path) -> bool:
+    """Return True IFF the feature at `spec_dir` has SHIPPED.
+
+    Path wrapper over `is_shipped_from_contents`: reads spec.md / design.md /
+    tasks.md from `spec_dir` and applies the full STATE_SHIPPED condition.
+    Shared so `reconcile.py` and `validate_blueprint.classify_spec` derive the
+    SAME shipped verdict from ONE definition (no drift).
+    """
+    return is_shipped_from_contents(
+        read_file(spec_dir / "spec.md"),
+        read_file(spec_dir / "design.md"),
+        read_file(spec_dir / "tasks.md"),
+    )
 
 
 # ---------------------------------------------------------------------------

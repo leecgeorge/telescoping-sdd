@@ -23,6 +23,22 @@ Required sections:
 
 Each feature (F1, F2, etc.) should be described at enough detail to serve as input to a spec-driven development workflow for individual feature implementation.
 
+### Optional: delegating a feature to another repo (`**Implemented by:**`)
+
+Most features are implemented in this same repo. When a feature is instead **delegated to a different repo** — a master→derived link under Cross-Project Derivation — add an optional `**Implemented by:** <project>` field to that feature's `### F<n>` block:
+
+```
+### F7: Resident sync contract
+- **Description:** …
+- **Component:** …
+- **Acceptance Criteria:**
+  - …
+- **Implemented by:** vps-edge
+```
+
+- **Grammar.** The value is a single **lowercase-kebab project alias** (`[a-z0-9]+(-[a-z0-9]+)*` — same shape as a slug), optionally backtick-wrapped. It names only the *derived project*, never a derived feature number: the derived feature reuses this master's own `F<n>`, so naming a separate number would falsely imply the feature is native to the derived repo. `validate_blueprint.py` parses the field positionally per feature block and FAILs `implemented-by-malformed` for a non-kebab value or `implemented-by-duplicate` for two occurrences in one block. **Absence is the normal case** ("implemented locally") and is silent — never add an empty or placeholder `Implemented by`.
+- **Alias-stability rule (load-bearing).** A project alias is part of the join key. **Once a derivation link exists** (a derived repo carries a `specs/<project>--F<n>-<slug>/` directory pointing back here), the master-project alias and the value of every `**Implemented by:**` field **must not be renamed** — renaming silently orphans the link, and `reconcile` cannot distinguish a rename from a genuine deletion. If a rename is truly unavoidable, treat it as a coordinated cross-repo migration (update both sides in lockstep), not a one-side PLAN edit. The full reconcile/UCR workflow this feeds into lives in `references/workflow-overview.md § Cross-Project Derivation`.
+
 After the agent returns the draft, write it to `blueprint/PLAN.md` and perform the self-review yourself before presenting it to the user.
 
 ## Plan Self-Review

@@ -32,19 +32,25 @@ _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
+    APPROVAL_HASH_LINE_STRICT,
     PANEL_UNRESOLVED_DISPOSITION,
     REAPPROVAL_REMINDER,
     MarkerCorruptError,
     Severity,
     UnresolvedMarker,
     ValidationResult,
+    approval_hash,
+    approval_hash_matches,
     changed_since_stamp,
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
     extract_panel_section,
+    has_approval,
     has_section,
+    is_shipped_from_contents,
     now_iso_utc,
+    read_file,
     read_stored_hash,
     reconcile_to_result,
     scan_unresolved_markers,
@@ -81,6 +87,21 @@ from spec_dirname import (  # noqa: E402
     display_safe,
     parse_feature_number,
 )
+
+# Imported as a MODULE (not `from … import`) so the `**Implemented by:**`
+# positional parser reuses master_feature's feature-block boundary detection
+# (`iter_feature_blocks` enumerates every `### F<n>` block in one pass) rather
+# than re-deriving a second inline `### F<n>` boundary regex here. The structural
+# test `test_implemented_by_reuses_master_feature_boundary` asserts this (mirrors
+# test_no_inline_dirname_regexes_in_validators).
+import master_feature  # noqa: E402
+
+# Shared cross-project-derivation grammar + sibling registry (CPD). Imported for
+# the derived-dir exclusion in the coverage walk: `parse_derived_dirname` pulls
+# the master-project prefix from a `<project>--F<n>-<slug>` directory and
+# `find_sibling` decides whether a matching master sibling is configured.
+import project_link  # noqa: E402
+import project_registry  # noqa: E402
 
 # Stack vocabulary the blueprint may declare. Mirrors validate_spec.py's
 # LANGUAGE_PROFILES keys; kept as a literal here (project-blueprint does not
@@ -140,6 +161,100 @@ FEATURE_ACCEPTANCE_CRITERIA = re.compile(r"\*\*Acceptance Criteria:\*\*", re.IGN
 
 # Regex to match risk entries in tables
 RISK_ENTRY_PATTERN = re.compile(r"\|\s*R\d+\s*\|")
+
+# ---------------------------------------------------------------------------
+# `**Implemented by:**` — optional per-feature cross-project delegation field (I8)
+# ---------------------------------------------------------------------------
+#
+# A master PLAN feature MAY carry `**Implemented by:** <project-alias>` to mark
+# that the feature is implemented in a sibling (derived) repo. The value grammar
+# is a lowercase-kebab project alias (same as a `<project>` alias elsewhere in
+# CPD). Parsing is POSITIONAL — each occurrence binds to the `### F<n>` block it
+# sits inside; an occurrence in the PLAN preamble (before the first `### F<n>`)
+# attaches to no feature and is silently ignored. Absence is silent (the normal
+# "implemented locally" case). The field is single-valued per feature.
+#
+# Two patterns: a PRESENCE detector that matches any `**Implemented by:**` line
+# regardless of value (so a malformed value is still caught, not silently
+# dropped), and the STRICT matcher (I8) that accepts only a well-formed
+# lowercase-kebab alias (optionally backtick-wrapped).
+#
+# Both accept an OPTIONAL `- `/`* ` bullet prefix — the canonical PLAN layout
+# (design "Master side" data model) writes the field as a bullet, and the
+# consumers (`reconcile.IMPLEMENTED_BY_LINE_RE`, `master_feature._IMPLEMENTED_BY_LINE`)
+# match the bulleted form, so the producer-side validator must agree or the
+# malformed/duplicate gates would never fire on a correctly-authored PLAN.
+IMPLEMENTED_BY_LINE = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?\*\*Implemented by:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE
+)
+IMPLEMENTED_BY_PATTERN = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?\*\*Implemented by:\*\*\s*(`?)([a-z0-9]+(?:-[a-z0-9]+)*)\1\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_implemented_by(content: str, result: ValidationResult) -> dict[int, str]:
+    """Validate every `**Implemented by:**` field in PLAN.md, positionally.
+
+    Returns ``{feature_number: project_alias}`` for each WELL-FORMED, singular
+    occurrence bound to a feature block. Emits:
+      * FAIL ``implemented-by-malformed`` — value empty / wrong-case / bad char
+        (does not match the lowercase-kebab alias grammar).
+      * FAIL ``implemented-by-duplicate`` — two `**Implemented by:**` lines in
+        ONE `### F<n>` block (the field is single-valued per feature, I8).
+
+    Preamble occurrences (before the first `### F<n>`) attach to no feature and
+    are silently ignored. Absence is silent.
+
+    Block scoping REUSES master_feature's boundary detection: every `### F<n>`
+    block is produced in a SINGLE pass by ``master_feature.iter_feature_blocks``
+    — no second inline `### F<n>` boundary regex lives here (asserted
+    structurally), and no per-feature re-scan of the whole PLAN (the prior
+    `_find_feature_block`-per-heading loop was O(M·len(PLAN))).
+
+    Any `**Implemented by:**` line before the first feature heading attaches to
+    no feature → silently ignored (it is not in any feature's scope, because it
+    is not inside a returned block).
+    """
+    implemented_by: dict[int, str] = {}
+
+    seen_numbers: set[int] = set()
+    for number, block in master_feature.iter_feature_blocks(content):
+        if number in seen_numbers:
+            # The same feature number heading appearing twice is a separate
+            # concern handled elsewhere; process each block once for this field.
+            continue
+        seen_numbers.add(number)
+
+        occurrences = list(IMPLEMENTED_BY_LINE.finditer(block))
+        if not occurrences:
+            continue  # absence is silent
+
+        if len(occurrences) > 1:
+            result.add(
+                f"PLAN.md F{number} has a single `**Implemented by:**` value",
+                False,
+                f"F{number} has {len(occurrences)} `**Implemented by:**` lines; "
+                f"the field is single-valued per feature. Code: "
+                f"implemented-by-duplicate. Remove the extra line(s).",
+            )
+            continue
+
+        raw_value = occurrences[0].group(1)
+        strict = IMPLEMENTED_BY_PATTERN.match(occurrences[0].group(0))
+        if strict is None:
+            result.add(
+                f"PLAN.md F{number} `**Implemented by:**` value is well-formed",
+                False,
+                f"F{number} `**Implemented by:**` value "
+                f"'{display_safe(raw_value)}' is not a valid lowercase-kebab "
+                f"project alias (e.g. `vps-edge`). Code: implemented-by-malformed.",
+            )
+            continue
+
+        implemented_by[number] = strict.group(2)
+
+    return implemented_by
 
 
 # ---------------------------------------------------------------------------
@@ -223,48 +338,30 @@ def parse_cfc_entries(section_body: str) -> list[CFCEntry]:
 PLAN_FEATURE_ID_LINE = re.compile(
     r"^\*\*PLAN feature identifier:\*\*\s*`(F\d+|n/a)`", re.MULTILINE
 )
+# `APPROVAL_HEADER` / `APPROVAL_CHECKBOX` are retained here because
+# `_approval_section_slice` and `check_approval` (below) still use them. The
+# approval-detection HELPERS (`has_approval`, `approval_hash`,
+# `approval_hash_matches`, `all_tasks_ticked`, `is_shipped`) and the file
+# `read_file` were RELOCATED into `blueprint_common.py` (CPD T9a / I9) so
+# `reconcile.py` can derive the same shipped verdict without importing this skill
+# validator. This validator imports back the ones it CALLS (`approval_hash_matches`,
+# `is_shipped_from_contents`, `read_file`) plus `approval_hash` / `has_approval`,
+# which it RE-EXPORTS for `render_business_brief` (pinned by test_cli_integration).
+# The narrow
+# content-hash line is the SHARED `blueprint_common.APPROVAL_HASH_LINE_STRICT`
+# (imported as `APPROVAL_HASH_LINE`) so both validators key on ONE object;
+# blueprint_common keeps a DISTINCT broad copy (capturing any backtick body) for
+# read_stored_hash — deliberately not unified with the narrow gate.
 APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
 # Strict form: `- [x] Approved to proceed`. Per P3-8 from the
 # post-implementation review, the prior loose `-\s*\[(x|X)\]` matched any
 # checked box anywhere, which would have false-positived if a spec ever
 # added an unrelated `- [x] <something>` sub-checkbox under `## Approval`.
 APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
-APPROVAL_HASH_LINE = re.compile(
-    r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
-)
+APPROVAL_HASH_LINE = APPROVAL_HASH_LINE_STRICT
 TASKS_CHECKBOX_WITH_CFC = re.compile(
     r"^[ \t]*-\s+\[[ xX]\]\s+[^\n]*?\[CFC-(\d+)\]", re.MULTILINE
 )
-
-
-def has_approval(content: str) -> bool:
-    """Return True if the file contains a `## Approval` section with a checked box."""
-    if not APPROVAL_HEADER.search(content):
-        return False
-    return bool(APPROVAL_CHECKBOX.search(content))
-
-
-def approval_hash(content: str) -> Optional[str]:
-    """Return the stamped `**Content Hash:**` value, or None if absent or 'pending'."""
-    m = APPROVAL_HASH_LINE.search(content)
-    if m is None:
-        return None
-    value = m.group(1)
-    return None if value == "pending" else value
-
-
-def approval_hash_matches(content: str) -> bool:
-    """Return True if the stored Content Hash matches the current file content.
-
-    Uses the shared blueprint_common.verify_content_hash helper which is what
-    SDD's hash-and-cascade flow uses for hash-coherence detection.
-    """
-    if not has_approval(content):
-        return False
-    stored = approval_hash(content)
-    if stored is None:
-        return False
-    return verify_content_hash(content, stored)
 
 
 def spec_then_line_cfc_tags(spec_content: str) -> list[int]:
@@ -283,30 +380,6 @@ def parse_plan_feature_identifier(spec_content: str) -> Optional[str]:
     if m is None:
         return None
     return m.group(1)
-
-
-def all_tasks_ticked(tasks_content: str) -> bool:
-    """Return True if tasks.md has at least one task checkbox and every task checkbox is ticked.
-
-    A narrative-only tasks.md (zero task checkboxes) returns False — it cannot
-    classify as `shipped` because there is no implementation work to make
-    immutable. Per CFC.md doctrine refinement: "shipped" requires at least
-    one ticked task checkbox; the empty-set vacuous-truth case is rejected.
-
-    Scoping: counts only checkboxes BEFORE the `## Approval` heading. The
-    `## Approval` section's own `- [x] Approved ...` checkbox is the approval
-    marker, not a task, and must not contribute.
-    """
-    # Truncate at the Approval section header (if present) so we count only
-    # task-list checkboxes, not the Approval marker.
-    approval_match = APPROVAL_HEADER.search(tasks_content)
-    scan_region = (
-        tasks_content[: approval_match.start()] if approval_match else tasks_content
-    )
-    boxes = list(re.finditer(r"^-\s+\[([ xX])\]\s+", scan_region, re.MULTILINE))
-    if not boxes:
-        return False
-    return all(b.group(1).lower() == "x" for b in boxes)
 
 
 # ---------------------------------------------------------------------------
@@ -432,14 +505,20 @@ def classify_spec(spec_dir: Path) -> SpecState:
     # All three artifacts approved. Shipped iff every task box is ticked AND
     # tasks.md's approval hash matches current content (derived-coherence
     # per CFC.md Q4). The matching hash IS the ship signal — no separate
-    # ceremony marker needed.
-    if tasks_content is None:
-        # Shouldn't happen given tasks_approved=True, but guard anyway.
-        state = STATE_IN_FLIGHT
-    elif all_tasks_ticked(tasks_content) and approval_hash_matches(tasks_content):
-        state = STATE_SHIPPED
-    else:
-        state = STATE_IN_FLIGHT
+    # ceremony marker needed. Derive the verdict from the SHARED
+    # `blueprint_common.is_shipped_from_contents` (the relocated full
+    # STATE_SHIPPED condition) so this validator and `reconcile.py` cannot
+    # drift on what "shipped" means. The contents were already read above; pass
+    # them in to avoid a second disk read. (is_shipped_from_contents re-checks
+    # the spec/design/tasks approval clauses — all True at this point — so the
+    # result is identical to the prior inline `all_tasks_ticked AND
+    # approval_hash_matches(tasks)` check, including the tasks_content-None →
+    # in-flight guard.)
+    state = (
+        STATE_SHIPPED
+        if is_shipped_from_contents(spec_content, design_content, tasks_content)
+        else STATE_IN_FLIGHT
+    )
 
     return SpecState(
         feature_id=feature_id,
@@ -482,13 +561,25 @@ def _classified_spec_entries(project_root: Path) -> list[tuple[Path, str]]:
 def _states_from_entries(entries: list[tuple[Path, str]]) -> list[SpecState]:
     """Build the SpecState list from pre-classified specs/ entries, sorted by
     feature_id ascending. Admits "bound" (F<n>-<slug>) and "bare" (F<n>,
-    backward-compat); skips "standalone" (correctly not a PLAN-bound feature)
-    and "invalid" (surfaced as a malformed-spec-dirname WARN instead)."""
-    states = [
-        classify_spec(entry)
-        for entry, category in entries
-        if category in ("bound", "bare")
-    ]
+    backward-compat); skips "standalone" (correctly not a PLAN-bound feature),
+    "derived" (a CPD cross-project link — handled by `_emit_derived_dir_warns`,
+    never a LOCAL PLAN-bound feature), and "invalid" (surfaced as a
+    malformed-spec-dirname WARN instead).
+
+    The "derived" skip is an EXPLICIT branch (not an accidental membership
+    fall-through) so a future change to the admitted-category set cannot silently
+    pull a `<project>--F<n>-<slug>` directory into local PLAN coverage.
+    """
+    states: list[SpecState] = []
+    for entry, category in entries:
+        if category in ("bound", "bare"):
+            states.append(classify_spec(entry))
+        elif category == "derived":
+            # A CPD derived-form directory is a cross-project link, NOT a local
+            # PLAN feature; it is excluded from coverage here and routed to
+            # `_emit_derived_dir_warns` for the sibling-gated informational WARN.
+            continue
+        # "standalone" and "invalid" are skipped / warned separately.
     return sorted(states, key=lambda s: s.feature_id)
 
 
@@ -555,6 +646,61 @@ def _emit_malformed_dirname_warns(
                 f"generate a slug, run:\n  {SLUGIFY_CLI_HINT}"
             )
         result.add("malformed-spec-dirname", False, detail, warn_only=True)
+
+
+def _emit_derived_dir_warns(
+    entries: list[tuple[Path, str]],
+    registry: Optional[dict],
+    project_root: Path,
+    result: ValidationResult,
+) -> None:
+    """Emit an informational WARN for each CPD derived-form directory whose master
+    project has NO matching sibling configured in `.sdd/projects.json` (AD6).
+
+    A `<project>--F<n>-<slug>` directory is excluded from local PLAN coverage by
+    `_states_from_entries` (it is a cross-project link, not a local feature). That
+    exclusion is sibling-GATED: silent exclusion is correct only when a matching
+    master sibling is configured, so a fat-fingered `--` in a NATIVE feature name
+    is not silently swallowed. When no matching sibling is found, this surfaces an
+    informational WARN (`derived-dir-no-sibling`, warn_only) naming the master
+    project and asking if the derivation was intentional.
+
+    "Matching" is role-INDEPENDENT (R6): a `siblings[].name` equal to the derived
+    dir's `<project>` prefix, regardless of the sibling's recorded `role`.
+    `find_sibling` already returns the resolved sibling path only when the name
+    matches AND the accept-gate passes, so a `None` here means "no matching,
+    resolvable sibling root" — exactly the case the WARN exists for.
+
+    `registry` is read ONCE by the caller (`validate_plan`) and passed in; this
+    helper never re-reads `.sdd/projects.json` per directory. Embedded directory
+    and project names are escaped via `display_safe` (the shared spoofing guard).
+    """
+    for entry, category in entries:
+        if category != "derived":
+            continue
+        parsed = project_link.parse_derived_dirname(entry.name)
+        if parsed is None:
+            # Defensive: a "derived" classification implies the name parses, but
+            # if the two grammars ever drift, fall back to the malformed-dirname
+            # walk rather than emitting a half-formed derived WARN.
+            continue
+        master_project, _, _ = parsed
+        sibling_path = project_registry.find_sibling(
+            registry, master_project, project_root
+        )
+        if sibling_path is None:
+            result.add(
+                "derived-dir-no-sibling",
+                False,
+                f"'specs/{display_safe(entry.name)}' looks like a derived spec "
+                f"(master project '{display_safe(master_project)}') but no "
+                f"matching sibling is configured in .sdd/projects.json — is this "
+                f"intentional? If it is a native feature with a stray '--' in its "
+                f"name, rename it; otherwise add the master project to "
+                f".sdd/projects.json.",
+                warn_only=True,
+            )
+        # else: a matching sibling is configured → silently excluded from coverage.
 
 
 def _emit_duplicate_feature_dir_warns(
@@ -1087,13 +1233,8 @@ def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntr
 # ---------------------------------------------------------------------------
 # File helpers
 # ---------------------------------------------------------------------------
-
-
-def read_file(path: Path) -> Optional[str]:
-    """Read file contents or return None if it doesn't exist."""
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
-    return None
+#
+# `read_file` is imported from blueprint_common (relocated in T9a).
 
 
 def validate_resolved(content: str, filename: str, result: ValidationResult) -> None:
@@ -1763,6 +1904,11 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
     # the owner-silent Enforcement WARN.
     cfc_entries = validate_cfc_section(content, result)
 
+    # `**Implemented by:**` — optional per-feature cross-project delegation field
+    # (CPD I8). Validate every occurrence positionally (malformed value /
+    # duplicate-in-block FAILs); absence and preamble occurrences are silent.
+    _parse_implemented_by(content, result)
+
     # Cross-artifact CFC checks (coverage walk + orphan-tag scan). specs/ is
     # walked unconditionally — even a PLAN with no CFCs must be scanned for
     # orphan [CFC-N] tags (it may have removed its CFCs and left orphans behind).
@@ -1772,6 +1918,12 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
     project_root = blueprint_dir.parent
     spec_entries = _classified_spec_entries(project_root)
     _emit_malformed_dirname_warns(spec_entries, result)
+    # CPD derived-dir exclusion (I10): read the sibling registry ONCE here and
+    # pass it in — never re-read per directory. `_states_from_entries` excludes
+    # derived dirs from coverage; this surfaces the sibling-gated informational
+    # WARN for any derived dir lacking a matching master sibling.
+    derived_registry = project_registry.read_projects_config(project_root)
+    _emit_derived_dir_warns(spec_entries, derived_registry, project_root, result)
     spec_states = _states_from_entries(spec_entries)
     has_any_cfc_tags = any(
         s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states

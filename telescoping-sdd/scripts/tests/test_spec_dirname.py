@@ -141,6 +141,105 @@ def test_parse_feature_number_leniency_documented():
 
 
 # ===========================================================================
+# Derived form: DERIVED_DIRNAME_PATTERN / is_derived_form / classify_dirname (T2)
+# ===========================================================================
+
+@pytest.mark.parametrize("name", [
+    "residents--F7-resident-sync",
+    "vps-edge--F1-a",
+])
+def test_classify_dirname_derived_form(name):
+    assert sd.classify_dirname(name) == "derived"
+
+
+def test_classify_dirname_derived_hyphenated_alias():
+    """A hyphenated (multi-segment kebab) project alias is valid."""
+    assert sd.classify_dirname("vps-edge--F7-sync") == "derived"
+
+
+def test_classify_dirname_derived_slug_too_long():
+    """Slug > 50 chars → invalid (slug cap enforced via is_valid_slug)."""
+    name = "residents--F7-" + "a" * 51
+    assert sd.classify_dirname(name) == "invalid"
+
+
+def test_classify_dirname_f7_double_dash_checkout():
+    """`F7--checkout` is NOT derived: uppercase F is not a valid lowercase
+    project alias, so it falls through to invalid (it has a `--` suffix)."""
+    assert sd.classify_dirname("F7--checkout") == "invalid"
+
+
+@pytest.mark.parametrize("name,expected", [
+    # The four pre-existing categories are unchanged after the derived branch.
+    ("F3-checkout-flow", "bound"),
+    ("F1-a", "bound"),
+    ("cli-notes-app", "standalone"),
+    ("f3-racing", "standalone"),
+    ("F3", "bare"),
+    ("F0", "bare"),
+    ("F007", "bare"),
+    ("F0-x", "invalid"),
+    ("F007-x", "invalid"),
+    ("My_Feature", "invalid"),
+])
+def test_classify_dirname_derived_no_regression(name, expected):
+    """Adding the derived branch leaves bound/standalone/bare/invalid intact."""
+    assert sd.classify_dirname(name) == expected
+
+
+@pytest.mark.parametrize("name", [
+    "residents--F7-resident-sync",
+    "vps-edge--F1-a",
+    "vps-edge--F7-sync",
+    "a--F99-x",
+])
+def test_is_derived_form_true_cases(name):
+    assert sd.is_derived_form(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "F3-checkout-flow",                 # bound
+    "cli-notes-app",                    # standalone
+    "F3",                               # bare
+    "My_Feature",                       # invalid
+    "F7--checkout",                     # uppercase-F alias → not derived
+    "Residents--F7-sync",               # uppercase alias char → not derived
+    "residents--F0-sync",               # leading/zero feature number
+    "residents--F07-sync",              # leading-zero feature number
+    "residents--F7-" + "a" * 51,        # slug > 50 chars
+    "residents--F7-sync\n",              # trailing newline (\Z, not $) → not derived
+])
+def test_is_derived_form_false_cases(name):
+    assert sd.is_derived_form(name) is False
+
+
+def test_classify_dirname_trailing_newline_not_derived():
+    """A newline-suffixed derived-looking name is NOT derived (regression).
+
+    `DERIVED_DIRNAME_PATTERN` is `\\A...\\Z`-anchored, not `^...$`, so `$`
+    matching just before a trailing `\\n` cannot classify `proj--F7-x\\n` as
+    derived while `project_link.parse_derived_dirname` (the same compiled
+    pattern) rejects it. The two used to disagree, crashing validate_spec's
+    derived branch on the `None` unpack.
+    """
+    assert sd.is_derived_form("residents--F7-x\n") is False
+    assert sd.classify_dirname("residents--F7-x\n") == "invalid"
+
+
+def test_is_derived_spec_wrapper(tmp_path):
+    """is_derived_spec is the single shared predicate over classify_dirname."""
+    derived = tmp_path / "residents--F7-resident-sync"
+    derived.mkdir()
+    bound = tmp_path / "F3-checkout-flow"
+    bound.mkdir()
+    standalone = tmp_path / "cli-notes-app"
+    standalone.mkdir()
+    assert sd.is_derived_spec(derived) is True
+    assert sd.is_derived_spec(bound) is False
+    assert sd.is_derived_spec(standalone) is False
+
+
+# ===========================================================================
 # slugify (green after T1)
 # ===========================================================================
 
@@ -380,6 +479,7 @@ def test_no_inline_dirname_regexes_in_validators():
     corpus = [
         ("F3-checkout-flow", "bound"), ("F3", "bare"), ("cli-notes-app", "standalone"),
         ("My_Feature", "invalid"), ("F0", "bare"), ("f3-racing", "standalone"),
+        ("residents--F7-x", "derived"),  # CPD: exercise the new category through both validators
     ]
     for name, expected in corpus:
         assert sd.classify_dirname(name) == expected

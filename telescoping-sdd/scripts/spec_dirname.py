@@ -53,6 +53,30 @@ _BOUND_PATTERN = re.compile(r"^F([1-9]\d*)-([a-z0-9]+(?:-[a-z0-9]+)*)$")
 # (the "bare" branch), and parse_feature_number (lenient extraction).
 _BARE_TOKEN_PATTERN = re.compile(r"^F(\d+)$")
 
+# Derived form: <project-alias>--F<n>-<slug>. The `--` sentinel separates a
+# lowercase-kebab project alias from a bound-style F<n>-<slug> tail. The
+# slug-length cap is NOT baked into this regex — is_derived_form re-checks the
+# slug portion via is_valid_slug so the 50-char cap lives in exactly one place.
+#
+# Anchored with `\A`/`\Z` (NOT `^`/`$`): `$` matches just before a trailing
+# `\n`, so `^...$` would classify `proj--F7-slug\n` as derived while
+# project_link's decomposition rejects it — the two grammars would then disagree
+# on a newline-suffixed name and the unpack in validate_spec's derived branch
+# would crash on the `None`. `\Z` admits no trailing newline (matching the same
+# control-char-injection guard `display_safe` exists for).
+#
+# This compiled object is the SINGLE structural grammar for the derived
+# directory name: `project_link.DERIVED_DIRNAME_PATTERN` re-exports THIS pattern
+# (one-way import: project_link -> spec_dirname) and `parse_derived_dirname`
+# decomposes via it, so "is it derived?" (this module's classification gate) and
+# "decompose it" (project_link's typed parse) share one grammar and can never
+# drift — the cross-module analogue of how is_bound_form / parse_bound share
+# `_BOUND_PATTERN` here. spec_dirname owns the dir-name STRUCTURE; project_link
+# owns the typed decomposition and the qualified-id (`<project>:F<n>`) grammar.
+DERIVED_DIRNAME_PATTERN = re.compile(
+    r"\A([a-z0-9]+(?:-[a-z0-9]+)*)--F([1-9]\d*)-([a-z0-9]+(?:-[a-z0-9]+)*)\Z"
+)
+
 _SLUG_MAX = 50
 _TITLE_MAX = 4096  # cap before NFKD to avoid pathological normalization
 
@@ -97,23 +121,66 @@ def is_standalone_form(name: str) -> bool:
     )
 
 
+def is_derived_form(name: str) -> bool:
+    """Return True iff ``name`` matches ``<project>--F<n>-<slug>`` (valid slug).
+
+    The project alias must be lowercase kebab, ``F<n>`` a positive
+    no-leading-zero integer, and the slug portion must additionally satisfy
+    ``is_valid_slug`` (so an over-50-char slug is False). Consistent with
+    ``is_bound_form`` / ``is_standalone_form``: a Boolean gate only — no tuple
+    decomposition (that lives in ``project_link.parse_derived_dirname``).
+
+    False for ``"F7--checkout"`` (uppercase ``F`` is not a valid lowercase
+    project alias) and any name without the ``--`` sentinel. Never raises.
+
+    Uses the same compiled ``DERIVED_DIRNAME_PATTERN`` that
+    ``project_link.parse_derived_dirname`` decomposes with, so this gate and that
+    decomposition agree on every input (including a trailing-newline name, which
+    both reject — no crash in validate_spec's derived branch).
+    """
+    m = DERIVED_DIRNAME_PATTERN.match(name)
+    return bool(m) and is_valid_slug(m.group(3))
+
+
+def is_derived_spec(spec_dir) -> bool:
+    """Return True iff ``spec_dir.name`` classifies as ``"derived"``.
+
+    The SINGLE shared predicate keyed off ``classify_dirname`` so the
+    ``validate_spec`` derived-branch gate (I4) and the ``validate_cfc_consumer``
+    derived-spec exemption (I7) cannot drift on what "derived" means. Takes a
+    path-like with a ``.name`` attribute. Never raises.
+    """
+    return classify_dirname(spec_dir.name) == "derived"
+
+
 def classify_dirname(name: str) -> str:
-    """Classify a spec directory basename into one of four categories.
+    """Classify a spec directory basename into one of five categories.
 
     Returns:
         ``"bound"``      if ``is_bound_form(name)`` is True
+        ``"derived"``    if ``is_derived_form(name)`` is True
+                         (``<project>--F<n>-<slug>``)
         ``"bare"``       if ``name`` matches ``^F\\d+$`` (bare token, incl.
                          ``F0``, ``F007`` — leniently, for backward compat)
         ``"standalone"`` if ``is_standalone_form(name)`` is True
-        ``"invalid"``    otherwise (e.g. ``F0-x``, ``F007-x``, ``My_Feature``)
+        ``"invalid"``    otherwise (e.g. ``F0-x``, ``F007-x``, ``My_Feature``,
+                         ``F7--checkout``)
+
+    The ``derived`` branch runs after ``is_bound_form`` and before the
+    bare-token branch: an uppercase-``F`` form like ``F7--checkout`` is not a
+    valid lowercase project alias, so it falls through to the bare-token branch
+    and then on to ``"invalid"`` (it has a ``--`` suffix).
 
     This is the single dispatch point for all consumers (the ``walk_specs``
-    filter, ``_emit_malformed_dirname_warns``, and ``check_dir_identifier``).
-    Using it everywhere prevents walk-vs-warn classification drift — the
-    feature's own anti-drift principle applied to itself. Never raises.
+    filter, ``_emit_malformed_dirname_warns``, ``check_dir_identifier``, and the
+    ``is_derived_spec`` predicate). Using it everywhere prevents walk-vs-warn
+    classification drift — the feature's own anti-drift principle applied to
+    itself. Never raises.
     """
     if is_bound_form(name):
         return "bound"
+    if is_derived_form(name):
+        return "derived"
     if _BARE_TOKEN_PATTERN.match(name):
         return "bare"
     if is_standalone_form(name):

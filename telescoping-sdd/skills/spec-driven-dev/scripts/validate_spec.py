@@ -38,6 +38,7 @@ _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
+    APPROVAL_HASH_LINE_STRICT,
     REAPPROVAL_REMINDER,
     MarkerCorruptError,
     Severity,
@@ -72,9 +73,19 @@ from spec_dirname import (  # noqa: E402
     SLUGIFY_CLI_HINT,
     classify_dirname,
     display_safe,
+    is_derived_spec,
     parse_bound,
     parse_feature_number,
 )
+from project_link import (  # noqa: E402
+    DERIVED_FROM_LINE_RE,
+    MASTER_CONTRACT_HASH_LINE_RE,
+    MASTER_HASH_UNBOUND,
+    MASTER_HASH_VALUE_RE,
+    parse_derived_dirname,
+    parse_qualified_id,
+)
+from ucr import parse_ucr_stanza  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -416,20 +427,19 @@ def validate_panel_review(content: str, filename: str, result: ValidationResult)
 # Approval helpers
 # ---------------------------------------------------------------------------
 
-# Canonical approval-detection constants — kept identical to
-# validate_blueprint.py's (APPROVAL_HEADER / APPROVAL_CHECKBOX /
-# APPROVAL_HASH_LINE) so the two skills' validators interpret the approval format
-# identically: `- [x]` / `- [X]`, an upper- or lower-case hex hash, and a
-# `## Approval` header with flexible surrounding whitespace. Hash comparison
-# routes through the shared blueprint_common.verify_content_hash (case-insensitive).
-# `content_for_hashing` / `compute_content_hash` are imported from
-# blueprint_common (above), sharing the producer-side implementation for hash
-# coherence across both validators.
+# Canonical approval-detection constants. APPROVAL_HEADER / APPROVAL_CHECKBOX
+# are kept identical to validate_blueprint.py's so the two skills' validators
+# interpret the approval format identically (`- [x]` / `- [X]`, a `## Approval`
+# header with flexible surrounding whitespace). The narrow content-hash line is
+# the SHARED `blueprint_common.APPROVAL_HASH_LINE_STRICT` (imported as
+# APPROVAL_HASH_LINE) — both validators key on ONE object so the approval-hash
+# grammar cannot drift between them. Hash comparison routes through the shared
+# blueprint_common.verify_content_hash (case-insensitive); `content_for_hashing`
+# / `compute_content_hash` are likewise imported from blueprint_common, sharing
+# the producer-side implementation for hash coherence across both validators.
 APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
 APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
-APPROVAL_HASH_LINE = re.compile(
-    r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([0-9a-fA-F]+|pending)`", re.MULTILINE
-)
+APPROVAL_HASH_LINE = APPROVAL_HASH_LINE_STRICT
 
 
 def check_approval(content: str, filename: str, result: ValidationResult) -> bool:
@@ -639,6 +649,182 @@ def _read_plan_identifier(
     return m.group(1) if m else None
 
 
+# ---------------------------------------------------------------------------
+# Cross-Project Derivation (CPD) field grammar
+# ---------------------------------------------------------------------------
+#
+# A derived spec.md carries two CPD provenance fields plus an optional UCR
+# stanza. The two fields are validated by `_check_cpd_fields` (I5); the
+# `**Derived from:**` value also feeds `check_dir_identifier`'s derived branch
+# (I4). The four field constants below (`DERIVED_FROM_LINE_RE`,
+# `MASTER_CONTRACT_HASH_LINE_RE`, `MASTER_HASH_VALUE_RE`, `MASTER_HASH_UNBOUND`)
+# are imported from `project_link` — the single CPD-grammar owner — so this
+# authoring gate and `reconcile` (the integrator) can never drift on the field
+# shapes (the value captures are loose `[^`]*`; well-formedness is decided
+# downstream, so a malformed-but-present field is still detected as present).
+
+
+def _extract_cpd_field_values(
+    content: str,
+) -> "tuple[bool, bool, Optional[str], Optional[str]]":
+    """Return (has_derived_from, has_master_hash, derived_from_value,
+    master_hash_value) for the CPD provenance fields in spec.md.
+
+    A value of None means the field's line is absent; an empty string means the
+    line is present with an empty backtick value (still "present"). Never raises.
+    """
+    df = DERIVED_FROM_LINE_RE.search(content)
+    mh = MASTER_CONTRACT_HASH_LINE_RE.search(content)
+    derived_from_value = df.group(1) if df else None
+    master_hash_value = mh.group(1) if mh else None
+    return (df is not None, mh is not None, derived_from_value, master_hash_value)
+
+
+def _check_cpd_fields(
+    spec_dir: Path, content: str, result: ValidationResult
+) -> None:
+    """Validate the `**Derived from:**` + `**Master contract hash:**` fields (I5).
+
+    SOLE owner of the malformed-value, co-occurrence, and non-derived-dir FAILs.
+    Runs BEFORE `check_dir_identifier` so well-formedness is established first.
+    Implements the precedence ladder — first match wins, at most one FAIL — so a
+    value that is both malformed AND mismatched yields exactly one FAIL (the
+    malformed one; `check_dir_identifier`'s derived branch then short-circuits on
+    the same `parse_qualified_id is None`). Never raises.
+
+    Ladder:
+      1. A CPD field present on a non-`derived` dir -> `derived-fields-on-non-derived-dir`
+         (stop — the other checks are moot off a non-derived dir).
+      2. Exactly one of the two fields present -> `derived-fields-incomplete`.
+      3. `**Derived from:**` malformed (not a backtick-wrapped qualified id)
+         -> `derived-from-malformed`.
+      4. `**Master contract hash:**` neither 64-hex nor `unbound`
+         -> `master-hash-malformed`.
+      Both fields absent -> PASS (non-derived spec, no CPD fields expected).
+    """
+    (
+        has_derived_from,
+        has_master_hash,
+        derived_from_value,
+        master_hash_value,
+    ) = _extract_cpd_field_values(content)
+
+    # Both absent: nothing to validate (non-derived spec).
+    if not has_derived_from and not has_master_hash:
+        return
+
+    escaped = display_safe(spec_dir.name)
+
+    # Step 1: a CPD field on a non-derived directory. Off a non-derived dir the
+    # remaining CPD checks are moot, so this is the sole FAIL.
+    if not is_derived_spec(spec_dir):
+        result.add(
+            "derived-fields-on-non-derived-dir", False,
+            f"spec directory '{escaped}' carries a CPD provenance field "
+            f"(`**Derived from:**` and/or `**Master contract hash:**`) but its "
+            f"name is not a derived-form directory (`<project>--F<n>-<slug>`). "
+            f"Either rename the directory to the derived form, or remove the "
+            f"CPD fields if this is not a cross-project derived spec.",
+        )
+        return
+
+    # Step 2: co-occurrence — both fields must appear together.
+    if has_derived_from != has_master_hash:
+        result.add(
+            "derived-fields-incomplete", False,
+            "`**Derived from:**` and `**Master contract hash:**` must appear "
+            "together. Add the missing field; use `unbound` for the hash if not "
+            "yet reconciled against the master project.",
+        )
+        return
+
+    # Step 3: `Derived from` well-formedness (backtick-wrapped qualified id).
+    if parse_qualified_id(derived_from_value or "") is None:
+        result.add(
+            "derived-from-malformed", False,
+            "`**Derived from:**` value is malformed — must be a backtick-wrapped "
+            "qualified id like `project:F7` (lowercase project alias, `F`, a "
+            "positive feature number with no leading zero).",
+        )
+        return
+
+    # Step 4: `Master contract hash` well-formedness (64-hex or `unbound`).
+    value = master_hash_value or ""
+    if value != MASTER_HASH_UNBOUND and not MASTER_HASH_VALUE_RE.match(value):
+        result.add(
+            "master-hash-malformed", False,
+            "`**Master contract hash:**` value is malformed — must be 64 "
+            "lowercase hex characters (a SHA-256 digest) or the literal "
+            "`unbound` if not yet reconciled against the master project.",
+        )
+        return
+
+
+def _validate_ucr_stanza(content: str, result: ValidationResult) -> None:
+    """Validate the `## Upstream Change Requests` stanza if present (I6).
+
+    Delegates parsing to the shared `ucr.parse_ucr_stanza` (so `validate_spec.py`
+    and `reconcile.py` can never drift on the grammar) and emits a FAIL for each
+    structural problem: malformed UCR id, duplicate id, invalid status, missing
+    required field, or a malformed `Target` qualified id. A no-op when the stanza
+    is absent. The stanza's presence never causes a FAIL and never hard-halts
+    validation; an `## Accepted Divergences` section may coexist. Never raises.
+    """
+    parsed = parse_ucr_stanza(content)
+    if not parsed.present:
+        return
+
+    # Malformed ids (leading zero / `0`) — rejected at parse time, never entries.
+    for raw_id in parsed.malformed_ids:
+        result.add(
+            "ucr-id-malformed", False,
+            f"`### UCR-{display_safe(raw_id)}` has a malformed id — UCR ids use "
+            f"the same canonical-decimal grammar as `### CFC-N` (a positive "
+            f"integer with no leading zero).",
+        )
+
+    # Duplicate ids within this spec.
+    for num in parsed.duplicate_ids:
+        result.add(
+            "duplicate-ucr-id", False,
+            f"`### UCR-{num}` appears more than once. Each UCR id must be unique "
+            f"within a single spec.",
+        )
+
+    # Missing required fields.
+    for num, field_name in parsed.missing_field_ids:
+        result.add(
+            "ucr-missing-field", False,
+            f"`### UCR-{num}` is missing the required `**{field_name}:**` field. "
+            f"Each UCR entry needs Target, Status, Proposed change, and Rationale.",
+        )
+
+    # Invalid status values.
+    for num in parsed.invalid_status_ids:
+        result.add(
+            "ucr-invalid-status", False,
+            f"`### UCR-{num}` has an invalid status. Status must be one of "
+            f"`open`, `applied`, or `withdrawn`.",
+        )
+
+    # Malformed `Target` qualified ids — only for entries whose Target is present
+    # (a missing Target is already covered by ucr-missing-field above). The raw
+    # value is backtick-wrapped on disk; strip the wrapping before the parse.
+    for entry in parsed.entries:
+        target = entry.target()
+        if target is None:
+            continue
+        unwrapped = target.strip()
+        if unwrapped.startswith("`") and unwrapped.endswith("`") and len(unwrapped) >= 2:
+            unwrapped = unwrapped[1:-1]
+        if parse_qualified_id(unwrapped) is None:
+            result.add(
+                "ucr-target-malformed", False,
+                f"`### UCR-{entry.number}` has a malformed `**Target:**` value — "
+                f"must be a backtick-wrapped qualified id like `project:F7`.",
+            )
+
+
 def check_dir_identifier(
     spec_dir: Path, spec_content: Optional[str] = None
 ) -> ValidationResult:
@@ -655,7 +841,7 @@ def check_dir_identifier(
     directory is not a false mismatch). If `spec_content` (already-read spec.md
     text) is supplied, the identifier is parsed from it instead of re-reading
     the file. FAIL codes: dir-identifier-mismatch / missing-slug / invalid-slug
-    / cannot-cross-check.
+    / cannot-cross-check / derived-provenance-mismatch.
     """
     result = ValidationResult()
     name = spec_dir.name
@@ -665,6 +851,104 @@ def check_dir_identifier(
         "Renaming a spec directory does not invalidate any existing approval or "
         "content hash."
     )
+
+    if category == "derived":
+        # Derived form `<project>--F<n>-<slug>` (I4). Coherence between the
+        # directory's encoded provenance and the in-file `**Derived from:**`
+        # line. The directory decomposition is grammar-owned by
+        # `project_link.parse_derived_dirname`; the malformed-value, co-occurrence
+        # and non-derived-dir FAILs are owned by `_check_cpd_fields` (I5), so this
+        # branch never re-emits them.
+        content = spec_content
+        if content is None:
+            content = read_file(spec_dir / "spec.md") or ""
+        dir_parsed = parse_derived_dirname(name)
+        # Classification (`classify_dirname` -> "derived") and decomposition
+        # (`parse_derived_dirname`) now share ONE compiled grammar
+        # (`spec_dirname.DERIVED_DIRNAME_PATTERN`), so a "derived" category
+        # implies a non-None parse. Guard the unpack anyway: defence-in-depth so
+        # any future grammar skew surfaces as a clean FAIL instead of a
+        # `TypeError` raised mid-validation.
+        if dir_parsed is None:
+            result.add(
+                "derived-provenance-mismatch", False,
+                f"spec directory '{escaped}' classifies as derived but cannot be "
+                f"decomposed into `<project>--F<n>-<slug>`. {hash_safe}",
+            )
+            return result
+        dir_project, dir_number, _dir_slug = dir_parsed
+
+        (
+            has_derived_from,
+            _has_master_hash,
+            derived_from_value,
+            _master_hash_value,
+        ) = _extract_cpd_field_values(content)
+
+        # Step 1 — well-formedness short-circuit. A malformed (or absent-value)
+        # `**Derived from:**` is already FAILed by `_check_cpd_fields`
+        # (`derived-from-malformed` / `derived-fields-incomplete`); this branch
+        # returns WITHOUT a second FAIL so a both-malformed-and-mismatched value
+        # yields exactly one FAIL through the full `validate_spec()` path (I5).
+        parsed_from = (
+            parse_qualified_id(derived_from_value)
+            if has_derived_from and derived_from_value is not None
+            else None
+        )
+
+        # Step 2 — presence: the `**Derived from:**` line is absent entirely.
+        if not has_derived_from:
+            result.add(
+                "derived-provenance-mismatch", False,
+                f"spec directory '{escaped}' uses the derived form but the "
+                f"`**Derived from:**` line is missing. A derived spec records its "
+                f"master-project provenance on a `**Derived from:** "
+                f"`<project>:F<n>`` line. {hash_safe}",
+            )
+            return result
+
+        # Malformed value -> owned by `_check_cpd_fields`; do not double-FAIL.
+        if parsed_from is None:
+            return result
+
+        from_project, from_number = parsed_from
+
+        # Step 3 — identifier must be `n/a` (provenance is on the Derived from line).
+        identifier = _read_plan_identifier(spec_dir, content)
+        if identifier is not None and identifier != "n/a":
+            result.add(
+                "derived-provenance-mismatch", False,
+                f"spec directory '{escaped}' uses the derived form, so its "
+                f"`**PLAN feature identifier:**` must be `n/a` (provenance lives on "
+                f"the `**Derived from:**` line), but it is '{display_safe(identifier)}'. "
+                f"Set the identifier to `n/a`. {hash_safe}",
+            )
+            return result
+
+        # Step 4 — project mismatch.
+        if from_project != dir_project:
+            result.add(
+                "derived-provenance-mismatch", False,
+                f"spec directory '{escaped}' encodes master project "
+                f"'{display_safe(dir_project)}' but `**Derived from:**` names "
+                f"'{display_safe(from_project)}'. Make the directory project prefix "
+                f"and the Derived from project match. {hash_safe}",
+            )
+            return result
+
+        # Step 5 — number mismatch.
+        if from_number != dir_number:
+            result.add(
+                "derived-provenance-mismatch", False,
+                f"spec directory '{escaped}' encodes feature F{dir_number} but "
+                f"`**Derived from:**` names F{from_number}. Make the directory "
+                f"feature number and the Derived from feature number match. "
+                f"{hash_safe}",
+            )
+            return result
+
+        # Step 6 — all checks clear -> PASS (no check added).
+        return result
 
     if category == "bare":
         # Bare token F<n>. Suggest the CANONICAL bound rename: parse_feature_number
@@ -797,6 +1081,16 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     # broken spec.md fails for the right reason first. See
     # documentation/CFC.md § Validator for the full ruleset.
     validate_cfc_consumer(spec_dir, content, "spec", result)
+
+    # Cross-Project Derivation field well-formedness (I5). Runs BEFORE
+    # check_dir_identifier so the malformed-value / co-occurrence / non-derived-dir
+    # FAILs are established first and the derived branch never double-FAILs a
+    # value it already rejected (exactly-one-FAIL precedence ladder).
+    _check_cpd_fields(spec_dir, content, result)
+
+    # UCR stanza structural validation (I6). A no-op when the
+    # `## Upstream Change Requests` stanza is absent; never hard-halts.
+    _validate_ucr_stanza(content, result)
 
     # Directory<->identifier cross-check (R2). Runs AFTER the spec.md-exists
     # early-return above, so a missing spec.md does not reach cannot-cross-check
@@ -1070,6 +1364,16 @@ def validate_cfc_consumer(
     spec_path = spec_dir / "spec.md"
     spec_content = read_file(spec_path)
     if spec_content is None:
+        return
+
+    # Derived-spec exemption (I7). A derived-form directory is exempt from ALL
+    # `n/a`-standalone CFC-coherence behaviors (the `n/a`+active-CFC WARN AND the
+    # `n/a`+stale-`[CFC-N]`-tag WARN) and from local-PLAN feature-id resolution:
+    # its provenance lives in the master project's PLAN, not the local one. Gate
+    # on the SHARED `is_derived_spec` predicate (NOT the identifier value) so this
+    # exemption and the I4 derived branch can never drift on what "derived" means.
+    # A derived spec legitimately carries `identifier == "n/a"`.
+    if is_derived_spec(spec_dir):
         return
 
     id_match = PLAN_FEATURE_ID_LINE_RE.search(spec_content)
