@@ -1,6 +1,6 @@
 # Agent Self-Review Instructions
 
-Before returning a draft to the calling skill, you must self-review the document you produced. The goal is to catch issues early so the calling Claude receives a clean, internally consistent draft — not to replace the calling Claude's own review, but to make it faster and more focused on cross-document and conversation-context concerns the agent cannot see.
+Before writing your draft to disk, you must self-review the document you produced. The goal is to catch issues early so the on-disk draft the calling Claude reads is clean and internally consistent — not to replace the calling Claude's own review, but to make it faster and more focused on cross-document and conversation-context concerns the agent cannot see.
 
 ## The Three Checks
 
@@ -42,9 +42,9 @@ For each issue you find:
 
 - After fixing issues, re-review the full document from the start — fixes can introduce new issues.
 - If a pass finds no issues, stop immediately. Do not review indefinitely.
-- Do not exceed 5 review passes total. If you hit 5 passes and issues remain, flag the remaining ones and return the draft for the calling Claude to resolve.
+- Do not exceed 5 review passes total. If you hit 5 passes and issues remain, flag the remaining ones in the manifest's open-questions / revision-points field for the calling Claude to resolve.
 - Each revision should be a clean, complete version of the document — not a diff and not annotated with what changed.
 
 ## When You Are Done
 
-Return the complete, reviewed document to the calling skill. Do not include a summary of what you changed during self-review — the calling Claude only needs the final draft. The calling Claude will then perform its own review, add cross-document consistency checks against upstream documents it holds in context, and present the result to the user.
+Use the `Write` tool to write the complete, reviewed document to the path the caller provided. Do not return the document body — return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list. Do not include a summary of what you changed during self-review. The calling Claude will then `Read` the document from disk, perform its own review, add cross-document consistency checks against upstream documents it holds in context, and present the result to the user.
