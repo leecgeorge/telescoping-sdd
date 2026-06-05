@@ -103,6 +103,21 @@ H_DEFERRED = "### Deferred dispositions"
 DEFERRED_REDISPOSITION_PREFIX = "Defense: already routed to "
 TERMINAL_FILENAMES = frozenset({"PLAN.md", "tasks.md", "tasks-python.md", "tasks-java.md"})
 TERMINAL_HTML_MARKER = "<!-- terminal-phase: scope -->"
+
+_NUMERIC_PREFIX_RE = re.compile(r"^\d{2}_")
+
+
+def _strip_numeric_prefix(name: str) -> str:
+    """Strip a leading two-digit ``NN_`` ordinal prefix (raw, UNIFORM strip).
+
+    Used before the ``TERMINAL_FILENAMES`` membership tests so a prefixed
+    ``03_PLAN.md`` / ``03_tasks.md`` (and the defensive ``03_tasks-python.md`` /
+    ``03_tasks-java.md``) resolve to the bare registry name. We strip raw rather
+    than via ``blueprint_common.strip_artifact_prefix`` because the terminal
+    registry includes ``tasks-python.md`` / ``tasks-java.md``, which are NOT in
+    ``KNOWN_ARTIFACTS`` — the 4-name frozenset is its own over-match guard.
+    """
+    return _NUMERIC_PREFIX_RE.sub("", name, count=1)
 PANEL_SECTION_ORDER = [H_TRAJECTORY, H_SEALED, H_DEFERRED, H_LATEST]
 
 DEF_PAT = re.compile(
@@ -125,7 +140,7 @@ def _is_terminal(content: str, path: Path, explicit_flag: bool) -> bool:
     """
     if explicit_flag:
         return True
-    if path.name in TERMINAL_FILENAMES:
+    if _strip_numeric_prefix(path.name) in TERMINAL_FILENAMES:
         return True
     if TERMINAL_HTML_MARKER in content:
         return True
@@ -655,7 +670,7 @@ def main():
         print(f"error: artifact not found: {art}", file=sys.stderr)
         sys.exit(EXIT_OLD_FORMAT_OR_MISSING)
 
-    if art.name in TERMINAL_FILENAMES and not args.terminal:
+    if _strip_numeric_prefix(art.name) in TERMINAL_FILENAMES and not args.terminal:
         print(
             f"error: '{art.name}' is in the TERMINAL_FILENAMES registry "
             f"(case-sensitive: PLAN.md, tasks.md, tasks-python.md, tasks-java.md). "

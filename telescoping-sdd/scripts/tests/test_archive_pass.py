@@ -821,6 +821,48 @@ def test_terminal_filenames_registry_membership():
     )
 
 
+# --- artifact NN_-prefix tolerance for TERMINAL_FILENAMES (T2) ---
+
+def test_terminal_filenames_prefix_tolerant_plan():
+    ap = _load_archive_pass()
+    assert ap._is_terminal("", Path("03_PLAN.md"), False) is True
+
+
+def test_terminal_filenames_prefix_tolerant_tasks():
+    ap = _load_archive_pass()
+    assert ap._is_terminal("", Path("03_tasks.md"), False) is True
+
+
+def test_terminal_filenames_prefix_tolerant_tasks_python():
+    ap = _load_archive_pass()  # defensive-registry coverage (never emitted as a user artifact)
+    assert ap._is_terminal("", Path("03_tasks-python.md"), False) is True
+
+
+def test_terminal_filenames_prefix_tolerant_tasks_java():
+    ap = _load_archive_pass()  # defensive-registry coverage
+    assert ap._is_terminal("", Path("03_tasks-java.md"), False) is True
+
+
+def test_terminal_filenames_non_terminal_spec():
+    ap = _load_archive_pass()
+    assert ap._is_terminal("", Path("01_spec.md"), False) is False
+
+
+def test_terminal_filenames_non_terminal_design():
+    ap = _load_archive_pass()
+    assert ap._is_terminal("", Path("02_design.md"), False) is False
+
+
+def test_archive_pass_cli_rejects_prefixed_plan_without_terminal(tmp_path):
+    """The CLI TERMINAL gate (the second membership site) rejects 03_PLAN.md
+    without --terminal, exactly as it does for bare PLAN.md."""
+    plan = tmp_path / "03_PLAN.md"
+    plan.write_text("# Plan\n", encoding="utf-8")
+    proc = _run_archive_pass([str(plan)])
+    assert proc.returncode != 0
+    assert "TERMINAL_FILENAMES" in proc.stderr
+
+
 def test_target_pat_rejects_traversal_and_accepts_subdir():
     """TARGET_PAT: rejects .. segments, requires .md, allows subdir paths."""
     ap = _load_archive_pass()

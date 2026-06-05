@@ -314,10 +314,18 @@ def _check_contract_drift(
     stored = _stored_derived_hash(derived_spec_content)
 
     if stored == MASTER_HASH_UNBOUND:
-        shipped = (
-            derived_spec_dir is not None
-            and blueprint_common.is_shipped(derived_spec_dir)
-        )
+        try:
+            shipped = (
+                derived_spec_dir is not None
+                and blueprint_common.is_shipped(derived_spec_dir)
+            )
+        except blueprint_common.ArtifactAmbiguityError:
+            # A derived dir with both a bare and a prefixed form of spec/design/
+            # tasks is unreadable for the shipped check; degrade to "not shipped"
+            # (the quieter needs-first-stamp path) rather than letting the
+            # ambiguity abort the whole cross-repo reconcile — matching the
+            # degrade-not-abort discipline of the other reconcile reads.
+            shipped = False
         if shipped:
             result.add(
                 "contract drift: shipped-but-unbound",
@@ -570,10 +578,17 @@ def _run_reconcile(project_root: Path, result: ValidationResult) -> None:
             )
             continue
 
-        master_plan_path = sibling_root / "blueprint" / "PLAN.md"
-        master_plan_content = project_registry.safe_read_sibling(
-            master_plan_path, sibling_root
-        )
+        try:
+            master_plan_path = blueprint_common.resolve_artifact(
+                sibling_root / "blueprint", "PLAN.md"
+            )
+            master_plan_content = project_registry.safe_read_sibling(
+                master_plan_path, sibling_root
+            )
+        except blueprint_common.ArtifactAmbiguityError:
+            # CPD soft-read: a sibling repo carrying both PLAN.md and 03_PLAN.md
+            # degrades to "unreadable" rather than aborting the whole reconcile.
+            master_plan_content = None
         if master_plan_content is None:
             _skip(
                 result,
@@ -621,7 +636,12 @@ def _reconcile_pair(
     for (dir_master, number), spec_dir in sorted(derived_dirs.items()):
         if dir_master != master_project:
             continue
-        spec_content = blueprint_common.read_file(spec_dir / "spec.md")
+        try:
+            spec_content = blueprint_common.read_file(
+                blueprint_common.resolve_artifact(spec_dir, "spec.md")
+            )
+        except blueprint_common.ArtifactAmbiguityError:
+            spec_content = None  # degrade (treat the derived spec as unreadable)
         if spec_content is None:
             continue
         _check_contract_drift(
@@ -705,9 +725,15 @@ def main(argv: Optional[list] = None) -> int:
                 project, _fn = parsed
                 sibling_root = project_registry.find_sibling(config, project, root)
                 if sibling_root is not None:
-                    master_plan_content = project_registry.safe_read_sibling(
-                        sibling_root / "blueprint" / "PLAN.md", sibling_root
-                    )
+                    try:
+                        master_plan_content = project_registry.safe_read_sibling(
+                            blueprint_common.resolve_artifact(
+                                sibling_root / "blueprint", "PLAN.md"
+                            ),
+                            sibling_root,
+                        )
+                    except blueprint_common.ArtifactAmbiguityError:
+                        master_plan_content = None
         return _print_link_mode(args.print_link, args.title, master_plan_content)
 
     if args.title is not None:
@@ -731,4 +757,7 @@ def main(argv: Optional[list] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    # Defensive backstop: the per-dir reads degrade on ambiguity, but this turns
+    # any OTHER unguarded ArtifactAmbiguityError into a clean fail-closed exit
+    # instead of a traceback (the boundary lives in one shared place).
+    blueprint_common.run_cli_failclosed(lambda: main(sys.argv[1:]))

@@ -24,6 +24,8 @@ import argparse  # noqa: E402
 import base64  # noqa: E402
 import html  # noqa: E402
 import re  # noqa: E402
+
+import blueprint_common  # noqa: E402  (artifact NN_-prefix resolution)
 import shlex  # noqa: E402
 import string  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
@@ -141,7 +143,14 @@ def validate_blueprint_dir(path_arg: str) -> Path:
     if not p.is_dir():
         print(f"{path_arg}: not a directory", file=sys.stderr)
         sys.exit(1)
-    missing = [name for name in _REQUIRED_ARTIFACTS if not (p / name).is_file()]
+    try:
+        missing = [
+            name for name in _REQUIRED_ARTIFACTS
+            if not blueprint_common.resolve_artifact(p, name).is_file()
+        ]
+    except blueprint_common.ArtifactAmbiguityError as exc:
+        print(f"{path_arg}: {exc}", file=sys.stderr)
+        sys.exit(1)
     if missing:
         print(
             f"{path_arg}: missing required artifacts: {', '.join(missing)}",
@@ -814,9 +823,9 @@ def main() -> None:
     blueprint_path = validate_blueprint_dir(args.blueprint_dir)
     check_markdown_dependency(sys.argv[0], args.blueprint_dir)
 
-    scope_md = _read_artifact(blueprint_path / "SCOPE.md")
-    arch_md = _read_artifact(blueprint_path / "ARCHITECTURE.md")
-    plan_md = _read_artifact(blueprint_path / "PLAN.md")
+    scope_md = _read_artifact(blueprint_common.resolve_artifact(blueprint_path, "SCOPE.md"))
+    arch_md = _read_artifact(blueprint_common.resolve_artifact(blueprint_path, "ARCHITECTURE.md"))
+    plan_md = _read_artifact(blueprint_common.resolve_artifact(blueprint_path, "PLAN.md"))
 
     check_upstream_approvals(scope_md, arch_md, plan_md)
 

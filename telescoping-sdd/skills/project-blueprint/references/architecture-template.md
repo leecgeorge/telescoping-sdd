@@ -6,7 +6,7 @@ Use this template when creating `ARCHITECTURE.md` after an approved scope.
 
 # Architecture: [Project Name]
 
-**Scope:** `blueprint/SCOPE.md`
+**Scope:** `blueprint/01_SCOPE.md`
 
 ## System Overview
 

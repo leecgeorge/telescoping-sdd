@@ -6,7 +6,7 @@ Use this template when creating `spec.md` for a Python project.
 
 # Feature: [Feature Name]
 
-**PLAN feature identifier:** `F<n>` (matches the feature entry in `blueprint/PLAN.md`'s Feature Breakdown — e.g. `F1`, `F11`). If no upstream PLAN exists, write `n/a`.
+**PLAN feature identifier:** `F<n>` (matches the feature entry in `blueprint/03_PLAN.md`'s Feature Breakdown — e.g. `F1`, `F11`; the bare `blueprint/PLAN.md` is also accepted). If no upstream PLAN exists, write `n/a`.
 
 ## Objective
 

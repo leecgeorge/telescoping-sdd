@@ -525,3 +525,40 @@ def test_is_shipped_path_wrapper(tmp_path):
     empty = tmp_path / "F2-empty"
     empty.mkdir()
     assert bc.is_shipped(empty) is False
+
+
+# ---------------------------------------------------------------------------
+# _detect_prefix_state (artifact NN_-prefix feature)
+# ---------------------------------------------------------------------------
+
+def test_detect_prefix_state_uniform_bare(tmp_path):
+    (tmp_path / "spec.md").write_text("x", encoding="utf-8")
+    (tmp_path / "design.md").write_text("x", encoding="utf-8")
+    assert bc._detect_prefix_state(tmp_path) == "uniform-bare"
+
+
+def test_detect_prefix_state_uniform_prefixed(tmp_path):
+    (tmp_path / "01_spec.md").write_text("x", encoding="utf-8")
+    (tmp_path / "02_design.md").write_text("x", encoding="utf-8")
+    assert bc._detect_prefix_state(tmp_path) == "uniform-prefixed"
+
+
+def test_detect_prefix_state_mixed(tmp_path):
+    (tmp_path / "spec.md").write_text("x", encoding="utf-8")
+    (tmp_path / "02_design.md").write_text("x", encoding="utf-8")
+    assert bc._detect_prefix_state(tmp_path) == "mixed"
+
+
+def test_detect_prefix_state_empty(tmp_path):
+    assert bc._detect_prefix_state(tmp_path) == "empty"
+
+
+def test_is_shipped_resolves_prefixed_artifacts(tmp_path):
+    """is_shipped derives the SAME verdict from NN_-prefixed artifacts (T3)."""
+    spec_md, design_md, tasks_md = _shipped_triple()
+    d = tmp_path / "F3-prefixed"
+    d.mkdir()
+    (d / "01_spec.md").write_text(spec_md, encoding="utf-8")
+    (d / "02_design.md").write_text(design_md, encoding="utf-8")
+    (d / "03_tasks.md").write_text(tasks_md, encoding="utf-8")
+    assert bc.is_shipped(d) is True

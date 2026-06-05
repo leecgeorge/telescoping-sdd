@@ -47,9 +47,12 @@ from blueprint_common import (  # noqa: E402
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    mixed_state_warning,
     now_iso_utc,
     read_stored_hash,
     reconcile_to_result,
+    resolve_artifact,
+    run_cli_failclosed,
     stamped_at_pass_from_content,
     trim_trajectory_table,
     upsert_pending_entry,
@@ -610,7 +613,7 @@ def check_previous_phase_approved(
     if prev_file is None:
         return  # spec has no previous phase
 
-    prev_path = spec_dir / prev_file
+    prev_path = resolve_artifact(spec_dir, prev_file)
     prev_content = read_file(prev_path)
     if prev_content is None:
         result.add(f"Previous phase ({prev_file}) exists", False)
@@ -641,7 +644,7 @@ def _read_plan_identifier(
     """
     if spec_content is None:
         try:
-            with open(spec_dir / "spec.md", encoding="utf-8") as fh:
+            with open(resolve_artifact(spec_dir, "spec.md"), encoding="utf-8") as fh:
                 spec_content = fh.read()
         except (OSError, UnicodeDecodeError):
             return None
@@ -861,7 +864,7 @@ def check_dir_identifier(
         # branch never re-emits them.
         content = spec_content
         if content is None:
-            content = read_file(spec_dir / "spec.md") or ""
+            content = read_file(resolve_artifact(spec_dir, "spec.md")) or ""
         dir_parsed = parse_derived_dirname(name)
         # Classification (`classify_dirname` -> "derived") and decomposition
         # (`parse_derived_dirname`) now share ONE compiled grammar
@@ -1046,7 +1049,7 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     spec.md does not make the obligation vanish). See main().
     """
     result = ValidationResult()
-    spec_path = spec_dir / "spec.md"
+    spec_path = resolve_artifact(spec_dir, "spec.md")
     content = read_file(spec_path)
 
     result.add("spec.md exists", content is not None, str(spec_path))
@@ -1107,7 +1110,7 @@ def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validat
 
     check_previous_phase_approved(spec_dir, "design", result)
 
-    design_path = spec_dir / "design.md"
+    design_path = resolve_artifact(spec_dir, "design.md")
     content = read_file(design_path)
 
     result.add("design.md exists", content is not None, str(design_path))
@@ -1146,7 +1149,7 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
 
     check_previous_phase_approved(spec_dir, "tasks", result)
 
-    tasks_path = spec_dir / "tasks.md"
+    tasks_path = resolve_artifact(spec_dir, "tasks.md")
     content = read_file(tasks_path)
 
     result.add("tasks.md exists", content is not None, str(tasks_path))
@@ -1239,7 +1242,7 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
 
     # Requirement coverage — check all spec R-numbers are covered by tasks
     has_req = bool(TASK_REQUIREMENT_REF_PATTERN.search(content))
-    spec_content = read_file(spec_dir / "spec.md")
+    spec_content = read_file(resolve_artifact(spec_dir, "spec.md"))
     if spec_content is not None and has_req:
         spec_reqs = set(REQUIREMENT_ID_PATTERN.findall(spec_content))
         # Extract individual R-numbers from Requirement lines (e.g., "R1, R2, R3")
@@ -1310,7 +1313,7 @@ def find_project_root(spec_dir: Path) -> Optional[Path]:
     for candidate in (spec_dir.parent, spec_dir.parent.parent):
         if candidate is None:
             continue
-        if (candidate / "blueprint" / "PLAN.md").is_file():
+        if resolve_artifact(candidate / "blueprint", "PLAN.md").is_file():
             return candidate
     return None
 
@@ -1361,7 +1364,7 @@ def validate_cfc_consumer(
     checks (design fidelity is panel-side judgement per CFC.md).
     """
     # Parse the identifier line from spec.md, which is the binding signal.
-    spec_path = spec_dir / "spec.md"
+    spec_path = resolve_artifact(spec_dir, "spec.md")
     spec_content = read_file(spec_path)
     if spec_content is None:
         return
@@ -1381,7 +1384,7 @@ def validate_cfc_consumer(
 
     project_root = find_project_root(spec_dir)
     plan_content = (
-        read_file(project_root / "blueprint" / "PLAN.md") if project_root else None
+        read_file(resolve_artifact(project_root / "blueprint", "PLAN.md")) if project_root else None
     )
     has_cfc_section = bool(plan_content and CFC_HEADER_RE.search(plan_content))
 
@@ -1631,6 +1634,13 @@ def main():
         print(f"Error: {spec_dir} is not a directory")
         sys.exit(2)
 
+    # R7 mixed-state surfacing: a non-blocking nudge ONLY when a mixed dir is
+    # actually renamer-fixable (the helper suppresses the nudge on a same-artifact
+    # collision, where the validator is about to FAIL with the ambiguity detail).
+    _warn = mixed_state_warning(str(args.spec_dir), spec_dir)
+    if _warn:
+        print(_warn)
+
     project_root = args.project_root.resolve() if args.project_root else None
     if project_root is not None and not project_root.is_dir():
         print(f"Error: --project-root {project_root} is not a directory")
@@ -1671,7 +1681,7 @@ def main():
     # Handle --approve
     if args.approve:
         file_map = {"spec": "spec.md", "design": "design.md", "tasks": "tasks.md"}
-        target = spec_dir / file_map[args.approve]
+        target = resolve_artifact(spec_dir, file_map[args.approve])
         if not target.is_file():
             print(f"Error: {target} does not exist")
             sys.exit(2)
@@ -1740,7 +1750,8 @@ def main():
             continue
 
         # In "all" mode, skip phases whose files don't exist yet
-        expected_file = spec_dir / f"{phase_key}.md" if phase_key != "spec" else spec_dir / "spec.md"
+        _bare = "spec.md" if phase_key == "spec" else f"{phase_key}.md"
+        expected_file = resolve_artifact(spec_dir, _bare)
         if args.phase == "all" and not expected_file.exists():
             continue
 
@@ -1810,4 +1821,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Fail-closed (design.md:349): an uncaught ArtifactAmbiguityError from any
+    # resolve_artifact site — including the no-`result` soft gates
+    # (find_project_root, expected_file) and the --approve target — exits
+    # non-zero BEFORE any content hash is stamped. The boundary is shared so a
+    # new entrypoint can't forget it.
+    run_cli_failclosed(main)

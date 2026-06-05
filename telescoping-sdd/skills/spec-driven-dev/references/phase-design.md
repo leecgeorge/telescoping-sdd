@@ -1,6 +1,8 @@
 # Phase 2: Design
 
-Drafts `specs/F<n>-<slug>/design.md` — how to build the feature. Requires an approved `spec.md` as upstream context.
+Drafts `specs/F<n>-<slug>/02_design.md` — how to build the feature. Requires an approved `spec.md` as upstream context.
+
+> **Artifact filenames.** This skill emits artifacts with an `NN_` ordinal prefix (`01_spec.md`, `02_design.md`, `03_tasks.md`; blueprint tier: `01_SCOPE.md`, `02_ARCHITECTURE.md`, `03_PLAN.md`) so a directory listing sorts in phase order. The prefixed form is the emit default; **both** the bare and the prefixed form are accepted on read (the validators and scripts resolve either). Wherever a path below names an artifact file — including an upstream existence check such as `blueprint/PLAN.md` — read it as "bare **or** `NN_`-prefixed" (`blueprint/PLAN.md` or `blueprint/03_PLAN.md`).
 
 ## Drafting
 
@@ -12,10 +14,10 @@ When invoking the agent, provide:
   - Java: `references/design-template-java.md`
   - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/design-template-python.md` for the structural skeleton (the section list is identical across profiles), but instruct the agent to *reinterpret* the stack-shaped sections for the actual deliverable rather than inventing code — e.g. Data Models → config-file schemas / resource topology, Interfaces → shell-script or cross-component contracts, Testing Strategy → the command/manual/review checks the stack supports. All required section headings stay present (the validator checks presence); only their content adapts.
 - The required sections (below) — the agent must produce exactly these
-- The approved `specs/F<n>-<slug>/spec.md` as authoritative upstream context
+- The approved `specs/F<n>-<slug>/01_spec.md` as authoritative upstream context
 - A clear instruction that the design must address every requirement and respect every boundary from the spec
 - If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, pass its contents (or at minimum the CFC entries naming this feature in their Participating features). The agent's CFC obligation (below) requires this input.
-- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `design.md`, which fits into the existing codebase (the agent will read the repo to ground file paths and integration points), to `specs/F<n>-<slug>/design.md`, and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `design.md`, which fits into the existing codebase (the agent will read the repo to ground file paths and integration points), to `specs/F<n>-<slug>/02_design.md`, and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 
 **CFC obligation.** For every `### CFC-N` in `blueprint/PLAN.md`'s Cross-Feature Contracts section that names this feature in its Participating features, the design must demonstrably honor the contract — code paths described in Architecture Decisions / Component Design / Interfaces / Error Handling must not contradict the CFC's `Contract` clause or its `Per-feature AC`. If this feature is named (as the bare token `F<n>` verbatim, word-boundary) in the CFC's `Enforcement` prose, the design must additionally specify how the verifying artifact named in Enforcement (ArchUnit rule, CI workflow, integration test, etc.) will be implemented and where it lives in the codebase (concrete file paths in File Structure, sequencing in Implementation Sequence). If the design cannot honor a binding CFC for this feature, the agent surfaces a candidate `Halt and re-scope` for the design panel rather than silently dropping the obligation.
@@ -34,7 +36,7 @@ Required sections:
 - **Risks** — What could go wrong and concrete mitigation actions
 - **Implementation Sequence** — High-level build order for components
 
-The agent-written `design.md` is already on disk. `Read` `specs/F<n>-<slug>/design.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `specs/F<n>-<slug>/design.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
+The agent-written `design.md` is already on disk. `Read` `specs/F<n>-<slug>/02_design.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `specs/F<n>-<slug>/02_design.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
 ## Design Self-Review
 
@@ -66,7 +68,7 @@ For each issue found:
 
 ## Design Panel Review
 
-After the spec-design consistency check is complete, run the design panel against `specs/F<n>-<slug>/design.md` following the loop described in `references/panel-review.md`.
+After the spec-design consistency check is complete, run the design panel against `specs/F<n>-<slug>/02_design.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, `telescoping-sdd:security-reviewer`.
 
