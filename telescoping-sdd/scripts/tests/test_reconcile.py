@@ -680,6 +680,30 @@ def test_shipped_but_unbound_escalated_warn(tmp_path: Path) -> None:
     assert rc == 0
 
 
+def test_reconcile_degrades_on_ambiguous_derived_artifact(tmp_path: Path) -> None:
+    """Regression (code review #1): an ambiguous design.md/tasks.md in a derived
+    spec dir must NOT crash the whole reconcile. `is_shipped()` resolves all three
+    artifacts, so a bare+prefixed collision on design.md raises
+    ArtifactAmbiguityError; reconcile must degrade that one dir to 'not shipped'
+    (needs-first-stamp) and keep going, not abort with a traceback."""
+    fixture = _build_pair(tmp_path, hash_value="unbound")
+    spec_dir = fixture.derived_root / "specs" / fixture.derived_dirnames()[0]
+    _mark_shipped(spec_dir, "unbound")
+    # Collision on design.md only (spec.md stays clean, so the guarded spec.md
+    # read succeeds and execution reaches is_shipped).
+    (spec_dir / "02_design.md").write_text(
+        (spec_dir / "design.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    with pytest.raises(blueprint_common.ArtifactAmbiguityError):
+        blueprint_common.is_shipped(spec_dir)  # documents the hazard the guard absorbs
+
+    result = _reconcile(fixture.derived_root)  # must not raise
+    assert result.passed  # degraded WARN, not a crash/FAIL
+    assert any("needs first stamp" in s.lower() for s in _passes(result) + _warns(result))
+    rc = reconcile.main(["--project-root", str(fixture.derived_root)])
+    assert rc == 0
+
+
 def test_master_hash_none_surfaced(tmp_path: Path) -> None:
     """Unparseable master feature block → surface 'could not compute master hash'.
 

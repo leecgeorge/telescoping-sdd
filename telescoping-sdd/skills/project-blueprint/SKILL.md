@@ -43,9 +43,20 @@ Each phase delegates document drafting to a specialist subagent via the Agent to
 
 **The shared panel-review machinery — the loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract for `## Panel Review`, and when to skip the panel — lives in `references/panel-review.md`. Read that reference before running any phase's panel.**
 
+## Artifact filenames and the ordering-prefix offer
+
+This skill emits blueprint artifacts with a two-digit `NN_` ordinal prefix (`01_SCOPE.md`, `02_ARCHITECTURE.md`, `03_PLAN.md`) so a directory listing sorts in phase order. Resolution is **additive** — every validator and script accepts BOTH the bare and the prefixed form, so an existing project with bare filenames keeps working untouched.
+
+**Interactive rename offer (at most once per directory per session).** When you enter the workflow on an existing project, assess whether to offer the hash-safe renamer:
+
+1. **Run the gate:** `python telescoping-sdd/scripts/artifact_prefix.py --check blueprint/`. Offer the rename **only if** stdout is exactly `OFFER`. The gate prints `OFFER` only for a *mixed* (bare + prefixed) directory in an interactive, non-CI session; otherwise it prints `SUPPRESS` and you say nothing about renaming.
+2. **Pending-review pre-check.** Before presenting the offer as actionable, confirm the directory has no open `.sdd/pending-review.json` obligation. If one exists, surface that pending obligation instead of the offer — the renamer refuses while a review is pending (a rename would orphan the relpath-keyed marker), so resolve or `--decline-pending` the review first.
+3. **If you offer and the user accepts:** run `python telescoping-sdd/scripts/artifact_prefix.py blueprint/` (renames in place; file content is untouched, so no approval or content hash is invalidated).
+4. **If the user declines:** reply with this reassurance verbatim — "No problem — the bare filenames work exactly as well; both forms are accepted everywhere, so the prefix is purely cosmetic ordering." Do **not** re-offer for that same directory again this session.
+
 ## Phase 1: Scope
 
-Output: `blueprint/SCOPE.md`. Drafted by `telescoping-sdd:project-spec-analyst`.
+Output: `blueprint/01_SCOPE.md`. Drafted by `telescoping-sdd:project-spec-analyst`.
 
 Required sections: Problem Statement, Target Users, Goals, Non-Goals, Constraints, Success Criteria.
 
@@ -55,7 +66,7 @@ Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `
 
 ## Phase 2: Architecture
 
-Output: `blueprint/ARCHITECTURE.md`. Drafted by `telescoping-sdd:project-architecture-analyst`. Requires approved `SCOPE.md`.
+Output: `blueprint/02_ARCHITECTURE.md`. Drafted by `telescoping-sdd:project-architecture-analyst`. Requires approved `SCOPE.md`.
 
 Required sections: System Overview, Components, Component Interactions, Technology Choices, Data Architecture, External Dependencies, Risks.
 
@@ -65,7 +76,7 @@ Panelists: `telescoping-sdd:architect`, `telescoping-sdd:ops-reviewer`, `telesco
 
 ## Phase 3: Implementation Plan
 
-Output: `blueprint/PLAN.md`. Drafted by `telescoping-sdd:project-plan-analyst`. Requires approved `SCOPE.md` and `ARCHITECTURE.md`.
+Output: `blueprint/03_PLAN.md`. Drafted by `telescoping-sdd:project-plan-analyst`. Requires approved `SCOPE.md` and `ARCHITECTURE.md`.
 
 Required sections: Feature Breakdown, MVP Definition, Feature Dependencies, Implementation Order, Milestones.
 

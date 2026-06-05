@@ -63,6 +63,17 @@ Phase 4 (implementation) is executed directly by the calling Claude with no dele
 
 **The shared panel-review machinery — the loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract for `## Panel Review`, and when to skip the panel — lives in `references/panel-review.md`. Read that reference before running any phase's panel.**
 
+## Artifact filenames and the ordering-prefix offer
+
+This skill emits artifacts with a two-digit `NN_` ordinal prefix (`01_spec.md`, `02_design.md`, `03_tasks.md`) so a directory listing sorts in phase order. Resolution is **additive** — every validator and script accepts BOTH the bare and the prefixed form, so an existing project with bare filenames keeps working untouched.
+
+**Interactive rename offer (at most once per directory per session).** When you enter the workflow on an existing feature directory, assess whether to offer the hash-safe renamer:
+
+1. **Run the gate:** `python telescoping-sdd/scripts/artifact_prefix.py --check specs/<dir>/`. Offer the rename **only if** stdout is exactly `OFFER`. The gate prints `OFFER` only for a *mixed* (bare + prefixed) directory in an interactive, non-CI session; otherwise it prints `SUPPRESS` and you say nothing about renaming.
+2. **Pending-review pre-check.** Before presenting the offer as actionable, confirm the directory has no open `.sdd/pending-review.json` obligation. If one exists, surface that pending obligation instead of the offer — the renamer refuses while a review is pending (a rename would orphan the relpath-keyed marker), so resolve or `--decline-pending` the review first.
+3. **If you offer and the user accepts:** run `python telescoping-sdd/scripts/artifact_prefix.py specs/<dir>/` (renames in place; file content is untouched, so no approval or content hash is invalidated).
+4. **If the user declines:** reply with this reassurance verbatim — "No problem — the bare filenames work exactly as well; both forms are accepted everywhere, so the prefix is purely cosmetic ordering." Do **not** re-offer for that same directory again this session.
+
 ## Language / Architecture Detection
 
 Before starting any phase, detect the project's stack:
@@ -91,7 +102,7 @@ This writes `.sdd/architecture.json` (the declare-once store) at the project roo
 
 ## Phase 1: Specify
 
-Output: `specs/F<n>-<slug>/spec.md`. Drafted by `telescoping-sdd:feature-spec-analyst`.
+Output: `specs/F<n>-<slug>/01_spec.md`. Drafted by `telescoping-sdd:feature-spec-analyst`.
 
 Required sections: Objective, Requirements (with per-requirement **Acceptance Criteria** sub-labels), Project Structure, Boundaries, Success Criteria.
 
@@ -101,7 +112,7 @@ Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `
 
 ## Phase 2: Design
 
-Output: `specs/F<n>-<slug>/design.md`. Drafted by `telescoping-sdd:feature-architecture-analyst`. Requires approved `spec.md`.
+Output: `specs/F<n>-<slug>/02_design.md`. Drafted by `telescoping-sdd:feature-architecture-analyst`. Requires approved `spec.md`.
 
 Required sections: Goals and Non-Goals, Architecture Decisions, Component Design, Data Models, Interfaces, Error Handling, Testing Strategy, File Structure, Dependencies, Integration Points, Risks, Implementation Sequence.
 
@@ -111,7 +122,7 @@ Panelists: `telescoping-sdd:architect`, `telescoping-sdd:testability-reviewer`, 
 
 ## Phase 3: Tasks
 
-Output: `specs/F<n>-<slug>/tasks.md`. Drafted by `telescoping-sdd:feature-task-analyst`. Requires approved `spec.md` and `design.md`.
+Output: `specs/F<n>-<slug>/03_tasks.md`. Drafted by `telescoping-sdd:feature-task-analyst`. Requires approved `spec.md` and `design.md`.
 
 Required per-task fields: Task ID, Requirement, Description, Files, Dependencies, Parallel, Acceptance Criteria, Verification (the validator FAILs if any is missing from a task), plus Tests (advisory — the validator warns rather than fails, since specific test names are often refined during implementation).
 

@@ -1,6 +1,8 @@
 # Phase 2: Architecture
 
-Drafts `blueprint/ARCHITECTURE.md` — how the system fits together. Requires an approved `blueprint/SCOPE.md` as upstream context.
+Drafts `blueprint/02_ARCHITECTURE.md` — how the system fits together. Requires an approved `blueprint/01_SCOPE.md` as upstream context.
+
+> **Artifact filenames.** This skill emits blueprint artifacts with an `NN_` ordinal prefix (`01_SCOPE.md`, `02_ARCHITECTURE.md`, `03_PLAN.md`) so a directory listing sorts in phase order. The prefixed form is the emit default; **both** the bare and the prefixed form are accepted on read (the validators and scripts resolve either) — a project resuming with a bare `blueprint/01_SCOPE.md` etc. still validates.
 
 ## Drafting
 
@@ -9,8 +11,8 @@ Delegate drafting to the `telescoping-sdd:project-architecture-analyst` subagent
 When invoking the agent, provide:
 - The template path: `references/architecture-template.md`
 - The required sections (below) — the agent must produce exactly these
-- The approved `blueprint/SCOPE.md` as authoritative upstream context
-- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `ARCHITECTURE.md`, which addresses every goal and respects every constraint from the scope, to `blueprint/ARCHITECTURE.md`, and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
+- The approved `blueprint/01_SCOPE.md` as authoritative upstream context
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `ARCHITECTURE.md`, which addresses every goal and respects every constraint from the scope, to `blueprint/02_ARCHITECTURE.md`, and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 
 Required sections:
@@ -22,7 +24,7 @@ Required sections:
 - **External Dependencies** — Third-party services, APIs, and infrastructure
 - **Risks** — Technical risks with likelihood, impact, and mitigation strategies
 
-The agent-written `ARCHITECTURE.md` is already on disk. `Read` `blueprint/ARCHITECTURE.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `blueprint/ARCHITECTURE.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
+The agent-written `ARCHITECTURE.md` is already on disk. `Read` `blueprint/02_ARCHITECTURE.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `blueprint/02_ARCHITECTURE.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
 ## Architecture Self-Review
 
@@ -54,7 +56,7 @@ For each issue found:
 
 ## Architecture Panel Review
 
-After the scope-architecture consistency check is complete, run the architecture panel against `blueprint/ARCHITECTURE.md` following the loop described in `references/panel-review.md`.
+After the scope-architecture consistency check is complete, run the architecture panel against `blueprint/02_ARCHITECTURE.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:architect`, `telescoping-sdd:ops-reviewer`, `telescoping-sdd:security-reviewer`.
 

@@ -1,6 +1,8 @@
 # Phase 3: Tasks
 
-Drafts `specs/F<n>-<slug>/tasks.md` — atomic, testable, sequenced implementation steps. Requires approved `spec.md` and `design.md` as upstream context. This is the last artifact phase before implementation — concerns cannot be deferred forward.
+Drafts `specs/F<n>-<slug>/03_tasks.md` — atomic, testable, sequenced implementation steps. Requires approved `spec.md` and `design.md` as upstream context. This is the last artifact phase before implementation — concerns cannot be deferred forward.
+
+> **Artifact filenames.** This skill emits artifacts with an `NN_` ordinal prefix (`01_spec.md`, `02_design.md`, `03_tasks.md`; blueprint tier: `01_SCOPE.md`, `02_ARCHITECTURE.md`, `03_PLAN.md`) so a directory listing sorts in phase order. The prefixed form is the emit default; **both** the bare and the prefixed form are accepted on read (the validators and scripts resolve either). Wherever a path below names an artifact file — including an upstream existence check such as `blueprint/PLAN.md` — read it as "bare **or** `NN_`-prefixed" (`blueprint/PLAN.md` or `blueprint/03_PLAN.md`).
 
 ## Drafting
 
@@ -12,10 +14,10 @@ When invoking the agent, provide:
   - Java: `references/tasks-template-java.md`
   - Generic (architecture-neutral — infra, static sites, config, docs, skill authoring): there is no `-generic` template; use `references/tasks-template-python.md` for the structural skeleton (task fields and formatting are identical across profiles), but instruct the agent to populate Tests/Verification with the stack's real checks (a runnable assertion like `nginx -t` / `terraform validate` / `grep` / `test -f`, or a precise manual/review step) rather than `pytest`/`mvn` test functions. The per-task field set, GIVEN/WHEN/THEN, and the hash/approval blocks are unchanged.
 - The required per-task fields (below) — the agent must produce exactly these
-- The approved `specs/F<n>-<slug>/spec.md` and `specs/F<n>-<slug>/design.md` as authoritative upstream context
+- The approved `specs/F<n>-<slug>/01_spec.md` and `specs/F<n>-<slug>/02_design.md` as authoritative upstream context
 - The task sizing rules (below) and the instruction that every spec requirement and every design component must be covered by at least one task
 - If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, pass its contents. The agent's CFC enforcement-task obligation (below) depends on this input.
-- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `tasks.md`, including the summary table at the top and phase groupings if there are more than a few tasks, to `specs/F<n>-<slug>/tasks.md` and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `tasks.md`, including the summary table at the top and phase groupings if there are more than a few tasks, to `specs/F<n>-<slug>/03_tasks.md` and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: task headings must use `### - [ ] T1:` checkbox format, the summary table must use the exact column headers from the template, Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to implementation` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 
 **CFC enforcement-task obligation.** For every `### CFC-N` in `blueprint/PLAN.md`'s Cross-Feature Contracts section whose `**Enforcement:**` prose names this feature as the owner (the feature's identifier `F<n>` appears as a bare token, word-boundary), `tasks.md` must contain a task whose deliverable is the verifying artifact named in that Enforcement field (ArchUnit rule, CI grep, integration test, runbook gate, etc.). The task description must include the binding tag `[CFC-N]`. Place the tag at the end of the task title on the checkbox line: `- [ ] <task title naming the artifact> [CFC-N]`. The validator checks for this tag with the whole-number regex `\[CFC-(\d+)\]` — substring matching is not used; `[CFC-1]` and `[CFC-10]` are distinct.
@@ -40,7 +42,7 @@ Task sizing rules:
 - A task should touch no more than 3-5 files
 - If a task feels too large, split it
 
-The agent-written `tasks.md` is already on disk. `Read` `specs/F<n>-<slug>/tasks.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `specs/F<n>-<slug>/tasks.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
+The agent-written `tasks.md` is already on disk. `Read` `specs/F<n>-<slug>/03_tasks.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `specs/F<n>-<slug>/03_tasks.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
 ## Tasks Self-Review
 
@@ -72,7 +74,7 @@ For each issue found:
 
 ## Tasks Panel Review
 
-After the spec-design-tasks consistency check is complete, run the tasks panel against `specs/F<n>-<slug>/tasks.md` following the loop described in `references/panel-review.md`.
+After the spec-design-tasks consistency check is complete, run the tasks panel against `specs/F<n>-<slug>/03_tasks.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
 

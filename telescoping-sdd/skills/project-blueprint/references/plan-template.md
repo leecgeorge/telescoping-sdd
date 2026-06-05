@@ -6,8 +6,8 @@ Use this template when creating `PLAN.md` after an approved architecture.
 
 # Implementation Plan: [Project Name]
 
-**Scope:** `blueprint/SCOPE.md`
-**Architecture:** `blueprint/ARCHITECTURE.md`
+**Scope:** `blueprint/01_SCOPE.md`
+**Architecture:** `blueprint/02_ARCHITECTURE.md`
 
 ## Feature Breakdown
 

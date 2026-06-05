@@ -40,6 +40,10 @@ from blueprint_common import (  # noqa: E402
     UnresolvedMarker,
     ValidationResult,
     approval_hash,
+    mixed_state_warning,
+    resolve_artifact,
+    run_cli_failclosed,
+    strip_artifact_prefix,
     approval_hash_matches,
     changed_since_stamp,
     clear_pending_entries_for_prefix,
@@ -446,9 +450,9 @@ def classify_spec(spec_dir: Path) -> SpecState:
     fid = parse_feature_number(spec_dir.name)
     feature_id = fid if fid is not None else -1
 
-    spec_path = spec_dir / "spec.md"
-    design_path = spec_dir / "design.md"
-    tasks_path = spec_dir / "tasks.md"
+    spec_path = resolve_artifact(spec_dir, "spec.md")
+    design_path = resolve_artifact(spec_dir, "design.md")
+    tasks_path = resolve_artifact(spec_dir, "tasks.md")
 
     spec_content = read_file(spec_path)
     if spec_content is None:
@@ -905,7 +909,7 @@ def scan_orphan_tags(
                 # Per P1-1 from the post-implementation code review.
                 participating = entry.participating_features()
                 enforcement_owners = entry.enforcement_owners()
-                if artifact_name == "tasks.md":
+                if strip_artifact_prefix(artifact_name) == "tasks.md":
                     is_legitimate_holder = (
                         spec.feature_id in participating
                         or spec.feature_id in enforcement_owners
@@ -925,7 +929,7 @@ def scan_orphan_tags(
                                 f"in CFC-{n}'s Participating features"
                                 + (
                                     " (and is not named as an Enforcement owner)"
-                                    if artifact_name == "tasks.md"
+                                    if strip_artifact_prefix(artifact_name) == "tasks.md"
                                     else ""
                                 )
                                 + " — remove the tag (allowed metadata edit), or "
@@ -1378,7 +1382,7 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
 
     # For PLAN.md, refresh the per-CFC content-hash sub-block BEFORE computing
     # the document-level hash — the sub-block is part of the approved content.
-    if file_path.name == "PLAN.md":
+    if strip_artifact_prefix(file_path.name) == "PLAN.md":
         section = extract_cfc_section(content)
         cfc_entries = parse_cfc_entries(section[2]) if section else []
         content = _write_cfc_hash_block(content, cfc_entries)
@@ -1536,7 +1540,7 @@ def check_previous_phase_approved(
     if prev_file is None:
         return  # scope has no previous phase
 
-    prev_path = blueprint_dir / prev_file
+    prev_path = resolve_artifact(blueprint_dir, prev_file)
     prev_content = read_file(prev_path)
     if prev_content is None:
         result.add(f"Previous phase ({prev_file}) exists", False)
@@ -1558,7 +1562,7 @@ def check_previous_phase_approved(
 def validate_scope(blueprint_dir: Path) -> ValidationResult:
     """Validate SCOPE.md for required sections and resolved questions."""
     result = ValidationResult()
-    scope_path = blueprint_dir / "SCOPE.md"
+    scope_path = resolve_artifact(blueprint_dir, "SCOPE.md")
     content = read_file(scope_path)
 
     result.add("SCOPE.md exists", content is not None, str(scope_path))
@@ -1656,7 +1660,7 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
 
     check_previous_phase_approved(blueprint_dir, "architecture", result)
 
-    arch_path = blueprint_dir / "ARCHITECTURE.md"
+    arch_path = resolve_artifact(blueprint_dir, "ARCHITECTURE.md")
     content = read_file(arch_path)
 
     result.add("ARCHITECTURE.md exists", content is not None, str(arch_path))
@@ -1742,7 +1746,7 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
 
     check_previous_phase_approved(blueprint_dir, "plan", result)
 
-    plan_path = blueprint_dir / "PLAN.md"
+    plan_path = resolve_artifact(blueprint_dir, "PLAN.md")
     content = read_file(plan_path)
 
     result.add("PLAN.md exists", content is not None, str(plan_path))
@@ -2054,6 +2058,13 @@ def main():
         print(f"Error: {blueprint_dir} is not a directory")
         sys.exit(2)
 
+    # R7 mixed-state surfacing: non-blocking nudge ONLY when a mixed dir is
+    # renamer-fixable (the helper suppresses the nudge on a same-artifact
+    # collision, where the validator is about to FAIL with the ambiguity detail).
+    _warn = mixed_state_warning(str(args.blueprint_dir), blueprint_dir)
+    if _warn:
+        print(_warn)
+
     project_root = args.project_root.resolve() if args.project_root else None
     if project_root is not None and not project_root.is_dir():
         print(f"Error: --project-root {project_root} is not a directory")
@@ -2087,7 +2098,7 @@ def main():
     # the SAME shared writer the SDD side uses (source="blueprint"), to the project
     # root (parent of blueprint/).
     if args.write_arch_config:
-        arch_path = blueprint_dir / "ARCHITECTURE.md"
+        arch_path = resolve_artifact(blueprint_dir, "ARCHITECTURE.md")
         content = read_file(arch_path)
         if content is None:
             print(f"Error: {arch_path} does not exist")
@@ -2124,7 +2135,7 @@ def main():
             "architecture": "ARCHITECTURE.md",
             "plan": "PLAN.md",
         }
-        target = blueprint_dir / file_map[args.approve]
+        target = resolve_artifact(blueprint_dir, file_map[args.approve])
         if not target.is_file():
             print(f"Error: {target} does not exist")
             sys.exit(2)
@@ -2208,7 +2219,7 @@ def main():
             continue
 
         # In "all" mode, skip phases whose files don't exist yet
-        expected_file = blueprint_dir / phase_file_map[phase_key]
+        expected_file = resolve_artifact(blueprint_dir, phase_file_map[phase_key])
         if args.phase == "all" and not expected_file.exists():
             continue
 
@@ -2241,7 +2252,7 @@ def main():
     # auto-clear up to 3x and let an absent/skipped phase's FAIL vanish). AD7/I10/H1.
     root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
     scan_prefix = (
-        bp_rel if args.phase == "all" else f"{bp_rel}/{phase_file_map[args.phase]}"
+        bp_rel if args.phase == "all" else f"{bp_rel}/{resolve_artifact(blueprint_dir, phase_file_map[args.phase]).name}"
     )
     pending_result = reconcile_to_result(
         root,
@@ -2282,4 +2293,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Fail-closed (design.md:349): an uncaught ArtifactAmbiguityError from any
+    # resolve_artifact site — including the no-`result` soft gate classify_spec
+    # and the --approve target — exits non-zero before any content hash is
+    # stamped. The boundary is shared so a new entrypoint can't forget it.
+    run_cli_failclosed(main)

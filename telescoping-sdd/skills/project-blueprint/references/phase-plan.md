@@ -1,6 +1,8 @@
 # Phase 3: Implementation Plan
 
-Drafts `blueprint/PLAN.md` — features, dependencies, MVP, milestones. Requires approved `blueprint/SCOPE.md` and `blueprint/ARCHITECTURE.md` as upstream context. This is the last blueprint phase — concerns cannot be deferred forward.
+Drafts `blueprint/03_PLAN.md` — features, dependencies, MVP, milestones. Requires approved `blueprint/01_SCOPE.md` and `blueprint/02_ARCHITECTURE.md` as upstream context. This is the last blueprint phase — concerns cannot be deferred forward.
+
+> **Artifact filenames.** This skill emits blueprint artifacts with an `NN_` ordinal prefix (`01_SCOPE.md`, `02_ARCHITECTURE.md`, `03_PLAN.md`) so a directory listing sorts in phase order. The prefixed form is the emit default; **both** the bare and the prefixed form are accepted on read (the validators and scripts resolve either) — a project resuming with a bare `blueprint/03_PLAN.md` etc. still validates.
 
 ## Drafting
 
@@ -9,9 +11,9 @@ Delegate drafting to the `telescoping-sdd:project-plan-analyst` subagent via the
 When invoking the agent, provide:
 - The template path: `references/plan-template.md`
 - The required sections (below) — the agent must produce exactly these
-- The approved `blueprint/SCOPE.md` and `blueprint/ARCHITECTURE.md` as authoritative upstream context
+- The approved `blueprint/01_SCOPE.md` and `blueprint/02_ARCHITECTURE.md` as authoritative upstream context
 - A clear instruction that each feature (F1, F2, etc.) must be described at enough detail to serve as input to a spec-driven development workflow
-- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `PLAN.md` to `blueprint/PLAN.md` and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
+- A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `PLAN.md` to `blueprint/03_PLAN.md` and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: feature checklists must use `- [ ] F1:` checkbox format, Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to feature development` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 
 Required sections:
@@ -39,7 +41,7 @@ Most features are implemented in this same repo. When a feature is instead **del
 - **Grammar.** The value is a single **lowercase-kebab project alias** (`[a-z0-9]+(-[a-z0-9]+)*` — same shape as a slug), optionally backtick-wrapped. It names only the *derived project*, never a derived feature number: the derived feature reuses this master's own `F<n>`, so naming a separate number would falsely imply the feature is native to the derived repo. `validate_blueprint.py` parses the field positionally per feature block and FAILs `implemented-by-malformed` for a non-kebab value or `implemented-by-duplicate` for two occurrences in one block. **Absence is the normal case** ("implemented locally") and is silent — never add an empty or placeholder `Implemented by`.
 - **Alias-stability rule (load-bearing).** A project alias is part of the join key. **Once a derivation link exists** (a derived repo carries a `specs/<project>--F<n>-<slug>/` directory pointing back here), the master-project alias and the value of every `**Implemented by:**` field **must not be renamed** — renaming silently orphans the link, and `reconcile` cannot distinguish a rename from a genuine deletion. If a rename is truly unavoidable, treat it as a coordinated cross-repo migration (update both sides in lockstep), not a one-side PLAN edit. The full reconcile/UCR workflow this feeds into lives in `references/workflow-overview.md § Cross-Project Derivation`.
 
-The agent-written `PLAN.md` is already on disk. `Read` `blueprint/PLAN.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `blueprint/PLAN.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
+The agent-written `PLAN.md` is already on disk. `Read` `blueprint/03_PLAN.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `blueprint/03_PLAN.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
 ## Plan Self-Review
 
@@ -71,7 +73,7 @@ For each issue found:
 
 ## Plan Panel Review
 
-After the scope-architecture-plan consistency check is complete, run the plan panel against `blueprint/PLAN.md` following the loop described in `references/panel-review.md`.
+After the scope-architecture-plan consistency check is complete, run the plan panel against `blueprint/03_PLAN.md` following the loop described in `references/panel-review.md`.
 
 Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telescoping-sdd:simplifier`.
 
