@@ -87,6 +87,8 @@ Every artifact phase above runs the same six-step loop. Only the drafting subage
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+- **Exposure Doctrine.** Any feature that exposes a public surface must either ship its own hardening or declare and gate the interim exposure — see `## Exposure Doctrine` in `phase-specify.md` (SDD) or `phase-scope.md` (blueprint).
+
 Only `spec-driven-dev` Phase 4 (Implement) skips the panel and gate — the calling Claude executes TDD directly so course-correction stays interactive.
 
 **Rough cost per panel phase:** one drafting-agent invocation plus up to 5 panel passes × 3 persona invocations (≈15 agent calls at the cap, usually fewer once HIGH concerns converge), then a human review gate. Budget accordingly — a full blueprint run is three such phases, and each `spec-driven-dev` feature is three more. For small or throwaway work, use lightweight mode (below) to collapse the panel to a single pass.

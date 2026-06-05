@@ -78,6 +78,8 @@ Panelists: `telescoping-sdd:delivery-manager`, `telescoping-sdd:critic`, `telesc
 
 Pass the current tasks.md and the approved spec.md and design.md. This is the last artifact phase before implementation — concerns cannot be deferred forward. Concerns that would warrant deferral should instead be handled as `Addressed` in tasks.md, `Sealed` (user-directed), or `Accepted as risk` (with explicit user sign-off and `Defense:` text in Notes).
 
+**Exposure sequencing check.** When reviewing the task ordering, consult the Exposure Doctrine before approving the ordering; if any task exposes a surface before the task that installs/hardens/blocks it, the required response is ONE of: (i) raise it as an `[upstream]`-tagged concern (which routes to a halt vote via the existing Phase 2/3 concern-tagging machinery) when the missing gate lives in already-approved upstream content (e.g. an approved spec.md or design.md blesses the exposure), or (ii) resolve it in-phase by reordering the tasks or naming an interim mitigation — see `## Exposure Doctrine` in `phase-specify.md`. For intra-feature task edges within the CURRENT tasks.md, bias toward reorder; `[upstream]` is appropriate only when the gate is genuinely missing from approved spec.md or design.md. Filing it as a soft MED that is dispositioned away without a gate or reorder is NOT an acceptable response. Note: the Tasks tier is scoped to intra-feature task ordering; cross-feature exposure edges (e.g. F3→F4→F5) are a Plan-tier concern.
+
 ## Validation and approval
 
 After the panel review is complete, run validation:

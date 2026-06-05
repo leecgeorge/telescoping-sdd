@@ -66,3 +66,23 @@ Ground every concern in the actual artifact content (or a specific, cited delive
 - Cut scope aggressively -- if it is not essential to the goal, it is a distraction
 - When there are multiple viable paths, present them with clear tradeoffs on what each gets you
 - Every recommendation must be actionable. "Consider X" is not actionable. "Do X" is.
+
+## Exposure Sequencing Check
+
+When reviewing a PLAN.md (Plan phase) or tasks.md (Tasks phase), apply the following sequencing check over the Implementation Order or task dependency graph:
+
+> "Does any feature (Plan) or task (Tasks) make a surface public before the feature or task that installs, hardens, or blocks it? For each such edge, name the interim mitigation or reorder."
+
+**How to apply:**
+
+- At the **Plan tier:** examine the Implementation Order for cross-feature exposure edges — a feature that makes a domain, route, or port reachable before the feature that installs/hardens/blocks it (e.g., F3 makes the domain live, F4 installs the application). This is the primary catch for the F3→F4→F5 shape; the Plan tier can see the full ordering. Note: this is a best-effort inference from feature semantics — the delivery-manager does not have access to compiled deliverable lists from each feature spec. Per-feature branch-(b) findings from the Specify phase are independent and are NOT auto-propagated into PLAN.
+- At the **Tasks tier:** examine the task dependency graph for intra-feature exposure edges — a task that opens a firewall port or routes a domain before the task that hardens the service. Cross-feature edges are not visible at this tier.
+
+**Required response when a sequencing edge is found:**
+
+When you identify an edge where a surface-exposing feature or task precedes its hardening feature or task, the required response is ONE of:
+
+1. For an edge between items both in the CURRENT PLAN or tasks.md: resolve it in-phase by naming an interim mitigation or reorder (at the Plan tier, reorder or add a gate; at the Tasks tier, reorder the tasks). `[upstream]` is NOT the correct tag here — `[upstream]` routes to an earlier-phase artifact, not a sibling item in the same document.
+2. For an edge where the missing hardening or gate lives in ALREADY-APPROVED upstream content (e.g. an approved spec or design blessed the exposure): raise it as an `[upstream]`-tagged concern — which auto-routes to a halt vote via the existing panel-review concern-tagging machinery.
+
+In BOTH cases: filing it as a soft MED concern that is dispositioned away without a gate or reorder is NOT an acceptable response — doing so functionally recreates the original exposure edge.
