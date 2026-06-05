@@ -2,6 +2,12 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.1.0 — Security exposure seam
+- **Exposure-triage gate (1a):** Added a `## Network Exposure Triage` step to `phase-specify.md` (SDD) and `phase-scope.md` (blueprint) — a bright-line screening question with an objective deliverables-trigger list, branch-(a)/branch-(b) structure, and FINDING obligations. The `devils-advocate` now independently audits every Specify/Scope artifact against the trigger list, including an unconditional obligation that fires on a PASS-blessing acceptance criterion or an omitted triage declaration.
+- **Exposure Doctrine + response rule (2b):** Added a mirrored `## Exposure Doctrine` section to both tier files; doctrine back-links from `phase-plan.md` and `phase-tasks.md` carrying the required response (raise an `[upstream]`-tagged concern or reorder/mitigate — a recognized exposure edge may not be dispositioned away as a soft MED); and an `## Exposure Doctrine Cross-Check` backstop in the `security-reviewer` brief for Design-phase artifacts.
+- **Exposure sequencing check (2a-lite):** Added a `## Exposure Sequencing Check` to the `delivery-manager` brief — a Plan-tier (cross-feature) and Tasks-tier (intra-feature) check that surfaces a surface-exposed-before-hardening edge.
+- **Regression guard:** Added `telescoping-sdd/scripts/tests/test_exposure_seam.py` (21 tests) asserting the structural anchors, two-tier mirror invariants, back-link presence and resolution, the three-panelist invariant (set-equality), version lockstep, and the em-dash changelog heading.
+
 ## 2.0.1 — Write-inversion for drafting subagents
 - Drafting subagents now `Write` their artifact straight to disk and return a short **manifest** (path, line count, section headings, open questions) instead of returning the full body — eliminating truncation of large (30–70 KB) drafts through the size-capped tool-result channel.
 - Applied across all 6 phase reference files, all 6 drafting agents, the shared self-review discipline, both `examples.md`, and both `SKILL.md`.

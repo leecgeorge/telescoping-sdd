@@ -24,6 +24,46 @@ Required sections:
 
 The agent-written `SCOPE.md` is already on disk. `Read` `blueprint/SCOPE.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `blueprint/SCOPE.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
+## Network Exposure Triage
+
+Before proceeding to self-review, apply the following screening question to the **deliverables** (not stated goals) of this scope:
+
+> Could any scope item plausibly expose a public surface — a new domain, DNS record, route, port, or publicly-resolving endpoint — before the scope item that installs, hardens, or blocks it? If yes: what is served there, and in what hardened state, during the window before the hardening item lands? An un-installed or un-hardened intermediate state served publicly is a FINDING, not a PASS.
+
+**The answer is YES when any scope item's deliverables include any of the following:**
+
+- Creates or registers a new domain or DNS record
+- Adds a new public-facing route, vhost, or listener
+- Opens or forwards a new network port accessible from an untrusted network
+- Routes a publicly-resolving hostname to a backend service
+- Exposes any endpoint that becomes reachable before a LATER scope item installs, hardens, or blocks it
+
+**Branch (a) — no new surface:** Record the declaration as: "No scope item creates a new public domain, route, port, or endpoint — the surfaces touched already existed and are unchanged — checked: [enumerate the specific domains/routes/ports/endpoints screened]." A bare "no exposure" is NOT acceptable — enumerate the specific surfaces checked. Branch (a) is UNAVAILABLE to any scope whose deliverables include a new public domain, route, port, or cert.
+
+**Branch (b) — exposure found:** When the deliverables match any trigger above, branch (b) is MANDATORY. The executor must state:
+
+1. The specific public surface (e.g., `new.example.com:443`)
+2. The specific later scope item or feature that installs or hardens it
+3. A present-tense observable **success criterion** stating the gate condition — the observable WHAT that blocks the exposure until the hardening item lands
+
+A gate phrased as future intention with no present-tense blocking condition is itself a FINDING. An un-installed or un-hardened intermediate state served publicly is a FINDING, not a PASS.
+
+**A FINDING obligates the executor to:**
+
+1. Document the interim exposure explicitly in the scope
+2. Name a blocking gate as an observable success criterion
+3. Treat the scope as NOT approvable until that criterion is present
+
+This is a real gate, not advisory. The `devils-advocate` panelist independently audits this declaration during the Scope panel review.
+
+## Exposure Doctrine
+
+A feature that newly exposes a surface to an untrusted network must either (i) ship its own hardening in the same feature, or (ii) declare and gate the interim exposure (e.g. do not route the live domain to the backend until the install/harden step is verified). The gate must be an observable acceptance criterion, not an assumption.
+
+**Worked example:** A live domain fronting an un-installed install wizard, before the feature that runs the install lands, is a FINDING. The correct gate: "do not route the live domain to the backend until the install/harden step is verified." This is the F3→F4→F5 shape: F3 goes public, F4 installs, F5 hardens. The doctrine obligation applies at F3 — gate or ship hardening in F3 (generally: any feature that exposes a surface before the feature that hardens it — the `F<n>` labels are illustrative).
+
+**Exposure-FINDING under this doctrine:** Any acceptance criterion that blesses an un-hardened or un-installed service endpoint as an expected PASS state without a named blocking gate is a FINDING under this doctrine. The artifact is not approvable until either (i) or (ii) is present.
+
 ## Scope Self-Review
 
 Review the SCOPE.md you just wrote, checking for:

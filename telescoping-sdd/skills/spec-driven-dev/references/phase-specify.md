@@ -44,6 +44,46 @@ Required sections:
 
 The agent-written `spec.md` is already on disk. `Read` `specs/F<n>-<slug>/spec.md` (page with `offset`/`limit` as needed for large files), confirm the file is non-empty and its line count matches the manifest's reported line count before beginning self-review. If the file is missing or empty, treat it as a drafting failure and re-invoke the agent. On any re-invocation, re-`Read` `specs/F<n>-<slug>/spec.md` before re-reviewing — do not reuse a stale in-context copy. Present the artifact to the user before approval.
 
+## Network Exposure Triage
+
+Before proceeding to self-review, apply the following screening question to the **deliverables** (not the author's intent) of this feature:
+
+> "Does this feature/scope create, route, or expose any new domain, DNS record, route, port, or publicly-resolving endpoint (i.e. anything that becomes reachable from the public internet)? If yes: what is served there, and in what hardened state, during the window before downstream features land? An un-installed or un-hardened intermediate state served publicly is a FINDING, not a PASS."
+
+**The answer is YES when the feature's deliverables include any of the following:**
+
+- Creates or registers a new domain or DNS record
+- Adds a new public-facing route, vhost, or listener
+- Opens or forwards a new network port accessible from an untrusted network
+- Routes a publicly-resolving hostname to a backend service
+- Exposes any endpoint that becomes reachable before a LATER feature or task installs, hardens, or blocks it
+
+**Branch (a) — no new surface:** Record the declaration as: "Introduces no new domain/route/port; the surfaces it touches already existed and are unchanged — checked: [enumerate the specific domains/routes/ports/endpoints that were screened]." A bare "No new network surface exposed" is NOT acceptable — the declaration must enumerate the specific surfaces checked, so the independent audit has a concrete set to contradict. Branch (a) is UNAVAILABLE to any feature whose deliverables include a new public domain, route, port, or cert.
+
+**Branch (b) — exposure found:** When the deliverables match any trigger above, branch (b) is MANDATORY. The executor must state:
+
+1. The specific public surface (e.g., `new.example.com:443`)
+2. The specific later feature or task that installs or hardens it (e.g., "F4 installs the application")
+3. A present-tense observable **acceptance criterion** stating the gate condition (e.g., "do not activate the route to the backend until F4's install step is verified as complete") — the gate's mechanism (firewall rule, route toggle) is designed at Design/Tasks, but the observable WHAT must be an AC here
+
+A gate phrased as future intention ("will be hardened once F4 lands") with no present-tense blocking mechanism stated as an observable AC is itself a FINDING.
+
+**A FINDING obligates the executor to:**
+
+1. Document the interim exposure explicitly
+2. Name a blocking gate as an observable acceptance criterion
+3. Treat the artifact as NOT approvable until that AC is present
+
+The `devils-advocate` panelist independently re-runs this trigger list against the artifact's deliverables during the panel review — this is an independent audit, not a repetition of the drafter's answer.
+
+## Exposure Doctrine
+
+A feature that newly exposes a surface to an untrusted network must either (i) ship its own hardening in the same feature, or (ii) declare and gate the interim exposure (e.g. do not route the live domain to the backend until the install/harden step is verified). The gate must be an observable acceptance criterion, not an assumption.
+
+**Worked example:** A live domain fronting an un-installed install wizard, before the feature that runs the install lands, is a FINDING. The correct gate: "do not route the live domain to the backend until the install/harden step is verified." This is the F3→F4→F5 shape: F3 goes public, F4 installs, F5 hardens. The doctrine obligation applies at F3 — gate or ship hardening in F3 (generally: any feature that exposes a surface before the feature that hardens it — the `F<n>` labels are illustrative).
+
+**Exposure-FINDING under this doctrine:** Any acceptance criterion that blesses an un-hardened or un-installed service endpoint as an expected PASS state without a named blocking gate is a FINDING under this doctrine. The artifact is not approvable until either (i) or (ii) is present.
+
 ## Spec Self-Review
 
 Review the spec.md you just wrote, checking for:
