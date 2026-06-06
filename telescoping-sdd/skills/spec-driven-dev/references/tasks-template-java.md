@@ -101,6 +101,13 @@ Use this template when creating `tasks.md` for a Java project after an approved 
 2. T2, T3 — [can run in parallel, rationale]
 3. T4 — [rationale, depends on T2 and T3]
 
+## Implementation Deviations
+
+> Phase-4 minor-deviation ledger — populated by the triage gate's minor path (`SKILL.md` § "Mid-implementation discovery"). Append-only during Phase 4; resolved at the Final-Check completion gate. Leave empty until a deviation is logged.
+
+| Date | Task | What spec/design said | What was actually done | Why | Classification | Backport status |
+|------|------|-----------------------|------------------------|-----|----------------|-----------------|
+
 ## Open Questions
 
 > All questions must be resolved before proceeding to implementation.

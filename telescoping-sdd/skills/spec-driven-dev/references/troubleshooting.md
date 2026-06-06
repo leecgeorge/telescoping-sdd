@@ -26,7 +26,7 @@ Otherwise the copies differ only cosmetically (terminology mapping, example word
 ## Requirements change mid-implementation
 
 - **Cause:** New information or feedback during development
-- **Solution:** Edit spec.md first — do not modify code without updating the spec chain. The auto-cascade handles re-stamp and the downstream consistency checks — see `hash-and-cascade.md`.
+- **Solution:** **Triage first** (`SKILL.md` § "Mid-implementation discovery"): a *major* deviation halts and backports immediately; a *minor* one is logged and deferred. **Caught-late** (you already wrote deviating code): implement to a stable point, then **backport** — edit the single highest-affected upstream (`spec.md`) and run *Re-Approval After Edits*; the cascade reconciles `design.md`/`tasks.md` and *produces* the task reconcile (mark superseded tasks `Skipped`, add replacements) — don't hand-edit those ahead of it (a hand-edit races the cascade and silently no-ops it). **Catch-early** (preferred when achievable): notice before writing the deviating code, edit `spec.md` first, let it cascade, then implement. Either way edit only the highest-affected document — never co-edit the chain (`hash-and-cascade.md` § "Single-entry-point rule").
 
 ## Spec keeps changing before the design is written
 
@@ -36,12 +36,12 @@ Otherwise the copies differ only cosmetically (terminology mapping, example word
 ## Design flaw discovered mid-implementation
 
 - **Cause:** The design made an assumption that turned out wrong
-- **Solution:** Stop implementation. Edit design.md — the auto-cascade surfaces the tasks.md mismatch (see `hash-and-cascade.md`). When revising tasks.md, mark invalidated tasks as `Skipped` in the summary table, check off their boxes, then add replacement tasks.
+- **Solution:** **Triage first** (`SKILL.md` § "Mid-implementation discovery"): a *major* deviation halts and backports immediately; a *minor* one is logged and deferred. **Caught-late** (the wrong assumption is already in code): implement to a stable point, then **backport** — edit the single highest-affected upstream (`design.md`) and run *Re-Approval After Edits*; the cascade surfaces the `tasks.md` mismatch and the reconcile (mark invalidated tasks `Skipped` in the summary table, check off their boxes, add replacement tasks) is *produced by the cascade*, not a pre-emptive hand-edit. **Catch-early** (preferred): edit `design.md` before building further on the wrong assumption, let it cascade, then implement. Edit only the highest-affected document — never co-edit the chain (`hash-and-cascade.md` § "Single-entry-point rule").
 
 ## Tests pass but acceptance criteria feel wrong
 
 - **Cause:** Acceptance criteria in the spec don't fully capture the intended behavior
-- **Solution:** Refine the GIVEN/WHEN/THEN blocks in spec.md — the tests are only as good as the criteria they encode. The auto-cascade ripples the change to tasks.md (see `hash-and-cascade.md`); substantive changes will surface as divergence and prompt task/test revision.
+- **Solution:** **Triage first** (`SKILL.md` § "Mid-implementation discovery"): a *major* deviation halts and backports immediately; a *minor* one is logged and deferred. The fix is in the upstream, not the code: **backport** by refining the GIVEN/WHEN/THEN blocks in `spec.md` (the single highest-affected document) and running *Re-Approval After Edits* — the cascade ripples the change to `tasks.md` and *produces* the task/test revision as surfaced divergence, rather than you hand-editing `tasks.md`. Prefer catching this early (sharpen the AC before the tests encode it); when caught late, backport and then let the cascade reconcile. Never co-edit the chain (`hash-and-cascade.md` § "Single-entry-point rule").
 
 ## Validator shows warnings but no failures
 

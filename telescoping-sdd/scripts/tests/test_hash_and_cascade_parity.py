@@ -25,6 +25,7 @@ from _panel_doc_helpers import (  # noqa: E402
     PB_FORBIDDEN_SDD_VOCABULARY,
     extract_section as _extract_section,
     extract_step_3_block as _extract_step_3_block,
+    extract_subsection as _extract_subsection,
 )
 
 # Locate the repo root so the test runs from any cwd.
@@ -422,4 +423,94 @@ def test_factual_edit_shortcut_outside_step_3_block(path: Path, _name: str) -> N
     step_3 = _extract_step_3_block(section)
     assert FACTUAL_EDIT_SHORTCUT_HEADING not in step_3, (
         f"R4 anti-pattern subsection leaked INTO the step-3 block in {path}"
+    )
+
+
+# ============================================================================
+# midstream-backport — Fix 3/6/7 doctrine anchors (I4/I5).
+# Anchors are BARE contiguous substrings (no backtick falls between the words in
+# the committed prose) so they survive section/file-name backticking.
+# ============================================================================
+
+NO_BATCH_EDIT_HEADING = "### Single-entry-point rule: no batch edits"
+NO_BATCH_EDIT_ANCHOR = "enter at the single highest affected artifact"
+UPSTREAM_BACKPORT_HEADING = "### Upstream backport — same-repo discovery"
+
+# Generic cascade discipline — present in BOTH copies (mirrored, vocab-neutral):
+BACKPORT_SHARED_ANCHORS = [NO_BATCH_EDIT_ANCHOR, UPSTREAM_BACKPORT_HEADING]
+
+# SDD-only Phase-4 doctrine. Each must be PRESENT in the SDD copy; the
+# distinctive phrases must also be ABSENT from the project-blueprint copy.
+MECHANICAL_GAP_ANCHOR = "cannot propagate upward"
+C2_EXTENSION_NARROWING_ANCHOR = "append-only"
+C2_EXTENSION_SCOPE_PHRASE = "all changed lines fall entirely within"
+C2_NOT_EXEMPT_STATUS_TRANSITION_PHRASE = "pending → backported"
+C2_NOT_EXEMPT_OUT_OF_SECTION_PHRASE = "still trip the substantive path"
+IMPLEMENTATION_DEVIATIONS_SECTION_TOKEN = "## Implementation Deviations"
+
+BACKPORT_SDD_ONLY_PRESENT = [
+    MECHANICAL_GAP_ANCHOR,
+    C2_EXTENSION_NARROWING_ANCHOR,
+    C2_EXTENSION_SCOPE_PHRASE,
+    C2_NOT_EXEMPT_STATUS_TRANSITION_PHRASE,
+    C2_NOT_EXEMPT_OUT_OF_SECTION_PHRASE,
+    IMPLEMENTATION_DEVIATIONS_SECTION_TOKEN,
+]
+# Distinctive SDD-only phrases that must never leak into the blueprint copy
+# ("append-only" is omitted — too generic for a meaningful absence assertion).
+BACKPORT_SDD_ONLY_ABSENT_FROM_PB = [
+    MECHANICAL_GAP_ANCHOR,
+    C2_EXTENSION_SCOPE_PHRASE,
+    C2_NOT_EXEMPT_STATUS_TRANSITION_PHRASE,
+    C2_NOT_EXEMPT_OUT_OF_SECTION_PHRASE,
+    IMPLEMENTATION_DEVIATIONS_SECTION_TOKEN,
+]
+# The two new subsections are mirrored verbatim across copies; the SDD Upstream
+# backport additionally carries an SDD-only "Mechanical gap" paragraph.
+BACKPORT_MIRRORED_HEADINGS = [NO_BATCH_EDIT_HEADING, UPSTREAM_BACKPORT_HEADING]
+SDD_ONLY_PARAGRAPH_MARKER = "**Mechanical gap"
+
+
+@pytest.mark.parametrize("anchor", BACKPORT_SHARED_ANCHORS)
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_backport_shared_anchor_present(path: Path, _name: str, anchor: str) -> None:
+    """Generic cascade-discipline anchors appear in both hash-and-cascade copies."""
+    assert anchor in _read(path), f"shared anchor {anchor!r} missing from {path}"
+
+
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_no_batch_edit_rule_in_named_subsection(path: Path, _name: str) -> None:
+    """The no-batch-edit anchor sits INSIDE its named subsection, not merely in the file."""
+    body = _extract_subsection(_read(path), NO_BATCH_EDIT_HEADING)
+    assert body is not None, f"{NO_BATCH_EDIT_HEADING!r} not found in {path}"
+    assert NO_BATCH_EDIT_ANCHOR in body, (
+        f"no-batch anchor present in {path} but NOT inside {NO_BATCH_EDIT_HEADING!r}"
+    )
+
+
+@pytest.mark.parametrize("anchor", BACKPORT_SDD_ONLY_PRESENT)
+def test_backport_sdd_only_anchor_present(anchor: str) -> None:
+    """SDD-only Phase-4 doctrine anchors are present in the SDD copy."""
+    assert anchor in _read(SDD_PATH), f"SDD-only anchor {anchor!r} missing from SDD copy"
+
+
+@pytest.mark.parametrize("anchor", BACKPORT_SDD_ONLY_ABSENT_FROM_PB)
+def test_backport_sdd_only_anchor_absent_pb(anchor: str) -> None:
+    """SDD-only Phase-4 doctrine must not leak into the project-blueprint copy."""
+    assert anchor not in _read(PB_PATH), f"SDD-only anchor {anchor!r} leaked into PB copy"
+
+
+@pytest.mark.parametrize("heading", BACKPORT_MIRRORED_HEADINGS)
+def test_backport_subsection_body_parity(heading: str) -> None:
+    """The mirrored subsection bodies must not drift between copies — they live in
+    `## Deferred Dispositions`, OUTSIDE `test_structural_parity`'s compared region, so
+    nothing else enforces their parity. The SDD Upstream-backport body additionally
+    carries the SDD-only Mechanical-gap paragraph, stripped before comparing the lead."""
+    sdd_body = _extract_subsection(_read(SDD_PATH), heading)
+    pb_body = _extract_subsection(_read(PB_PATH), heading)
+    assert sdd_body is not None, f"{heading!r} missing from SDD copy"
+    assert pb_body is not None, f"{heading!r} missing from PB copy"
+    sdd_shared = sdd_body.split(SDD_ONLY_PARAGRAPH_MARKER)[0]
+    assert sdd_shared.strip() == pb_body.strip(), (
+        f"mirrored subsection {heading!r} bodies diverge between the SDD and PB copies"
     )

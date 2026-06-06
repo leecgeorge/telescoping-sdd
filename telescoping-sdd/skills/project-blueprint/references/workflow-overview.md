@@ -24,6 +24,8 @@ Otherwise the copies differ only cosmetically (phase names, filenames, example f
    GATE               GATE                GATE
 ```
 
+**Discoveries flow back, too.** `Architecture/Plan ⤴ Scope — discovery → upstream edit`: a discovery during a later phase that contradicts an approved upstream is reconciled by editing the upstream *first* (the single highest-affected document) and letting the cascade reconcile downstream — not by editing forward only, and never by co-editing the chain. See `references/hash-and-cascade.md` § "Upstream backport — same-repo discovery".
+
 ## Phase Summary
 
 | Phase | Input | Output | Drafted By | Key Question |
