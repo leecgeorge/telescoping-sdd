@@ -44,3 +44,16 @@ def extract_step_3_block(section: str) -> str:
     if not m:
         pytest.fail("Step 3 (Upstream panel re-review) block not found")
     return m.group(1)
+
+
+def extract_subsection(content: str, heading: str) -> str | None:
+    """Return a markdown subsection's body — from `heading` to the next `## `/`### `
+    heading, or EOF. Returns None if the heading is absent. Unlike `extract_section`
+    (which stops only at `## `), this stops at the next same-or-higher-level heading,
+    so it correctly bounds a `### ` subsection."""
+    idx = content.find(heading)
+    if idx == -1:
+        return None
+    after = content[idx + len(heading):]
+    m = re.search(r"\n(?:##|###) ", after)
+    return after[: m.start()] if m else after

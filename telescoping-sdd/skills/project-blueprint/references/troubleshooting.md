@@ -21,7 +21,7 @@ Otherwise the copies differ only cosmetically (terminology mapping, example word
 ## Architecture doesn't align with scope
 
 - **Cause:** Scope was too vague or architecture introduces unscoped concerns
-- **Solution:** Edit SCOPE.md (tighten or add missing goals). The auto-cascade handles re-stamp and the Scope-Architecture consistency check — see `hash-and-cascade.md`.
+- **Solution:** Edit `SCOPE.md` (tighten or add missing goals) — the single highest-affected upstream — and run *Re-Approval After Edits*; the cascade re-stamps and runs the Scope–Architecture consistency check. **Catch-early** (preferred) when you notice before drafting further; **caught-late** (already deep into Architecture/Plan when the gap shows) is the same motion — edit `SCOPE.md` and let the cascade reconcile downstream, never hand-editing the lower artifacts ahead of it. Edit only the highest-affected document — never co-edit the chain (`hash-and-cascade.md` § "Single-entry-point rule").
 
 ## Features are too large for spec-driven-dev
 
@@ -36,7 +36,7 @@ Otherwise the copies differ only cosmetically (terminology mapping, example word
 ## Risk discovered during architecture that invalidates scope
 
 - **Cause:** Technical feasibility issue found during architecture design
-- **Solution:** Edit SCOPE.md to reflect the new reality. The auto-cascade handles re-stamp and surfaces the architectural divergence — see `hash-and-cascade.md`.
+- **Solution:** Edit `SCOPE.md` to reflect the new reality — the single highest-affected upstream — and run *Re-Approval After Edits*; the cascade re-stamps and surfaces the architectural divergence for reconciliation. Whether caught early or only after drafting downstream, it is the same motion: edit `SCOPE.md`, then let the cascade carry the change down — never co-edit the chain (`hash-and-cascade.md` § "Single-entry-point rule").
 
 ## Validator shows warnings but no failures
 
