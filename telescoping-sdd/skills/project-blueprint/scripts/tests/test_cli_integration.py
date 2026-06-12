@@ -202,12 +202,14 @@ def test_check_upstream_approvals_uses_imported_helpers():
     assert "has_approval" in src
     assert "approval_hash" in src
     assert "from blueprint_common import" in src
-    assert "verify_content_hash" in src
+    # The coherence check now routes through the basis-aware helper so a v1-approved
+    # (un-migrated but still content-coherent) blueprint still renders.
+    assert "verify_content_hash_any_basis" in src
     # Sanity: the three names are bound on the module namespace and callable.
     for name in (
         "has_approval",
         "approval_hash",
-        "verify_content_hash",
+        "verify_content_hash_any_basis",
     ):
         assert callable(getattr(render_business_brief, name)), (
             f"{name} not bound on render_business_brief"

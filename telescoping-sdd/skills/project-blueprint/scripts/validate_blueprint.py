@@ -45,6 +45,7 @@ from blueprint_common import (  # noqa: E402
     run_cli_failclosed,
     strip_artifact_prefix,
     approval_hash_matches,
+    approval_section_bounds,
     changed_since_stamp,
     clear_pending_entries_for_prefix,
     compute_content_hash,
@@ -52,11 +53,15 @@ from blueprint_common import (  # noqa: E402
     extract_panel_section,
     has_approval,
     has_section,
+    is_basis_migration_only,
     is_shipped_from_contents,
     now_iso_utc,
     read_file,
+    read_hash_basis,
     read_stored_hash,
     reconcile_to_result,
+    restamp_or_suppress,
+    restore_anchor_for_prefix,
     scan_unresolved_markers,
     section_has_content,
     stamped_at_pass_from_content,
@@ -64,6 +69,9 @@ from blueprint_common import (  # noqa: E402
     upsert_pending_entry,
     validate_panel_review,
     verify_content_hash,
+    HASH_BASIS_MIGRATION_MSG,
+    _APPROVAL_HEADER as APPROVAL_HEADER,
+    _upsert_basis_line,
 )
 
 from cfc_parser import (  # noqa: E402
@@ -356,7 +364,10 @@ PLAN_FEATURE_ID_LINE = re.compile(
 # (imported as `APPROVAL_HASH_LINE`) so both validators key on ONE object;
 # blueprint_common keeps a DISTINCT broad copy (capturing any backtick body) for
 # read_stored_hash — deliberately not unified with the narrow gate.
-APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
+# `APPROVAL_HEADER` is the SHARED `blueprint_common._APPROVAL_HEADER` (imported
+# above) — the blueprint-local duplicate was DELETED so the `## Approval` header
+# regex has ONE source (AD8); `_approval_section_slice` now delegates to the
+# shared `approval_section_bounds`.
 # Strict form: `- [x] Approved to proceed`. Per P3-8 from the
 # post-implementation review, the prior loose `-\s*\[(x|X)\]` matched any
 # checked box anywhere, which would have false-positived if a spec ever
@@ -1006,22 +1017,12 @@ def _approval_section_slice(content: str) -> Optional[tuple[int, int]]:
     header — only the first is honoured for scope. A duplicate header would
     otherwise silently orphan hash state in the second section (per the
     light-touch verification pass, critic finding #1).
+
+    Delegates to the shared `approval_section_bounds` (AD8) so the write-bounds
+    here and the basis-line read-bounds in `read_hash_basis` are identical by
+    construction — the single source of "where the `## Approval` section is".
     """
-    matches = list(APPROVAL_HEADER.finditer(content))
-    if not matches:
-        return None
-    if len(matches) > 1:
-        print(
-            f"WARN: document contains {len(matches)} `## Approval` headers; "
-            "approval state operations target the first match only — "
-            "the others will silently orphan state.",
-            file=sys.stderr,
-        )
-    m = matches[0]
-    body_start = m.end()
-    next_h2 = re.search(r"^## ", content[body_start:], re.MULTILINE)
-    body_end = body_start + next_h2.start() if next_h2 else len(content)
-    return (body_start, body_end)
+    return approval_section_bounds(content)
 
 
 def read_cfc_hashes(plan_content: str) -> dict[int, str]:
@@ -1312,6 +1313,21 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
     stored_hash = hash_match.group(1)
     hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
+    if (
+        not hashes_match
+        and stored_hash != "pending"
+        and read_hash_basis(content) == "v1"
+        and is_basis_migration_only(
+            original_content=content,
+            stored_hash=stored_hash,
+            content_trimmed=trim_trajectory_table(content),
+        )
+    ):
+        # R4: only a true basis-only migration (no substantive edit) gets the
+        # distinguishable HASH-BASIS-MIGRATION FAIL; a genuine v1 edit falls
+        # through to the normal stale FAIL (its --approve creates a marker).
+        result.add(f"{filename} hash basis is current", False, HASH_BASIS_MIGRATION_MSG)
+        return False
     result.add(
         f"{filename} has not been modified since approval",
         hashes_match,
@@ -1379,6 +1395,7 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
     # summary row at the top of the data section; re-approval merges
     # the existing elided count with new elisions.
     content = trim_trajectory_table(original_content)
+    content_trimmed = content  # post-trim, PRE-CFC-refresh (the migration baseline)
 
     # For PLAN.md, refresh the per-CFC content-hash sub-block BEFORE computing
     # the document-level hash — the sub-block is part of the approved content.
@@ -1390,42 +1407,51 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
     # Compute hash before modifying approval section
     content_hash = compute_content_hash(content)
 
-    # Update the checkbox + hash, scoped to the ## Approval section body.
-    # Without scoping, a phantom `- [ ] Approved` or `**Content Hash:** \`...\``
-    # anywhere else in the document would be silently rewritten.
+    # Update the checkbox + hash + `- **Hash basis:** v2` bullet, scoped to the
+    # ## Approval section body (via the shared approval_section_bounds). Without
+    # scoping, a phantom `- [ ] Approved` or `**Content Hash:** \`...\`` anywhere
+    # else in the document would be silently rewritten.
     approval = _approval_section_slice(content)
-    if approval is not None:
-        body_start, body_end = approval
-        approval_body = content[body_start:body_end]
-        approval_body = re.sub(
-            r"- \[ \] Approved to proceed",
-            "- [x] Approved to proceed",
-            approval_body,
+    if approval is None:
+        # No `## Approval` section -> nothing to stamp. Fail loudly rather than
+        # writing the file back unchanged and printing a false "Approved:" line.
+        print(
+            f"Error: {file_path} has no `## Approval` section; cannot approve.",
+            file=sys.stderr,
         )
-        approval_body = re.sub(
-            r"\*\*Content Hash:\*\*\s*`[^`]*`",
-            f"**Content Hash:** `{content_hash}`",
-            approval_body,
-        )
-        content = content[:body_start] + approval_body + content[body_end:]
+        return
+    body_start, body_end = approval
+    approval_body = content[body_start:body_end]
+    approval_body = re.sub(
+        r"- \[ \] Approved to proceed",
+        "- [x] Approved to proceed",
+        approval_body,
+    )
+    approval_body = re.sub(
+        r"\*\*Content Hash:\*\*\s*`[^`]*`",
+        f"**Content Hash:** `{content_hash}`",
+        approval_body,
+    )
+    approval_body = _upsert_basis_line(approval_body)
+    content = content[:body_start] + approval_body + content[body_end:]
 
     _atomic_write(file_path, content)
     print(f"Approved: {file_path} (hash: {content_hash})")
 
-    # R1/R2: changed-document re-stamp handling (printed AFTER the Approved line).
-    # `content_hash` is post-CFC-refresh for PLAN.md, so the comparison and the
-    # stored marker hash agree (H2). No task-tick carve-out (blueprint has no
-    # Phase 4).
-    if changed_since_stamp(content_hash, stored_hash, original_content):
-        root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
-        upsert_pending_entry(
-            root,
-            doc_rel,
-            content_hash,
-            now_iso_utc(),
-            stamped_at_pass_from_content(original_content),
-        )
-        print(REAPPROVAL_REMINDER)
+    # R1/R2/R4/R9: changed-document re-stamp handling (printed AFTER the Approved
+    # line). `content_hash` is post-CFC-refresh for PLAN.md, so the comparison and
+    # the stored marker hash agree (H2). No task-tick carve-out (blueprint has no
+    # Phase 4). restamp_or_suppress decides: preserve an open obligation (R9),
+    # create a fresh one (R2), or suppress a pure basis migration (R4).
+    root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
+    restamp_or_suppress(
+        content_hash,
+        stored_hash=stored_hash,
+        original_content=original_content,
+        content_trimmed=content_trimmed,
+        marker_root=root,
+        doc_rel=doc_rel,
+    )
 
 
 def _atomic_write(target: Path, content: str) -> None:
@@ -2051,6 +2077,14 @@ def main():
         help="Clear this blueprint's pending-review obligations — an explicit, "
         "auditable decision to skip the upstream panel re-review.",
     )
+    parser.add_argument(
+        "--restore-anchor",
+        action="store_true",
+        help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
+        "obligation whose genuine `upstream-panel` tag is already present on an "
+        "archived Trajectory row. Content-attested: clears ONLY when the real tag "
+        "exists (never asserts a panel ran); no marker-cache editing.",
+    )
     args = parser.parse_args()
 
     blueprint_dir = args.blueprint_dir.resolve()
@@ -2090,6 +2124,32 @@ def main():
             )
         else:
             print(f"No pending-review entries found for {blueprint_dir}.")
+        sys.exit(0)
+
+    # Handle --restore-anchor: clear a legacy re-anchored (UNSATISFIABLE)
+    # obligation whose genuine `upstream-panel` tag is already archived.
+    # Content-attested — clears ONLY where the real tag is present.
+    if args.restore_anchor:
+        root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
+        try:
+            restored = restore_anchor_for_prefix(root, bp_rel)
+        except MarkerCorruptError as exc:
+            print(
+                f"Cannot restore: {exc}. The marker is corrupt; inspect or delete "
+                f".sdd/pending-review.json manually."
+            )
+            sys.exit(1)
+        if restored:
+            noun = "obligation" if len(restored) == 1 else "obligations"
+            print(
+                f"Restored anchor; cleared {len(restored)} satisfied {noun} "
+                f"(genuine upstream-panel tag present): {', '.join(restored)}"
+            )
+        else:
+            print(
+                f"No restorable obligations for {blueprint_dir} (none carry a "
+                f"genuine upstream-panel tag yet)."
+            )
         sys.exit(0)
 
     # Handle --write-arch-config: carry the blueprint's declared stack across the
@@ -2258,6 +2318,7 @@ def main():
         root,
         scan_prefix,
         decline_cmd=f"validate_blueprint.py {blueprint_dir} --decline-pending",
+        restore_cmd=f"validate_blueprint.py {blueprint_dir} --restore-anchor",
     )
     if pending_result.checks:
         if use_json:

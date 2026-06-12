@@ -514,3 +514,61 @@ def test_backport_subsection_body_parity(heading: str) -> None:
     assert sdd_shared.strip() == pb_body.strip(), (
         f"mirrored subsection {heading!r} bodies diverge between the SDD and PB copies"
     )
+
+
+# ============================================================================
+# pending-review-churn — Close-Path Selection Guidance doctrine anchors (T6).
+# Vocab-neutral substrings present VERBATIM in BOTH copies (DEF-02: each pinned
+# constant is the runnable comparand for SC-7 shared prose).
+# ============================================================================
+
+CLOSE_PATH_GUIDANCE_HEADING = "### Close-Path Selection Guidance"
+DECLINE_PENDING_NARROWED_SENTENCE_FRAGMENT = (
+    "consciously waiving a genuinely-owed re-review"
+)
+DECLINE_PENDING_NOT_FOR_CHURN_FRAGMENT = "NEVER used to clear mechanical convergence churn"
+R9_OBLIGATION_SURVIVAL_FRAGMENT = (
+    "an open pending-review obligation survives every intervening re-stamp"
+)
+R9_UNSATISFIABLE_TOKEN = "UNSATISFIABLE-OBLIGATION:"
+R9_RESTORE_ANCHOR_FLAG = "--restore-anchor"
+R10_ORPHAN_TOKEN = "ORPHANED-TRAJECTORY-ROW:"
+HASH_BASIS_V2_LINE = "- **Hash basis:** v2"
+HASH_BASIS_MIGRATION_TOKEN = "HASH-BASIS-MIGRATION:"
+
+CLOSE_PATH_SHARED_ANCHORS = [
+    CLOSE_PATH_GUIDANCE_HEADING,
+    DECLINE_PENDING_NARROWED_SENTENCE_FRAGMENT,
+    DECLINE_PENDING_NOT_FOR_CHURN_FRAGMENT,
+    R9_OBLIGATION_SURVIVAL_FRAGMENT,
+    R9_UNSATISFIABLE_TOKEN,
+    R9_RESTORE_ANCHOR_FLAG,
+    R10_ORPHAN_TOKEN,
+    HASH_BASIS_V2_LINE,
+    HASH_BASIS_MIGRATION_TOKEN,
+]
+
+
+@pytest.mark.parametrize("anchor", CLOSE_PATH_SHARED_ANCHORS)
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_close_path_guidance_anchor_present(path: Path, _name: str, anchor: str) -> None:
+    """Each Close-Path Selection Guidance doctrine anchor is present VERBATIM in
+    both hash-and-cascade copies (R5 parity / R6 narrowed decline / R9 / R10)."""
+    assert anchor in _read(path), (
+        f"Close-Path guidance anchor {anchor!r} missing from {path}"
+    )
+
+
+def test_close_path_guidance_subsection_body_parity() -> None:
+    """The `### Close-Path Selection Guidance` body is mirrored across copies,
+    differing ONLY in the swapped validator vocabulary (R5). Uses an extended swap
+    map covering the validator command/path spellings used in this subsection."""
+    extended = dict(VOCABULARY_SWAP_MAP)
+    extended["specs/F<n>-<slug>/"] = "blueprint/"
+    extended["specs/"] = "blueprint/"
+    sdd_body = _extract_subsection(_read(SDD_PATH), CLOSE_PATH_GUIDANCE_HEADING)
+    pb_body = _extract_subsection(_read(PB_PATH), CLOSE_PATH_GUIDANCE_HEADING)
+    assert sdd_body is not None and pb_body is not None
+    assert _apply_swap(sdd_body, extended).strip() == pb_body.strip(), (
+        "Close-Path Selection Guidance bodies diverge beyond the vocabulary swap"
+    )

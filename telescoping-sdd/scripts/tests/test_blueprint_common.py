@@ -562,3 +562,627 @@ def test_is_shipped_resolves_prefixed_artifacts(tmp_path):
     (d / "02_design.md").write_text(design_md, encoding="utf-8")
     (d / "03_tasks.md").write_text(tasks_md, encoding="utf-8")
     assert bc.is_shipped(d) is True
+
+
+# ===========================================================================
+# Pending-review churn feature — new surface (R1/R3/R4/R7 + R9 + R10).
+# ===========================================================================
+
+_TRAJ_TBL_HEADER = (
+    "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+    "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+)
+
+
+def _traj_row(p, notes="—"):
+    return f"| {p} | 2026-06-12 | 0 | 0 | 0 | 0 | 0 | {notes} |"
+
+
+def _panel(rows=(), sealed="", latest="", deferred=""):
+    out = "## Panel Review\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER
+    out += "".join(r + "\n" for r in rows)
+    if deferred:
+        out += "\n### Deferred dispositions\n\n" + deferred + "\n"
+    if sealed:
+        out += "\n### Sealed dispositions\n\n" + sealed + "\n"
+    if latest:
+        out += "\n### Latest pass detail\n\n" + latest + "\n"
+    return out
+
+
+def _approval(checked=True, hash_val="abc1234567890def", basis=None):
+    box = "[x]" if checked else "[ ]"
+    s = (
+        "## Approval\n\n"
+        f"- {box} Approved to proceed to next phase\n"
+        f"- **Content Hash:** `{hash_val}`\n"
+    )
+    if basis is not None:
+        s += f"- **Hash basis:** {basis}\n"
+    return s
+
+
+def _full(rows=(), sealed="", latest="", deferred="", checked=True,
+          hash_val="abc1234567890def", basis=None):
+    return "# Doc\n\n" + _panel(rows, sealed, latest, deferred) + "\n" + _approval(
+        checked, hash_val, basis
+    )
+
+
+# --- approval_section_bounds ----------------------------------------------
+
+
+def test_approval_section_bounds_basic():
+    content = "# D\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    bounds = bc.approval_section_bounds(content)
+    assert bounds is not None
+    body_start, body_end = bounds
+    assert content[body_start:body_end].lstrip().startswith("- [x] Approved")
+
+
+def test_approval_section_bounds_none_when_absent():
+    assert bc.approval_section_bounds("# D\n\nno approval here\n") is None
+
+
+def test_approval_section_bounds_body_prose_decoy():
+    # A `## Approval` substring inside a table cell (not at line start) is skipped;
+    # the line-anchored regex lands on the REAL header.
+    content = (
+        "# D\n\n| col | `## Approval` example | x |\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    bounds = bc.approval_section_bounds(content)
+    assert bounds is not None
+    assert "- [x] Approved to proceed" in content[bounds[0]:bounds[1]]
+
+
+def test_approval_section_bounds_real_vs_prose_decoy_line_anchored():
+    # An INDENTED `## Approval`-like line (leading spaces) is NOT at a line-start
+    # boundary, so the `^##` anchor skips it and finds the real section.
+    content = (
+        "# D\n\n    ## Approval (indented decoy)\n\nsome `## Approval` inline prose\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    bounds = bc.approval_section_bounds(content)
+    assert bounds is not None
+    body = content[bounds[0]:bounds[1]]
+    assert "- [x] Approved to proceed" in body
+
+
+def test_approval_section_bounds_duplicate_header_warn(capsys):
+    content = (
+        "# D\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n\n"
+        "## Approval\n\n- [ ] second\n"
+    )
+    bounds = bc.approval_section_bounds(content)
+    assert bounds is not None
+    err = capsys.readouterr().err
+    assert "## Approval" in err and "first match" in err
+
+
+# --- read_hash_basis ------------------------------------------------------
+
+
+def test_read_hash_basis_uses_approval_bounds():
+    content = (
+        "# D\n\nbody mentions **Hash basis:** v9 in prose\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    assert bc.read_hash_basis(content) == "v1"  # prose v9 outside ## Approval ignored
+
+
+def test_read_hash_basis_v2_present_bulleted():
+    content = _approval(basis="v2")
+    assert bc.read_hash_basis(content) == "v2"
+
+
+def test_read_hash_basis_absent_returns_v1():
+    assert bc.read_hash_basis(_approval()) == "v1"
+    assert bc.read_hash_basis("# D\n\nno approval\n") == "v1"
+
+
+def test_read_hash_basis_scoped_to_approval_body_decoy():
+    content = (
+        "# D\n\n- **Hash basis:** v2 (a body-prose example)\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    assert bc.read_hash_basis(content) == "v1"
+
+
+def test_read_write_bounds_identical():
+    content = _approval(basis=None)
+    bounds = bc.approval_section_bounds(content)
+    body_start, body_end = bounds
+    new_body = bc._upsert_basis_line(content[body_start:body_end])
+    written = content[:body_start] + new_body + content[body_end:]
+    assert bc.read_hash_basis(written) == "v2"
+
+
+# --- _strip_trajectory_rows -----------------------------------------------
+
+
+def test_strip_trajectory_rows_removes_data_only():
+    content = _full(rows=[_traj_row(1), _traj_row(2), _traj_row(3)])
+    out = bc._strip_trajectory_rows(content)
+    assert "| 1 |" not in out and "| 2 |" not in out and "| 3 |" not in out
+    assert "### Trajectory" in out
+    assert "| Pass | Date |" in out  # column header kept
+    assert "|------|------|" in out  # separator kept
+
+
+def test_strip_trajectory_rows_sealed_dispositions_untouched():
+    sealed = "- `[SEAL-01]` **Thing** (pass 1, sealed) — Defense: because reasons."
+    content = _full(rows=[_traj_row(1)], sealed=sealed)
+    out = bc._strip_trajectory_rows(content)
+    assert sealed in out
+
+
+def test_strip_trajectory_rows_latest_pass_detail_untouched():
+    latest = "| [HIGH] | src | concern | Addressed | note |"
+    content = _full(rows=[_traj_row(1)], latest=latest)
+    out = bc._strip_trajectory_rows(content)
+    assert latest in out
+
+
+def test_strip_trajectory_rows_deferred_dispositions_untouched():
+    deferred = "- `[DEF-01]` **Thing** → tasks.md (pass 1) — Routed because: x."
+    content = _full(rows=[_traj_row(1)], deferred=deferred)
+    out = bc._strip_trajectory_rows(content)
+    assert deferred in out
+
+
+def test_strip_trajectory_rows_no_panel_section_noop():
+    content = "# D\n\nbody only\n"
+    assert bc._strip_trajectory_rows(content) == content
+
+
+def test_strip_trajectory_rows_no_trajectory_noop():
+    content = "# D\n\n## Panel Review\n\nno trajectory here\n\n## Approval\n"
+    assert bc._strip_trajectory_rows(content) == content
+
+
+def test_strip_trajectory_rows_empty_table_noop():
+    content = _full(rows=[])
+    assert bc._strip_trajectory_rows(content) == content
+
+
+def test_strip_trajectory_fenced_code_block_not_matched():
+    content = (
+        "# D\n\n## Panel Review\n\n```\n### Trajectory\n\n" + _TRAJ_TBL_HEADER
+        + _traj_row(1) + "\n```\n\n## Approval\n"
+    )
+    # The Trajectory heading is inside a fence -> not treated as the real table.
+    assert bc._strip_trajectory_rows(content) == content
+
+
+def test_strip_trajectory_outside_panel_untouched():
+    content = (
+        "# D\n\n## Other\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER + _traj_row(1)
+        + "\n\n## Approval\n"
+    )
+    assert bc._strip_trajectory_rows(content) == content
+
+
+def test_strip_trajectory_sealed_before_trajectory():
+    body = (
+        "## Panel Review\n\n### Sealed dispositions\n\n- `[SEAL-01]` keep me\n\n"
+        "### Trajectory\n\n" + _TRAJ_TBL_HEADER + _traj_row(7) + "\n"
+    )
+    content = "# D\n\n" + body + "\n## Approval\n"
+    out = bc._strip_trajectory_rows(content)
+    assert "- `[SEAL-01]` keep me" in out
+    assert "| 7 |" not in out
+
+
+def test_strip_trajectory_duplicate_headings():
+    body = (
+        "## Panel Review\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER + _traj_row(1) + "\n\n"
+        "### Trajectory\n\n" + _TRAJ_TBL_HEADER + _traj_row(2) + "\n"
+    )
+    content = "# D\n\n" + body + "\n## Approval\n"
+    out = bc._strip_trajectory_rows(content)
+    # First Trajectory stripped; the second heading's table is in a later sub-section
+    assert "| 1 |" not in out
+
+
+def test_strip_trajectory_cell_with_heading_like_string():
+    row = "| 4 | 2026-06-12 | 0 | 0 | 0 | 0 | 0 | mentions ### foo inline |"
+    content = _full(rows=[row])
+    out = bc._strip_trajectory_rows(content)
+    assert "| 4 |" not in out  # whole row removed, no misparse on the ### in the cell
+
+
+def test_strip_trajectory_idempotent():
+    content = _full(rows=[_traj_row(1), _traj_row(2)])
+    once = bc._strip_trajectory_rows(content)
+    assert bc._strip_trajectory_rows(once) == once
+
+
+def test_strip_trajectory_composes_with_trim_trajectory_table():
+    content = _full(rows=[_traj_row(n) for n in range(1, 20)])
+    a = bc._strip_trajectory_rows(bc.trim_trajectory_table(content))
+    b = bc.trim_trajectory_table(bc._strip_trajectory_rows(content))
+    assert a == b
+
+
+def test_strip_trajectory_trim_boundary_15_rows():
+    # Stable across the 15-row trim default: strip removes all data rows either way.
+    for n in (14, 15, 16, 20):
+        content = _full(rows=[_traj_row(i) for i in range(1, n + 1)])
+        out = bc._strip_trajectory_rows(content)
+        assert "| 2026-06-12 |" not in out  # no data row survives the strip
+
+
+# --- content_for_hashing v2 + v1 frozen -----------------------------------
+
+
+def test_content_for_hashing_v2_strips_trajectory():
+    a = bc.content_for_hashing(_full(rows=[_traj_row(1)]))
+    b = bc.content_for_hashing(_full(rows=[_traj_row(1), _traj_row(2), _traj_row(3)]))
+    assert a == b  # Trajectory growth does not change the hashed form
+
+
+def test_content_for_hashing_v2_neutralizes_basis_line_bulleted():
+    no_basis = bc.compute_content_hash(_approval(basis=None))
+    bulleted = bc.compute_content_hash(_approval(basis="v2"))
+    assert no_basis == bulleted
+
+
+def test_content_for_hashing_v2_neutralizes_basis_line_bare():
+    bare = "# D\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n**Hash basis:** v2\n"
+    plain = "# D\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    assert bc.compute_content_hash(bare) == bc.compute_content_hash(plain)
+
+
+def test_content_for_hashing_v2_idempotent_with_panel():
+    content = _full(rows=[_traj_row(1), _traj_row(2)], basis="v2")
+    once = bc.content_for_hashing(content)
+    assert bc.content_for_hashing(once) == once
+
+
+def test_content_for_hashing_v1_frozen_golden_string():
+    inp = (
+        "# Doc\n\n## Approval\n\n"
+        "- [x] Approved to proceed to next phase\n"
+        "- **Content Hash:** `deadbeefdeadbeef`\n"
+    )
+    expected = (
+        "# Doc\n\n## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`"
+    )
+    assert bc._content_for_hashing_v1_frozen(inp) == expected
+
+
+def test_content_for_hashing_v1_frozen_does_not_strip_trajectory():
+    content = _full(rows=[_traj_row(1), _traj_row(2)])
+    out = bc._content_for_hashing_v1_frozen(content)
+    assert "| 1 |" in out and "| 2 |" in out  # v1 keeps Trajectory rows
+
+
+# --- basis-line upsert + hash invariance ----------------------------------
+
+
+def test_basis_line_value_is_hash_invariant():
+    h_none = bc.compute_content_hash(_full(rows=[_traj_row(1)], basis=None))
+    h_v1 = bc.compute_content_hash(_full(rows=[_traj_row(1)], basis="v1"))
+    h_v2 = bc.compute_content_hash(_full(rows=[_traj_row(1)], basis="v2"))
+    assert h_none == h_v1 == h_v2
+
+
+def test_basis_line_no_duplication_on_restamp():
+    body = "\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    once = bc._upsert_basis_line(body)
+    twice = bc._upsert_basis_line(once)
+    assert once.count("**Hash basis:**") == 1
+    assert twice.count("**Hash basis:**") == 1
+
+
+def test_basis_line_insert_on_first_stamp():
+    body = "\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    out = bc._upsert_basis_line(body)
+    assert out.count("- **Hash basis:** v2") == 1
+    assert "**Content Hash:** `h`\n- **Hash basis:** v2" in out
+
+
+# --- is_basis_migration_only / compute_content_hash_v1 --------------------
+
+
+def test_is_basis_migration_only_true():
+    content = _full(rows=[_traj_row(1)], basis=None)  # v1 artifact
+    trimmed = bc.trim_trajectory_table(content)
+    stored = bc.compute_content_hash_v1(trimmed)
+    assert bc.is_basis_migration_only(
+        original_content=content, stored_hash=stored, content_trimmed=trimmed
+    ) is True
+
+
+def test_is_basis_migration_only_false_v2_basis():
+    content = _full(rows=[_traj_row(1)], basis="v2")
+    trimmed = bc.trim_trajectory_table(content)
+    stored = bc.compute_content_hash_v1(trimmed)
+    assert bc.is_basis_migration_only(
+        original_content=content, stored_hash=stored, content_trimmed=trimmed
+    ) is False
+
+
+def test_is_basis_migration_only_false_pending():
+    content = _full(rows=[_traj_row(1)], basis=None, hash_val="pending")
+    trimmed = bc.trim_trajectory_table(content)
+    assert bc.is_basis_migration_only(
+        original_content=content, stored_hash="pending", content_trimmed=trimmed
+    ) is False
+
+
+def test_is_basis_migration_only_false_unchecked():
+    content = _full(rows=[_traj_row(1)], basis=None, checked=False)
+    trimmed = bc.trim_trajectory_table(content)
+    stored = bc.compute_content_hash_v1(trimmed)
+    assert bc.is_basis_migration_only(
+        original_content=content, stored_hash=stored, content_trimmed=trimmed
+    ) is False
+
+
+def test_is_basis_migration_only_false_v1_hash_mismatch():
+    content = _full(rows=[_traj_row(1)], basis=None)
+    trimmed = bc.trim_trajectory_table(content)
+    assert bc.is_basis_migration_only(
+        original_content=content, stored_hash="0" * 16, content_trimmed=trimmed
+    ) is False
+
+
+def test_compute_content_hash_v1_matches_frozen():
+    import hashlib as _hl
+    content = _full(rows=[_traj_row(1)])
+    expected = _hl.sha256(
+        bc._content_for_hashing_v1_frozen(content).encode("utf-8")
+    ).hexdigest()[:16]
+    assert bc.compute_content_hash_v1(content) == expected
+
+
+# --- R9: read_open_obligation / preserve / any-qualifying-tag -------------
+
+
+def test_read_open_obligation_returns_entry_when_present(tmp_path):
+    bc.upsert_pending_entry(tmp_path, "specs/f/spec.md", "a" * 16, "t", 3)
+    entry = bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md")
+    assert entry is not None
+    assert entry["hash"] == "a" * 16 and entry["stamped_at_pass"] == 3
+
+
+def test_read_open_obligation_none_when_entry_absent(tmp_path):
+    bc.upsert_pending_entry(tmp_path, "specs/f/spec.md", "a" * 16, "t", 1)
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/other/spec.md") is None
+
+
+def test_read_open_obligation_none_on_missing_file(tmp_path):
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md") is None
+
+
+def test_read_open_obligation_none_on_parse_or_unknown_version(tmp_path):
+    sdd = tmp_path / ".sdd"
+    sdd.mkdir()
+    (sdd / "pending-review.json").write_text("{not json", encoding="utf-8")
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md") is None
+    (sdd / "pending-review.json").write_text(
+        '{"schemaVersion": 99, "pending": {"specs/f/spec.md": {"hash": "' + "a" * 16 + '"}}}',
+        encoding="utf-8",
+    )
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md") is None
+
+
+def test_read_open_obligation_none_on_malformed_hash_entry(tmp_path):
+    sdd = tmp_path / ".sdd"
+    sdd.mkdir()
+    (sdd / "pending-review.json").write_text(
+        '{"schemaVersion": 1, "pending": {"specs/f/spec.md": {"hash": null, "stamped_at_pass": 1}}}',
+        encoding="utf-8",
+    )
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md") is None
+    (sdd / "pending-review.json").write_text(
+        '{"schemaVersion": 1, "pending": {"specs/f/spec.md": {"hash": "zzz", "stamped_at_pass": 1}}}',
+        encoding="utf-8",
+    )
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md") is None
+
+
+def test_preserve_obligation_closing_condition_hash_byte_identical(tmp_path):
+    bc.upsert_pending_entry(tmp_path, "specs/f/spec.md", "1234abcd5678ef90", "t0", 4)
+    entry = bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md")
+    bc._preserve_obligation_closing_condition(
+        marker_root=tmp_path, doc_rel="specs/f/spec.md", open_entry=entry
+    )
+    after = bc.read_pending_review(tmp_path)["pending"]["specs/f/spec.md"]
+    assert after["hash"] == "1234abcd5678ef90"  # byte-identical, never re-derived
+
+
+def test_preserve_obligation_closing_condition_stamped_at_pass_unchanged(tmp_path):
+    bc.upsert_pending_entry(tmp_path, "specs/f/spec.md", "a" * 16, "t0", 7)
+    entry = bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md")
+    bc._preserve_obligation_closing_condition(
+        marker_root=tmp_path, doc_rel="specs/f/spec.md", open_entry=entry
+    )
+    after = bc.read_pending_review(tmp_path)["pending"]["specs/f/spec.md"]
+    assert after["stamped_at_pass"] == 7
+
+
+def test_preserve_obligation_closing_condition_refreshes_only_stamped_at(tmp_path):
+    bc.upsert_pending_entry(tmp_path, "specs/f/spec.md", "a" * 16, "old-ts", 2)
+    entry = bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/f/spec.md")
+    bc._preserve_obligation_closing_condition(
+        marker_root=tmp_path, doc_rel="specs/f/spec.md", open_entry=entry
+    )
+    after = bc.read_pending_review(tmp_path)["pending"]["specs/f/spec.md"]
+    assert after["hash"] == "a" * 16 and after["stamped_at_pass"] == 2
+
+
+def test_doc_has_any_qualifying_tag_finds_tag_at_any_pass():
+    content = _full(rows=[_traj_row(2, notes="upstream-panel aaaaaaaa")])
+    assert bc._doc_has_any_qualifying_tag(content, "aaaaaaaa") is True
+    # _doc_has_qualifying_tag keeps the > anchor filter
+    assert bc._doc_has_qualifying_tag(content, "aaaaaaaa", 1) is True
+    assert bc._doc_has_qualifying_tag(content, "aaaaaaaa", 2) is False  # not > 2
+    # raw-text invariant: feeding the hashed (Trajectory-stripped) form -> no tag
+    stripped = bc.content_for_hashing(content)
+    assert bc._doc_has_any_qualifying_tag(stripped, "aaaaaaaa") is False
+
+
+# --- R10: orphaned-row detection + trajectory bounds ----------------------
+
+
+def _doc_with_orphan(orphan_line, contiguous_passes=(1, 2, 3)):
+    rows = "".join(_traj_row(p) + "\n" for p in contiguous_passes)
+    return (
+        "# D\n\n## Panel Review\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER + rows
+        + "\n" + orphan_line + "\n\n### Sealed dispositions\n\n- `[SEAL-01]` x\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+
+
+def test_orphaned_row_token():
+    assert bc.ORPHANED_TRAJECTORY_TOKEN == "ORPHANED-TRAJECTORY-ROW:"
+
+
+def test_find_orphaned_rows_none_when_contiguous():
+    content = _full(rows=[_traj_row(1), _traj_row(2), _traj_row(3)])
+    assert bc.find_orphaned_trajectory_rows(content) == []
+
+
+def test_find_orphaned_rows_load_bearing_pass_gt_max():
+    content = _doc_with_orphan(_traj_row(29), contiguous_passes=(1, 2, 3))
+    orphans = bc.find_orphaned_trajectory_rows(content)
+    assert len(orphans) == 1
+    assert orphans[0]["pass_int"] == 29 and orphans[0]["load_bearing"] is True
+
+
+def test_find_orphaned_rows_load_bearing_upstream_tag():
+    content = _doc_with_orphan(_traj_row(2, notes="upstream-panel aaaaaaaa"),
+                               contiguous_passes=(1, 2, 3))
+    orphans = bc.find_orphaned_trajectory_rows(content)
+    assert len(orphans) == 1
+    assert orphans[0]["has_upstream_tag"] is True and orphans[0]["load_bearing"] is True
+
+
+def test_find_orphaned_rows_non_load_bearing_low_pass_no_tag():
+    content = _doc_with_orphan(_traj_row(2), contiguous_passes=(1, 2, 3))
+    orphans = bc.find_orphaned_trajectory_rows(content)
+    assert len(orphans) == 1
+    assert orphans[0]["load_bearing"] is False
+
+
+def test_find_orphaned_rows_fence_aware_and_excludes_second_table():
+    rows = "".join(_traj_row(p) + "\n" for p in (1, 2, 3))
+    second_table = (
+        "| A | B |\n|---|---|\n| 99 | x |\n"  # a different contiguous table
+    )
+    fenced = "```\n| 88 | fenced pipe |\n```\n"
+    prose = "see `| 77 | prose example |` inline\n"
+    content = (
+        "# D\n\n## Panel Review\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER + rows
+        + "\n" + fenced + "\n" + prose + "\n" + second_table
+        + "\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    orphans = bc.find_orphaned_trajectory_rows(content)
+    assert orphans == []
+    # fail-soft: a degenerate region never raises
+    assert bc.find_orphaned_trajectory_rows("### Trajectory\n\nno table\n") == []
+
+
+def test_find_orphaned_rows_parsed_max_matches_stamped_at_pass_basis():
+    content = _doc_with_orphan(_traj_row(29), contiguous_passes=(1, 2, 3))
+    # The orphan (pass 29) must NOT count toward the anchor max (it is excluded
+    # by construction — shared _trajectory_bounds).
+    assert bc.stamped_at_pass_from_content(content) == 3
+
+
+def test_find_orphaned_rows_per_orphan_multiple():
+    rows = "".join(_traj_row(p) + "\n" for p in (1, 2, 3))
+    content = (
+        "# D\n\n## Panel Review\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER + rows
+        + "\n" + _traj_row(29) + "\n\n" + _traj_row(2) + "\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    orphans = bc.find_orphaned_trajectory_rows(content)
+    assert len(orphans) == 2
+    by_lb = sorted(o["load_bearing"] for o in orphans)
+    assert by_lb == [False, True]  # one load-bearing (29), one not (2)
+
+
+def test_trajectory_bounds_shared_single_source():
+    # _trajectory_data_rows and find_orphaned share _trajectory_bounds: the orphan
+    # scan starts exactly where the contiguous data rows end.
+    content = _doc_with_orphan(_traj_row(29), contiguous_passes=(1, 2, 3, 4))
+    rows = bc._trajectory_data_rows(content)
+    assert len(rows) == 4  # contiguous rows only (1..4), orphan excluded
+    # behavior-preserving: trim on a >15-row table still elides and keeps 15
+    big = _full(rows=[_traj_row(n) for n in range(1, 21)])
+    trimmed = bc.trim_trajectory_table(big)
+    assert "earlier passes elided" in trimmed
+    assert bc.stamped_at_pass_from_content(big) == 20
+
+
+# --- DEF-03 characterization: blueprint slice delegates to shared bounds ---
+
+
+def test_approval_section_slice_delegates_to_bounds():
+    vb_dir = _SCRIPTS.parent / "skills" / "project-blueprint" / "scripts"
+    if str(vb_dir) not in sys.path:
+        sys.path.insert(0, str(vb_dir))
+    import importlib
+    vb = importlib.import_module("validate_blueprint")
+    content = (
+        "# PLAN\n\nbody\n\n## Approval\n\n- [x] Approved to proceed\n"
+        "- **Content Hash:** `h`\n"
+    )
+    assert vb._approval_section_slice(content) == bc.approval_section_bounds(content)
+
+
+# --- Code-review fixes #1 / #3 (basis-aware coherence; unified locators) ---
+
+
+def test_verify_content_hash_any_basis_accepts_v1_and_v2():
+    # A v1-stamped artifact (no basis line): strict v2 REJECTS it (so check_approval
+    # still surfaces the migration FAIL), but the basis-aware helper ACCEPTS it.
+    doc = _full(rows=[_traj_row(1)], basis=None)
+    v1 = bc.compute_content_hash_v1(bc.trim_trajectory_table(doc))
+    doc_v1 = doc.replace("`abc1234567890def`", f"`{v1}`")
+    assert bc.verify_content_hash(doc_v1, v1) is False           # strict v2
+    assert bc.verify_content_hash_any_basis(doc_v1, v1) is True  # basis-aware
+    # A v2 artifact is accepted by both.
+    doc2 = _full(rows=[_traj_row(1)], basis="v2")
+    v2 = bc.compute_content_hash(doc2)
+    doc_v2 = doc2.replace("`abc1234567890def`", f"`{v2}`")
+    assert bc.verify_content_hash(doc_v2, v2) is True
+    assert bc.verify_content_hash_any_basis(doc_v2, v2) is True
+    # A genuinely-stale v1 artifact (wrong stored hash) is rejected by both.
+    assert bc.verify_content_hash_any_basis(doc_v1, "0" * 16) is False
+
+
+def test_approval_hash_matches_accepts_v1_basis():
+    # approval_hash_matches (backs is_shipped / classify_spec) must treat a
+    # v1-coherent artifact as approved so a shipped feature isn't de-classified.
+    doc = _full(rows=[_traj_row(1)], basis=None)
+    v1 = bc.compute_content_hash_v1(bc.trim_trajectory_table(doc))
+    doc_v1 = doc.replace("`abc1234567890def`", f"`{v1}`")
+    assert bc.approval_hash_matches(doc_v1) is True
+
+
+def test_trajectory_locators_agree_on_panel_table():
+    # An EXAMPLE `### Trajectory` heading before `## Panel Review`: the anchor/trim/
+    # orphan locator must pick the REAL in-Panel table (passes 1..3), matching the
+    # hash path — NOT the earlier example (pass 99).
+    doc = (
+        "# D\n\n## Examples\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER + _traj_row(99) + "\n\n"
+        "## Panel Review\n\n### Trajectory\n\n" + _TRAJ_TBL_HEADER
+        + _traj_row(1) + "\n" + _traj_row(2) + "\n" + _traj_row(3) + "\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    assert bc.stamped_at_pass_from_content(doc) == 3  # in-Panel table, not the example
+    # adding a row to the in-Panel table does not move the hash (it is the table
+    # the hash strips) — confirming both locators agree on the same table
+    h1 = bc.compute_content_hash(doc)
+    doc2 = doc.replace(
+        _traj_row(3) + "\n\n## Approval",
+        _traj_row(3) + "\n" + _traj_row(4) + "\n\n## Approval",
+    )
+    assert bc.compute_content_hash(doc2) == h1

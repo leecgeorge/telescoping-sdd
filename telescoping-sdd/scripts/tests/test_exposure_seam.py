@@ -57,8 +57,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.3.0"
-CHANGELOG_FIRST_ENTRY = "## 2.3.0 — Mid-implementation discovery backport"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.4.0"
+CHANGELOG_FIRST_ENTRY = "## 2.4.0 — Pending-review churn fix (hash-basis v2)"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
