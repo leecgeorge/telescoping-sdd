@@ -64,8 +64,17 @@ import argparse
 import difflib
 import re
 import sys
+from collections import Counter
 from datetime import date
 from pathlib import Path
+
+# archive_pass.py is a sibling of blueprint_common.py in telescoping-sdd/scripts/,
+# so a bare import resolves when run as a CLI (script dir on sys.path) and under
+# the test loader (which appends the scripts dir).
+from blueprint_common import (  # noqa: E402
+    ORPHANED_TRAJECTORY_TOKEN,
+    find_orphaned_trajectory_rows,
+)
 
 
 DISPOSITION_LABELS = {
@@ -605,7 +614,63 @@ def _apply_edits(lines, edits):
     return result
 
 
+def _orphan_guard(path, old_content, new_content, dry_run=False):
+    """R10 guard on the row-append path (DEF-15/DEF-16).
+
+    Scans `old_content` ONCE and diffs the PROSPECTIVE post-append orphan set
+    against it (reusing the shared `find_orphaned_trajectory_rows`):
+      - If this write would CREATE/STRAND an orphan (one present in new_content
+        but not accounted for in old_content) -> REFUSE (no write). Under
+        `dry_run` the refusal is surfaced as a notice but does NOT exit — a
+        preview must be side-effect-free and non-fatal.
+      - If a PRE-EXISTING orphan is present (in both) -> SURFACE a non-blocking
+        notice with the shared token (so the operator connects it to the later
+        validator FAIL) and proceed with the contiguous append. The orphan is
+        never mutated — the operator clears it per the validator's remediation.
+    DETECT-and-SURFACE only; never auto-heals.
+    """
+    pre_existing = find_orphaned_trajectory_rows(old_content)
+    pre_counts = Counter(o["text"] for o in pre_existing)
+    newly = []
+    for o in find_orphaned_trajectory_rows(new_content):
+        if pre_counts.get(o["text"], 0) > 0:
+            pre_counts[o["text"]] -= 1
+        else:
+            newly.append(o)
+    if newly:
+        detail = "; ".join(
+            f"line {o['line_no']}: {o['text'].strip()!r}" for o in newly
+        )
+        if dry_run:
+            print(
+                f"{ORPHANED_TRAJECTORY_TOKEN} note (dry-run): this archive WOULD "
+                f"strand a Trajectory row below the table terminator ({detail}); "
+                f"the write would be refused.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"{ORPHANED_TRAJECTORY_TOKEN} refusing to write {path}: this archive "
+                f"would strand a Trajectory row below the table terminator ({detail}). "
+                f"No write performed.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+    if pre_existing:
+        detail = "; ".join(
+            f"line {o['line_no']}: {o['text'].strip()!r}" for o in pre_existing
+        )
+        print(
+            f"{ORPHANED_TRAJECTORY_TOKEN} note: {path} already has an orphaned "
+            f"Trajectory row ({detail}); the archive appends contiguously and does "
+            f"NOT mutate it, but a validator will surface it until you make it "
+            f"contiguous or delete it.",
+            file=sys.stderr,
+        )
+
+
 def write_or_diff(path, old_content, new_content, dry_run):
+    _orphan_guard(path, old_content, new_content, dry_run=dry_run)
     if dry_run:
         diff = difflib.unified_diff(
             old_content.splitlines(keepends=True),

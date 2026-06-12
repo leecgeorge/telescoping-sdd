@@ -32,7 +32,7 @@ from datetime import datetime, timezone  # noqa: E402
 from html.parser import HTMLParser  # noqa: E402
 from urllib.parse import urlparse  # noqa: E402
 
-from blueprint_common import verify_content_hash  # noqa: E402
+from blueprint_common import verify_content_hash_any_basis  # noqa: E402
 from validate_blueprint import approval_hash, has_approval  # noqa: E402
 
 
@@ -792,7 +792,7 @@ def check_upstream_approvals(
                 file=sys.stderr,
             )
             sys.exit(1)
-        if not verify_content_hash(content, stored):
+        if not verify_content_hash_any_basis(content, stored):
             print(
                 f"{filename}: stale hash — re-run validate_blueprint.py --approve {phase}",
                 file=sys.stderr,

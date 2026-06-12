@@ -39,24 +39,31 @@ sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
     APPROVAL_HASH_LINE_STRICT,
+    HASH_BASIS_MIGRATION_MSG,
     REAPPROVAL_REMINDER,
     MarkerCorruptError,
     Severity,
     ValidationResult,
+    approval_section_bounds,
     changed_since_stamp,
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    is_basis_migration_only,
     mixed_state_warning,
     now_iso_utc,
+    read_hash_basis,
     read_stored_hash,
     reconcile_to_result,
     resolve_artifact,
+    restamp_or_suppress,
+    restore_anchor_for_prefix,
     run_cli_failclosed,
     stamped_at_pass_from_content,
     trim_trajectory_table,
     upsert_pending_entry,
     verify_content_hash,
+    _upsert_basis_line,
 )
 from cfc_parser import (  # noqa: E402
     CFC_HEADER_PATTERN as CFC_HEADER_RE,
@@ -469,6 +476,23 @@ def check_approval(content: str, filename: str, result: ValidationResult) -> boo
 
     stored_hash = hash_match.group(1)
     hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
+    if (
+        not hashes_match
+        and stored_hash != "pending"
+        and read_hash_basis(content) == "v1"
+        and is_basis_migration_only(
+            original_content=content,
+            stored_hash=stored_hash,
+            content_trimmed=trim_trajectory_table(content),
+        )
+    ):
+        # R4: a v1-basis artifact whose ONLY change is the basis (no substantive
+        # edit) is a MIGRATION — emit the distinguishable HASH-BASIS-MIGRATION FAIL.
+        # A genuine edit to a v1 artifact falls through to the normal stale FAIL
+        # below (its --approve WILL create a marker, so the migration message —
+        # which promises none — must not fire for it).
+        result.add(f"{filename} hash basis is current", False, HASH_BASIS_MIGRATION_MSG)
+        return False
     result.add(
         f"{filename} has not been modified since approval",
         hashes_match,
@@ -538,23 +562,39 @@ def approve_document(
     # summary row at the top of the data section; re-approval merges
     # the existing elided count with new elisions.
     content = trim_trajectory_table(original_content)
+    content_trimmed = content  # post-trim (no CFC refresh on the spec side)
 
     # Compute hash before modifying approval section
     content_hash = compute_content_hash(content)
 
-    # Update the checkbox
-    content = re.sub(
+    # Update the checkbox, the Content-Hash line, AND the `- **Hash basis:** v2`
+    # bullet — all scoped to the `## Approval` section slice (R8/AD10). The prior
+    # document-wide `re.sub` would silently rewrite a body-prose example of those
+    # lines in a self-documenting artifact; scoping via the shared
+    # approval_section_bounds fixes that and matches the blueprint validator.
+    approval = approval_section_bounds(content)
+    if approval is None:
+        # No `## Approval` section -> nothing to stamp. Fail loudly rather than
+        # writing the file back unchanged and printing a false "Approved:" line.
+        print(
+            f"Error: {file_path} has no `## Approval` section; cannot approve.",
+            file=sys.stderr,
+        )
+        return
+    body_start, body_end = approval
+    approval_body = content[body_start:body_end]
+    approval_body = re.sub(
         r"- \[ \] Approved to proceed",
         "- [x] Approved to proceed",
-        content,
+        approval_body,
     )
-
-    # Update the hash
-    content = re.sub(
+    approval_body = re.sub(
         r"\*\*Content Hash:\*\*\s*`[^`]*`",
         f"**Content Hash:** `{content_hash}`",
-        content,
+        approval_body,
     )
+    approval_body = _upsert_basis_line(approval_body)
+    content = content[:body_start] + approval_body + content[body_end:]
 
     # Atomic write: temp-file then os.replace. The temp file lives in the
     # same directory as the target so os.replace is atomic on POSIX. On
@@ -592,16 +632,15 @@ def approve_document(
             f"(Phase-4 carve-out)"
         )
         return
-    if changed_since_stamp(content_hash, stored_hash, original_content):
-        root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
-        upsert_pending_entry(
-            root,
-            doc_rel,
-            content_hash,
-            now_iso_utc(),
-            stamped_at_pass_from_content(original_content),
-        )
-        print(REAPPROVAL_REMINDER)
+    root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
+    restamp_or_suppress(
+        content_hash,
+        stored_hash=stored_hash,
+        original_content=original_content,
+        content_trimmed=content_trimmed,
+        marker_root=root,
+        doc_rel=doc_rel,
+    )
 
 
 def check_previous_phase_approved(
@@ -1602,6 +1641,14 @@ def main():
         "auditable decision to skip the upstream panel re-review.",
     )
     parser.add_argument(
+        "--restore-anchor",
+        action="store_true",
+        help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
+        "obligation whose genuine `upstream-panel` tag is already present on an "
+        "archived Trajectory row. Content-attested: clears ONLY when the real tag "
+        "exists (never asserts a panel ran); no marker-cache editing.",
+    )
+    parser.add_argument(
         "--language",
         choices=list(LANGUAGE_PROFILES.keys()),
         default=None,
@@ -1676,6 +1723,33 @@ def main():
             )
         else:
             print(f"No pending-review entries found for {spec_dir}.")
+        sys.exit(0)
+
+    # Handle --restore-anchor: clear a legacy re-anchored (UNSATISFIABLE)
+    # obligation whose genuine `upstream-panel` tag is already archived.
+    # Content-attested — clears ONLY where the real tag is present (never asserts
+    # a panel ran), so it is strictly stronger than --decline-pending.
+    if args.restore_anchor:
+        root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
+        try:
+            restored = restore_anchor_for_prefix(root, spec_rel)
+        except MarkerCorruptError as exc:
+            print(
+                f"Cannot restore: {exc}. The marker is corrupt; inspect or delete "
+                f".sdd/pending-review.json manually."
+            )
+            sys.exit(1)
+        if restored:
+            noun = "obligation" if len(restored) == 1 else "obligations"
+            print(
+                f"Restored anchor; cleared {len(restored)} satisfied {noun} "
+                f"(genuine upstream-panel tag present): {', '.join(restored)}"
+            )
+        else:
+            print(
+                f"No restorable obligations for {spec_dir} (none carry a genuine "
+                f"upstream-panel tag yet)."
+            )
         sys.exit(0)
 
     # Handle --approve
@@ -1785,7 +1859,10 @@ def main():
     # as a top-level `pending_review` result — uniform with validate_blueprint.
     root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
     pending_result = reconcile_to_result(
-        root, spec_rel, decline_cmd=f"validate_spec.py {spec_dir} --decline-pending"
+        root,
+        spec_rel,
+        decline_cmd=f"validate_spec.py {spec_dir} --decline-pending",
+        restore_cmd=f"validate_spec.py {spec_dir} --restore-anchor",
     )
     if pending_result.checks:
         if use_json:

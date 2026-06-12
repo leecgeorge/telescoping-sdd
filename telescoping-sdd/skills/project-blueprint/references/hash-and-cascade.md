@@ -40,6 +40,8 @@ When an approved document changes, run this flow against it:
 
 1. **Verify structural validity.** Run the validator. If a structural check fails on the edited document, self-correct trivial breaks; escalate when content judgment is needed. Do not re-stamp until structural checks pass.
 2. **Re-stamp silently.** `python <script-path>/validate_blueprint.py blueprint/ --approve <phase>` for the edited document. Emit a one-line note in the source-tagged format: `<file> re-stamped after <source-tag>: hash <old> → <new>` where `<source-tag>` is one of `user-edit`, `claude-edit`, `git-pull`, `git-merge`, `branch-switch` (determined at step-2 emit time by inspecting the immediate trigger that brought the flow into Re-Approval After Edits). Example: `SCOPE.md re-stamped after user-edit: hash abc123 → def456`. No prompt. This is the **writer side** of the source-tag contract; the new step 3 (Upstream panel re-review) reads the tag to determine source classification per AD1.
+
+   The re-stamp also writes a `- **Hash basis:** v2` line into the `## Approval` section. Under basis v2 the approval hash **excludes** both the `### Trajectory` table and that basis line, so recording a converged panel pass never moves the hash — a convergence-only re-approval writes no pending-review marker. An artifact still stamped under the old basis (no `- **Hash basis:** v2` line) reports a distinct `HASH-BASIS-MIGRATION:` FAIL until it is re-approved once (see `Close-Path Selection Guidance` below).
 3. **Upstream panel re-review.** Before cascading, decide whether to stress-test the edited upstream itself with a panel pass. This step fires only on **top-level entries** of `Re-Approval After Edits` (a human keystroke edit, a Claude-drafted edit at the user's request, or a `git pull`/`merge`/branch-switch). When this flow is **re-entered** as a result of the downstream-revision recursion described in the "Resolution has two paths" block below, this step does NOT fire — the existing downstream optional panel re-review block at the end of this section remains the mechanism for stress-testing revised downstreams. When a single trigger (e.g., one `git pull`) brings new content into N approved documents simultaneously, each edited document is its own top-level entry; the step fires once per edited document, not once per pull.
 
    a. **Recommendation formation.** Determine edit source by deterministic precedence (highest first):
@@ -151,6 +153,23 @@ Resolution has two paths:
 5. **If no, skip the panel** and re-enter this flow at step 1 (cascading further downstream if applicable).
 
 **Net effect.** Cosmetic edits ripple silently — one re-stamp note, one consistency-verified note per downstream. Substantive edits halt exactly where they matter. Downstreams never get re-stamped just because an upstream changed.
+
+### Close-Path Selection Guidance
+
+A pending-review obligation (the `upstream-panel [0-9a-f]{8}` marker) has exactly **two sanctioned close paths** — there is no third implicit closer:
+
+1. **Run the panel and stamp the tag** (the doctrine-correct close, step 3e): run the upstream panel, let `archive_pass.py` append the pass, then stamp `upstream-panel <pre-panel-hash-short>` on that Trajectory row. The next validation reconciles and clears the obligation.
+2. **`--decline-pending`**: `python <script-path>/validate_blueprint.py blueprint/ --decline-pending` — an explicit, auditable USER decision to waive a genuinely-owed re-review.
+
+**Narrowed `--decline-pending` meaning.** `--decline-pending` signals *consciously waiving a genuinely-owed re-review* — it is NEVER used to clear mechanical convergence churn. Recording a converged panel pass no longer moves the approval hash (the `### Trajectory` table and the `- **Hash basis:** v2` line are excluded from it), so a convergence-only re-approval writes no marker at all — there is nothing to decline. Reserve `--decline-pending` for the case it audits: a real, owed panel re-review the user chooses to skip.
+
+**Hash-basis migration.** An artifact approved under the old basis validates with a distinct `HASH-BASIS-MIGRATION:` FAIL (NOT the generic `Pending-review: FAILED`). Resolve it by re-approving once: `--approve <phase>`. A pure basis migration writes no pending-review marker; a concurrent substantive edit (or un-re-approved `### Trajectory` growth) writes one clearable marker. Discover every affected artifact with `grep -rlE '^### Trajectory' blueprint/ --include='*.md'` and re-approve each.
+
+**Obligation survival (no re-anchoring).** Once created, an open pending-review obligation survives every intervening re-stamp until it is satisfied (by the tag) or declined — it is NOT re-anchored to a later hash or pass by the panel's auto-fix re-stamp, the tag-row edit, or any other edit made while it is open. The single open obligation already compels the owed panel re-review. One disclosed edge: an edit slipped in *after the panel pass but before the tag is stamped* is attested only against the pre-edit content and is re-examined on the next `--approve` cycle (it never ships silently — the obligation is cleared only by the operator consciously stamping the tag).
+
+**Unsatisfiable (legacy) obligations.** A legacy marker left by older tooling can carry a genuine `upstream-panel` tag that sits on a pass at-or-below the recorded anchor, which the strictly-greater-than reconcile can never clear. The validator surfaces this as a distinct `UNSATISFIABLE-OBLIGATION:` diagnostic. Clear it with `--restore-anchor` — content-attested: it clears ONLY when the genuine tag is actually present on an archived row (never `--decline-pending`, which would falsely record the panel as skipped, and never marker-cache hand-editing).
+
+**Orphaned Trajectory rows.** A `### Trajectory` data row stranded below the table's blank-line terminator is detected and surfaced with an `ORPHANED-TRAJECTORY-ROW:` diagnostic — never silently dropped. Make the row contiguous with the table (remove the intervening blank line) if it is a genuine entry, or delete it if it is not; let `archive_pass.py` own Trajectory row appends.
 
 
 ## Deferred Dispositions: Staleness and First Re-Entry (T11 / R6 / C10)

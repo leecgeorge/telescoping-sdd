@@ -677,6 +677,806 @@ def test_approve_misconfigured_project_root_warns_and_recovers(tmp_path, capsys)
     assert not bc.read_pending_review(wrong_root)["pending"]  # nothing under wrong root
 
 
+# ==========================================================================
+# --- Pending-review churn feature: R1–R8 + R9 + R10 integration tests ---
+#     (sandbox: in-process approve_document / reconcile pass project_root=tmp;
+#      subprocess tests pass --project-root <tmp>.)
+# ==========================================================================
+
+_CHURN_TRAJ_HEADER = (
+    "### Trajectory\n\n"
+    "| Pass | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+    "|------|------------|-------|-------------|-----------|----------|--------|-------|\n"
+)
+
+
+def _crow(p, notes="—"):
+    return (
+        f"| {p}    | 2026-06-12 | 0     | 0           | 0         "
+        f"| 0        | 0      | {notes} |"
+    )
+
+
+def _churn_doc(passes=(1,), sealed="", deferred="", latest="", body="Do a thing.",
+               checked=False, hash_val="pending", basis=None):
+    s = f"# Doc\n\n## Objective\n\n{body}\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER
+    s += "".join(_crow(p) + "\n" for p in passes)
+    if deferred:
+        s += "\n### Deferred dispositions\n\n" + deferred + "\n"
+    if sealed:
+        s += "\n### Sealed dispositions\n\n" + sealed + "\n"
+    if latest:
+        s += "\n### Latest pass detail\n\n" + latest + "\n"
+    s += "\n## Approval\n\n"
+    box = "[x]" if checked else "[ ]"
+    s += f"- {box} Approved to proceed to next phase\n- **Content Hash:** `{hash_val}`\n"
+    if basis is not None:
+        s += f"- **Hash basis:** {basis}\n"
+    return s
+
+
+def _seed_churn_approved(root, key, passes=(1,), **kw):
+    """Create a Trajectory-bearing doc and approve once (-> v2 basis, no marker)."""
+    vs = _load_validate_spec()
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_churn_doc(passes=passes, checked=False, hash_val="pending", **kw),
+                 encoding="utf-8")
+    vs.approve_document(p, project_root=Path(root))
+    return p
+
+
+def _v1_doc_text(passes=(1,), **kw):
+    """A v1-basis approved doc (NO basis line) + its v1 stored hash."""
+    base = _churn_doc(passes=passes, checked=True, hash_val="pending", basis=None, **kw)
+    v1 = bc.compute_content_hash_v1(bc.trim_trajectory_table(base))
+    return base.replace("**Content Hash:** `pending`", f"**Content Hash:** `{v1}`"), v1
+
+
+def _seed_v1(root, key, passes=(1,), **kw):
+    text, v1 = _v1_doc_text(passes=passes, **kw)
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p, v1
+
+
+def _add_traj_row(p, pass_n, notes="—"):
+    """Append a contiguous Trajectory data row for `pass_n`."""
+    lines = p.read_text().split("\n")
+    sep_i = next(i for i, l in enumerate(lines) if bc.TRAJECTORY_SEP_RE.match(l))
+    j = sep_i + 1
+    while j < len(lines) and lines[j].strip().startswith("|") and lines[j].strip().endswith("|"):
+        j += 1
+    lines.insert(j, _crow(pass_n, notes))
+    p.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _set_row_tag(p, pass_n, hash_short):
+    """Set the Notes cell of the Trajectory row at `pass_n` to the upstream tag."""
+    lines = p.read_text().split("\n")
+    for i, l in enumerate(lines):
+        s = l.strip()
+        if s.startswith("|") and s.endswith("|"):
+            first = bc._row_first_cell(l)
+            if bc._is_ascii_int(first) and int(first) == pass_n:
+                lines[i] = _crow(pass_n, notes=f"upstream-panel {hash_short}")
+                break
+    p.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _substantive_edit(p, marker):
+    """Insert visible body text (outside the Trajectory) — a real content edit."""
+    txt = p.read_text()
+    p.write_text(txt.replace("\n## Panel Review", f"\n{marker}\n\n## Panel Review", 1),
+                 encoding="utf-8")
+
+
+def _pending(root):
+    return bc.read_pending_review(Path(root))["pending"]
+
+
+def _check(mod, content, filename="spec.md"):
+    r = bc.ValidationResult()
+    mod.check_approval(content, filename, r)
+    return r
+
+
+def _detail_blob(result):
+    return "\n".join(d for _n, _s, d in result.checks)
+
+
+# --- R1/R3: convergence-only re-approval writes no marker -------------------
+
+
+def test_convergence_only_no_marker_spec(tmp_path, capsys):
+    vs = _load_validate_spec()
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,))
+    capsys.readouterr()
+    _add_traj_row(p, 2, notes="converged (0 HIGH)")  # bookkeeping only
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert "RE-APPROVAL REMINDER" not in out
+    assert _pending(tmp_path) == {}
+
+
+def test_convergence_only_no_marker_blueprint(tmp_path, capsys):
+    vb = _load_validate_blueprint()
+    p = tmp_path / "blueprint" / "SCOPE.md"
+    p.parent.mkdir(parents=True)
+    p.write_text(_churn_doc(passes=(1,), checked=False, hash_val="pending"), encoding="utf-8")
+    vb.approve_document(p, project_root=tmp_path)
+    capsys.readouterr()
+    _add_traj_row(p, 2, notes="converged (0 HIGH)")
+    vb.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert "RE-APPROVAL REMINDER" not in out
+    assert _pending(tmp_path) == {}
+
+
+def test_convergence_only_unrelated_entry_undisturbed(tmp_path):
+    vs = _load_validate_spec()
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,))
+    bc.upsert_pending_entry(tmp_path, "specs/other/spec.md", "a" * 16, "t", 1)
+    _add_traj_row(p, 2)
+    vs.approve_document(p, project_root=tmp_path)
+    assert "specs/other/spec.md" in _pending(tmp_path)
+
+
+# --- R2/R7: substantive edits still write a closeable marker ----------------
+
+
+def test_substantive_edit_still_writes_marker_spec(tmp_path, capsys):
+    vs = _load_validate_spec()
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,))
+    capsys.readouterr()
+    _substantive_edit(p, "A real edit.")
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert "RE-APPROVAL REMINDER" in out
+    entry = _pending(tmp_path)["specs/F1-x/spec.md"]
+    assert bc._is_valid_16_hex(entry["hash"])
+
+
+def test_substantive_edit_still_writes_marker_blueprint(tmp_path, capsys):
+    vb = _load_validate_blueprint()
+    p = tmp_path / "blueprint" / "SCOPE.md"
+    p.parent.mkdir(parents=True)
+    p.write_text(_churn_doc(passes=(1,), checked=False, hash_val="pending"), encoding="utf-8")
+    vb.approve_document(p, project_root=tmp_path)
+    capsys.readouterr()
+    _substantive_edit(p, "A real edit.")
+    vb.approve_document(p, project_root=tmp_path)
+    assert "blueprint/SCOPE.md" in _pending(tmp_path)
+
+
+def test_latest_pass_detail_edit_writes_marker(tmp_path):
+    vs = _load_validate_spec()
+    latest = "| [HIGH] | critic | concern | Addressed | original note |"
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,), latest=latest)
+    p.write_text(p.read_text().replace("original note", "TAMPERED decision"), encoding="utf-8")
+    vs.approve_document(p, project_root=tmp_path)
+    assert "specs/F1-x/spec.md" in _pending(tmp_path)
+
+
+def test_defense_mutation_writes_marker(tmp_path):
+    vs = _load_validate_spec()
+    sealed = "- `[SEAL-01]` **Thing** (pass 1, sealed) — Defense: original rationale."
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,), sealed=sealed)
+    p.write_text(p.read_text().replace("original rationale", "weakened rationale"), encoding="utf-8")
+    vs.approve_document(p, project_root=tmp_path)
+    assert "specs/F1-x/spec.md" in _pending(tmp_path)
+
+
+def test_deferred_dispositions_mutation_writes_marker(tmp_path):
+    vs = _load_validate_spec()
+    deferred = "- `[DEF-01]` **Thing** → tasks.md (pass 1) — Routed because: original."
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,), deferred=deferred)
+    p.write_text(p.read_text().replace("Routed because: original", "Routed because: CHANGED"),
+                 encoding="utf-8")
+    vs.approve_document(p, project_root=tmp_path)
+    assert "specs/F1-x/spec.md" in _pending(tmp_path)
+
+
+# --- R2: close path terminates ---------------------------------------------
+
+
+def test_close_path_tag_stamp_terminates(tmp_path):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit one")
+    vs.approve_document(p, project_root=tmp_path)
+    h = _pending(tmp_path)[key]["hash"]
+    _add_traj_row(p, 4, notes=f"upstream-panel {h[:8]}")
+    assert bc.reconcile_pending_review(tmp_path, "specs/F1-x") == []
+    # second --approve does NOT re-open a marker, and no stale-hash FAIL
+    vs.approve_document(p, project_root=tmp_path)
+    assert _pending(tmp_path) == {}
+    txt = p.read_text()
+    assert bc.verify_content_hash(txt, bc.read_stored_hash(txt))
+
+
+def test_close_path_fixture_hash_matches(tmp_path):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit one")
+    vs.approve_document(p, project_root=tmp_path)
+    h = _pending(tmp_path)[key]["hash"]
+    _add_traj_row(p, 4, notes=f"upstream-panel {h[:8]}")  # tag carries first 8 hex
+    assert bc.reconcile_pending_review(tmp_path, "specs/F1-x") == []
+
+
+# --- R4: migration FAIL + suppression --------------------------------------
+
+
+def test_migration_fail_emitted_old_basis(tmp_path):
+    content, _v1 = _v1_doc_text(passes=(1, 2))
+    for mod in (_load_validate_spec(), _load_validate_blueprint()):
+        blob = _detail_blob(_check(mod, content))
+        assert "HASH-BASIS-MIGRATION:" in blob
+
+
+def test_migration_fail_exit_code_nonzero(tmp_path):
+    # Surfaced via the previous-phase check: a v1 spec.md checked while validating
+    # design. Use a spec dir + subprocess so the exit code is real.
+    d = tmp_path / "specs" / "F1-x"
+    d.mkdir(parents=True)
+    # Build the final content (incl. the identifier line) FIRST, then stamp the v1
+    # hash over it — so it is a PURE basis migration (no concurrent edit), which is
+    # the only case that now gets the HASH-BASIS-MIGRATION FAIL (a genuine edit
+    # falls through to a normal stale FAIL after fix #2).
+    base = _churn_doc(passes=(1, 2), checked=True, hash_val="pending")
+    base = base.replace("# Doc\n", "# Doc\n\n**PLAN feature identifier:** `n/a`\n", 1)
+    v1 = bc.compute_content_hash_v1(bc.trim_trajectory_table(base))
+    text = base.replace("**Content Hash:** `pending`", f"**Content Hash:** `{v1}`")
+    (d / "spec.md").write_text(text, encoding="utf-8")
+    (d / "design.md").write_text("# Design\n\n## Goals and Non-Goals\n\nx\n", encoding="utf-8")
+    r = _run_vs(str(d), "--phase", "design", "--project-root", str(tmp_path))
+    assert r.returncode == 1
+    assert "HASH-BASIS-MIGRATION:" in r.stdout
+
+
+def test_migration_fail_distinguishable_from_pending_review(tmp_path):
+    content, _v1 = _v1_doc_text(passes=(1, 2))
+    blob = _detail_blob(_check(_load_validate_spec(), content))
+    assert "HASH-BASIS-MIGRATION:" in blob
+    assert "Pending-review: FAILED" not in blob
+
+
+def test_migration_restamp_no_marker_spec(tmp_path, capsys):
+    vs = _load_validate_spec()
+    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=(1, 2))
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert _pending(tmp_path) == {}
+    assert "RE-APPROVAL REMINDER" not in out
+    assert "- **Hash basis:** v2" in p.read_text()
+
+
+def test_migration_restamp_no_marker_blueprint(tmp_path):
+    vb = _load_validate_blueprint()
+    p = tmp_path / "blueprint" / "SCOPE.md"
+    p.parent.mkdir(parents=True)
+    text, _v1 = _v1_doc_text(passes=(1, 2))
+    p.write_text(text, encoding="utf-8")
+    vb.approve_document(p, project_root=tmp_path)
+    assert _pending(tmp_path) == {}
+    assert "- **Hash basis:** v2" in p.read_text()
+
+
+def test_migration_concurrent_edit_writes_marker(tmp_path):
+    vs = _load_validate_spec()
+    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=(1, 2))
+    _substantive_edit(p, "a concurrent edit")  # changes the v1 hash too
+    vs.approve_document(p, project_root=tmp_path)
+    assert "specs/F1-x/spec.md" in _pending(tmp_path)
+    assert "- **Hash basis:** v2" in p.read_text()
+
+
+def test_migration_round_trip_idempotent(tmp_path, capsys):
+    vs = _load_validate_spec()
+    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=(1, 2))
+    vs.approve_document(p, project_root=tmp_path)  # migrate
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)  # second approve: clean
+    out = capsys.readouterr().out
+    assert _pending(tmp_path) == {}
+    assert "hash-basis-migrated:" not in out  # already v2
+    assert _detail_blob(_check(vs, p.read_text())).count("HASH-BASIS-MIGRATION:") == 0
+
+
+def test_migration_grown_trajectory_writes_marker(tmp_path):
+    vs = _load_validate_spec()
+    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=(1, 2, 3))
+    _add_traj_row(p, 4)  # Trajectory grew since the v1 approval (never re-approved)
+    vs.approve_document(p, project_root=tmp_path)
+    assert "specs/F1-x/spec.md" in _pending(tmp_path)
+    assert "- **Hash basis:** v2" in p.read_text()
+
+
+def test_bare_archive_write_validation_clean(tmp_path):
+    vs = _load_validate_spec()
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,))
+    stored = bc.read_stored_hash(p.read_text())
+    _add_traj_row(p, 2, notes="converged (0 HIGH)")  # archive-style write, no --approve
+    assert bc.verify_content_hash(p.read_text(), stored)  # still hash-coherent
+
+
+def test_v1_v2_equal_no_migration_message(tmp_path, capsys):
+    vs = _load_validate_spec()
+    # Empty Trajectory: v1 hash == v2 hash (no rows to strip) -> no migration.
+    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=())
+    assert "HASH-BASIS-MIGRATION:" not in _detail_blob(_check(vs, p.read_text()))
+    vs.approve_document(p, project_root=tmp_path)
+    assert _pending(tmp_path) == {}
+    assert "- **Hash basis:** v2" in p.read_text()
+
+
+def test_migration_severity_is_fail_not_warn(tmp_path):
+    content, _v1 = _v1_doc_text(passes=(1, 2))
+    r = _check(_load_validate_spec(), content)
+    sev = [s for _n, s, d in r.checks if "HASH-BASIS-MIGRATION:" in d]
+    assert sev == [bc.Severity.FAIL]
+
+
+def test_migration_message_contains_basis_migration_token(tmp_path):
+    content, _v1 = _v1_doc_text(passes=(1, 2))
+    assert "HASH-BASIS-MIGRATION:" in _detail_blob(_check(_load_validate_spec(), content))
+
+
+def test_migration_restamp_suppress_msg_token(tmp_path, capsys):
+    vs = _load_validate_spec()
+    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=(1, 2))
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)
+    assert "hash-basis-migrated:" in capsys.readouterr().out
+
+
+def test_body_prose_basis_decoy_still_migration_fail(tmp_path):
+    # A genuine-v1 artifact carrying a body-prose `**Hash basis:** v2` decoy still
+    # reads as v1 (the decoy is outside ## Approval) -> migration FAIL, not stale.
+    content, _v1base = _v1_doc_text(passes=(1, 2), body="see **Hash basis:** v2 in prose")
+    # recompute the stored v1 hash for the doc INCLUDING the decoy body
+    blob = _detail_blob(_check(_load_validate_spec(), content))
+    assert "HASH-BASIS-MIGRATION:" in blob
+
+
+def test_v2_basis_genuine_edit_stale_fail(tmp_path):
+    # A v2-basis artifact later genuinely edited -> normal stale FAIL, not migration.
+    vs = _load_validate_spec()
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,))
+    _substantive_edit(p, "later edit")  # not re-approved -> stored hash now stale
+    blob = _detail_blob(_check(vs, p.read_text()))
+    assert "HASH-BASIS-MIGRATION:" not in blob
+    assert "has not been modified since approval" in "\n".join(n for n, _s, _d in _check(vs, p.read_text()).checks)
+
+
+def test_genuine_v1_edit_is_stale_not_migration(tmp_path):
+    # Code-review fix #2: a GENUINELY-edited v1 artifact (content changed after a
+    # v1 approval, not re-approved) must NOT get the HASH-BASIS-MIGRATION message
+    # (which promises no obligation) — only a PURE basis migration does. It falls
+    # through to the normal stale FAIL.
+    vs = _load_validate_spec()
+    base, _v1 = _v1_doc_text(passes=(1, 2))
+    edited = base.replace("Do a thing.", "Do a thing. GENUINELY EDITED.")  # keeps old v1 hash
+    r = _check(vs, edited)
+    assert "HASH-BASIS-MIGRATION:" not in _detail_blob(r)
+    assert "has not been modified since approval" in "\n".join(n for n, _s, _d in r.checks)
+
+
+def test_approve_no_approval_section_errors(tmp_path, capsys):
+    # Code-review fix #4: --approve on a doc with no `## Approval` section errors
+    # to stderr and leaves the file unchanged — it must NOT print a false "Approved".
+    vs = _load_validate_spec()
+    p = Path(tmp_path) / "specs/F1-x/spec.md"
+    p.parent.mkdir(parents=True)
+    p.write_text("# Doc\n\n## Objective\n\nx\n", encoding="utf-8")  # no ## Approval
+    before = p.read_text()
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr()
+    assert "Approved:" not in out.out
+    assert "no `## Approval` section" in out.err
+    assert p.read_text() == before
+
+
+# --- R8: scoped approval rewrites ------------------------------------------
+
+
+def test_approval_section_prose_decoy_bounds_correct(tmp_path):
+    vs = _load_validate_spec()
+    body = (
+        "# Doc\n\n## Objective\n\nThis body quotes a `## Approval` line in prose.\n\n"
+        "## Panel Review\n\n" + _CHURN_TRAJ_HEADER + _crow(1) + "\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    p = Path(tmp_path) / "specs/F1-x/spec.md"
+    p.parent.mkdir(parents=True)
+    p.write_text(body, encoding="utf-8")
+    vs.approve_document(p, project_root=tmp_path)
+    txt = p.read_text()
+    assert bc.read_hash_basis(txt) == "v2"  # basis written into the REAL section
+    assert bc.verify_content_hash(txt, bc.read_stored_hash(txt))
+
+
+def test_approval_rewrite_scoped_body_prose_untouched(tmp_path):
+    # A `## Notes` section AFTER ## Approval quotes an UNCHECKED checkbox + a
+    # DISTINCT-sentinel Content-Hash line — the exact forms the OLD document-wide
+    # re.sub would rewrite (flipping the box, restamping the sentinel). Placed
+    # after ## Approval so the document-wide stored-hash READ still reads the real
+    # section (the read is intentionally not scoped — see the authoring caution),
+    # isolating the WRITE-scoping behaviour R8/AD10 fixes.
+    decoy = (
+        "## Notes\n\nExample in prose:\n- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `deadbeefdeadbeef`\n"
+    )
+    body = (
+        "# Doc\n\n## Objective\n\nx\n\n## Panel Review\n\n"
+        + _CHURN_TRAJ_HEADER + _crow(1) + "\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n\n"
+        + decoy
+    )
+    for mod, sub in ((_load_validate_spec(), "specs/F1-x"), (_load_validate_blueprint(), "blueprint")):
+        p = Path(tmp_path) / sub / "doc.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        mod.approve_document(p, project_root=tmp_path)
+        txt = p.read_text()
+        # decoy lines (in ## Notes) are byte-unchanged (old global re.sub corrupted them)
+        assert "- [ ] Approved to proceed to next phase\n- **Content Hash:** `deadbeefdeadbeef`" in txt
+        # the real ## Approval section is approved + coherent (no false stale FAIL)
+        assert "- [x] Approved to proceed to next phase" in txt
+        assert bc.verify_content_hash(txt, bc.read_stored_hash(txt))
+
+
+# --- R9: obligation lifecycle (unconditional preserve) ---------------------
+
+
+def test_r9_f47_six_step_repro_clears_via_doctrine_path(tmp_path):
+    for mod, sub in ((_load_validate_spec(), "specs/F1-x"), (_load_validate_blueprint(), "blueprint")):
+        root = tmp_path / sub.split("/")[0]  # distinct marker root per validator
+        root.mkdir(exist_ok=True)
+        key = f"{sub}/doc.md"
+        p = Path(tmp_path) / key
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_churn_doc(passes=(1, 2, 3), checked=False, hash_val="pending"), encoding="utf-8")
+        mod.approve_document(p, project_root=tmp_path)            # (1) approved, pass N=3
+        _substantive_edit(p, "edit")
+        mod.approve_document(p, project_root=tmp_path)            # (2) obligation (H1, N)
+        entry = _pending(tmp_path)[key]
+        h1, n = entry["hash"], entry["stamped_at_pass"]
+        _add_traj_row(p, 4)                                       # (3) archive pass N+1
+        _substantive_edit(p, "auto-fix")
+        mod.approve_document(p, project_root=tmp_path)            # (4) auto-fix re-stamp
+        after = _pending(tmp_path)[key]
+        assert after["hash"] == h1 and after["stamped_at_pass"] == n  # NOT re-anchored
+        _set_row_tag(p, 4, h1[:8])                                # (5) stamp the tag
+        assert bc.reconcile_pending_review(tmp_path, sub) == []   # (6) cleared
+
+
+def test_r9_post_archive_restamp_preserves_two_consecutive_restamps(tmp_path):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit")
+    vs.approve_document(p, project_root=tmp_path)
+    h1 = _pending(tmp_path)[key]["hash"]
+    for marker in ("fix one", "fix two"):
+        _add_traj_row(p, 4 if marker == "fix one" else 5)
+        _substantive_edit(p, marker)
+        vs.approve_document(p, project_root=tmp_path)
+        assert _pending(tmp_path)[key]["hash"] == h1  # byte-identical across BOTH
+
+
+def test_r9_substantive_edit_while_open_preserves_not_second_marker(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3),
+                             sealed="- `[SEAL-01]` **X** (pass 1, sealed) — Defense: original.")
+    _substantive_edit(p, "edit")
+    vs.approve_document(p, project_root=tmp_path)
+    h1 = _pending(tmp_path)[key]["hash"]
+    capsys.readouterr()
+    p.write_text(p.read_text().replace("Defense: original", "Defense: changed"), encoding="utf-8")
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert list(_pending(tmp_path)) == [key]          # exactly one obligation
+    assert _pending(tmp_path)[key]["hash"] == h1      # held verbatim
+    assert "RE-APPROVAL REMINDER" not in out
+
+
+def test_r9_preserved_obligation_clears_on_doctrine_tag(tmp_path):
+    key = "specs/F1-x/spec.md"
+    p = Path(tmp_path) / key
+    p.parent.mkdir(parents=True)
+    p.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val="a" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, key, "a" * 16, "t", 3)  # already-preserved obligation
+    _add_traj_row(p, 4, notes="upstream-panel aaaaaaaa")
+    assert bc.reconcile_pending_review(tmp_path, "specs/F1-x") == []
+
+
+def test_r9_reconcile_readout_corrupt_marker_still_fails_loud(tmp_path):
+    _write_corrupt(tmp_path)
+    # ONE fixture, BOTH behaviours: dispatch read fails open, reconcile stays strict.
+    assert bc.read_open_obligation(marker_root=tmp_path, doc_rel="specs/F1-x/spec.md") is None
+    res = bc.reconcile_to_result(tmp_path, "specs/F1-x", decline_cmd="x", restore_cmd="y")
+    blob = _detail_blob(res).lower()
+    assert ("corrupt" in blob or "unreadable" in blob) and not res.passed
+
+
+def test_r9_corrupt_marker_on_approve_aborts_not_silent_create(tmp_path):
+    import pytest
+    vs = _load_validate_spec()
+    p = _seed_churn_approved(tmp_path, "specs/F1-x/spec.md", passes=(1,))
+    _write_corrupt(tmp_path)
+    before = _marker_file(tmp_path).read_bytes()
+    _substantive_edit(p, "edit on corrupt marker")
+    with pytest.raises(bc.MarkerCorruptError):
+        vs.approve_document(p, project_root=tmp_path)
+    assert _marker_file(tmp_path).read_bytes() == before  # corrupt file not clobbered
+
+
+def test_r9_tag_detection_uses_raw_not_hashed_text(tmp_path):
+    key = "specs/F1-x/spec.md"
+    p = Path(tmp_path) / key
+    p.parent.mkdir(parents=True)
+    p.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val="b" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, key, "b" * 16, "t", 3)
+    _add_traj_row(p, 4, notes="upstream-panel bbbbbbbb")
+    # raw reconcile clears; the hashed (stripped) form would have no tag at all
+    assert bc._doc_has_any_qualifying_tag(bc.content_for_hashing(p.read_text()), "bbbbbbbb") is False
+    assert bc.reconcile_pending_review(tmp_path, "specs/F1-x") == []
+
+
+def test_r9_legacy_v1_obligation_surfaces_via_unsatisfiable_detector(tmp_path):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    # A legacy v1 obligation: marker hash = the v1 content hash, tag already on
+    # pass N == anchor (the F47 corrupted state from pre-fix re-anchoring).
+    p, v1 = _seed_v1(tmp_path, key, passes=(1, 2, 3))
+    _set_row_tag(p, 3, v1[:8])
+    bc.upsert_pending_entry(tmp_path, key, v1, "t", 3)  # anchor == tagged pass 3
+    vs.approve_document(p, project_root=tmp_path)        # migrates doc to v2; preserves obligation
+    assert _pending(tmp_path)[key]["hash"] == v1         # legacy v1 hash preserved, NOT re-derived
+    res = bc.reconcile_to_result(tmp_path, "specs/F1-x", decline_cmd="x", restore_cmd="y")
+    assert bc.UNSATISFIABLE_OBLIGATION_TOKEN in _detail_blob(res)
+
+
+def test_r9_task_tick_restamp_does_not_enter_r9_branch(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/tasks.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    bc.upsert_pending_entry(tmp_path, key, "c" * 16, "t", 3)  # an open obligation
+    capsys.readouterr()
+    p.write_text(p.read_text() + "\nchanged tick\n", encoding="utf-8")
+    vs.approve_document(p, task_tick=True, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert "r9-preserve:" not in out  # task_tick early-return precedes the R9 branch
+    assert _pending(tmp_path)[key]["hash"] == "c" * 16  # obligation untouched
+
+
+def test_r9_convergence_only_restamp_mid_obligation_preserves(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit")
+    vs.approve_document(p, project_root=tmp_path)
+    h1, n = _pending(tmp_path)[key]["hash"], _pending(tmp_path)[key]["stamped_at_pass"]
+    capsys.readouterr()
+    _add_traj_row(p, 4, notes="converged (0 HIGH)")  # convergence-only while open
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert _pending(tmp_path)[key]["hash"] == h1 and _pending(tmp_path)[key]["stamped_at_pass"] == n
+    assert "RE-APPROVAL REMINDER" not in out
+
+
+def test_r9_basis_migration_restamp_mid_obligation_preserves(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p, v1 = _seed_v1(tmp_path, key, passes=(1, 2, 3))
+    bc.upsert_pending_entry(tmp_path, key, "d" * 16, "t", 3)  # an open obligation on a v1 doc
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)
+    out = capsys.readouterr().out
+    # R9-preserve governs (NOT R4 migrate-suppress): the obligation is held, no new marker.
+    assert _pending(tmp_path)[key]["hash"] == "d" * 16
+    assert "hash-basis-migrated:" not in out
+    assert "r9-preserve:" in out
+
+
+def test_r9_no_open_obligation_fresh_edit_creates_new(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1,))
+    capsys.readouterr()
+    _substantive_edit(p, "fresh edit")
+    vs.approve_document(p, project_root=tmp_path)
+    assert key in _pending(tmp_path)
+    assert "RE-APPROVAL REMINDER" in capsys.readouterr().out
+
+
+def _setup_unsat(tmp_path, anchor, tag_pass):
+    key = "specs/F1-x/spec.md"
+    p = Path(tmp_path) / key
+    p.parent.mkdir(parents=True)
+    p.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val="e" * 16), encoding="utf-8")
+    _set_row_tag(p, tag_pass, "eeeeeeee")
+    bc.upsert_pending_entry(tmp_path, key, "e" * 16, "t", anchor)
+    return key
+
+
+def test_r9_unsatisfiable_detector_fires_when_tag_below_anchor(tmp_path):
+    import pytest
+    for anchor, tag_pass in ((3, 2), (3, 3)):  # tag < anchor AND tag == anchor (F47 boundary)
+        sub = tmp_path / f"a{anchor}p{tag_pass}"
+        sub.mkdir()
+        key = _setup_unsat(sub, anchor, tag_pass)
+        res = bc.reconcile_to_result(sub, "specs/F1-x", decline_cmd="x", restore_cmd="y")
+        assert bc.UNSATISFIABLE_OBLIGATION_TOKEN in _detail_blob(res), (anchor, tag_pass)
+
+
+def test_r9_unsatisfiable_detector_no_false_positive_no_tag_yet(tmp_path):
+    key = "specs/F1-x/spec.md"
+    p = Path(tmp_path) / key
+    p.parent.mkdir(parents=True)
+    p.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val="e" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, key, "e" * 16, "t", 3)  # no tag yet
+    res = bc.reconcile_to_result(tmp_path, "specs/F1-x", decline_cmd="x", restore_cmd="y")
+    blob = _detail_blob(res)
+    assert bc.UNSATISFIABLE_OBLIGATION_TOKEN not in blob
+    assert "upstream panel re-review pending" in blob
+
+
+def test_r9_unsatisfiable_remedy_is_content_attested(tmp_path):
+    # With a genuine tag -> restore clears; without -> it does not.
+    key = _setup_unsat(tmp_path, anchor=3, tag_pass=3)
+    assert bc.restore_anchor_for_prefix(tmp_path, "specs/F1-x") == [key]
+    assert _pending(tmp_path) == {}
+    # no-tag case: restore is a no-op
+    tmp2 = tmp_path / "no_tag"
+    tmp2.mkdir()
+    p2 = tmp2 / key
+    p2.parent.mkdir(parents=True)
+    p2.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val="e" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(tmp2, key, "e" * 16, "t", 3)
+    assert bc.restore_anchor_for_prefix(tmp2, "specs/F1-x") == []
+    assert key in bc.read_pending_review(tmp2)["pending"]
+
+
+def test_r9_unsatisfiable_diagnostic_distinct_from_generic_pending(tmp_path):
+    unsat = tmp_path / "unsat"
+    unsat.mkdir()
+    _setup_unsat(unsat, anchor=3, tag_pass=3)
+    unsat_blob = _detail_blob(bc.reconcile_to_result(unsat, "specs/F1-x", decline_cmd="x", restore_cmd="y"))
+    generic = tmp_path / "generic"
+    generic.mkdir()
+    key = "specs/F1-x/spec.md"
+    (generic / key).parent.mkdir(parents=True)
+    (generic / key).write_text(_churn_doc(passes=(1,), checked=True, hash_val="e" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(generic, key, "e" * 16, "t", 0)
+    generic_blob = _detail_blob(bc.reconcile_to_result(generic, "specs/F1-x", decline_cmd="x", restore_cmd="y"))
+    assert bc.UNSATISFIABLE_OBLIGATION_TOKEN in unsat_blob
+    assert bc.UNSATISFIABLE_OBLIGATION_TOKEN not in generic_blob
+
+
+# --- R10: orphaned-row detection (integration) -----------------------------
+
+
+def _orphan_spec(tmp_path, sub, orphan_row, passes=(1, 2, 3)):
+    rows = "".join(_crow(p) + "\n" for p in passes)
+    body = (
+        "# F\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n## Panel Review\n\n"
+        + _CHURN_TRAJ_HEADER + rows + "\n" + orphan_row + "\n\n"
+        "### Sealed dispositions\n\n_None yet._\n\n"
+        "## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    d = Path(tmp_path) / sub
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "spec.md").write_text(body, encoding="utf-8")
+    return d
+
+
+def test_r10_load_bearing_orphan_fails_both_validators(tmp_path):
+    content = _churn_doc(passes=(1, 2, 3), checked=True, hash_val="h" * 16)
+    content = content.replace("\n### Sealed", "\n" + _crow(29) + "\n\n### Sealed") \
+        if "### Sealed" in content else content
+    # build a doc whose Trajectory has a stranded high-Pass row
+    rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
+    doc = (
+        "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n" + _crow(29) + "\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+    for mod in (_load_validate_spec(), _load_validate_blueprint()):
+        r = bc.ValidationResult()
+        bc.validate_panel_review(doc, "spec.md", r)
+        blob = _detail_blob(r)
+        assert "ORPHANED-TRAJECTORY-ROW:" in blob
+        assert not r.passed
+
+
+def test_r10_non_load_bearing_orphan_warns_not_blocks(tmp_path):
+    rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
+    doc = (
+        "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n" + _crow(2) + "\n\n"
+        "## Approval\n\n- [x] Approved\n- **Content Hash:** `h`\n"
+    )
+    r = bc.ValidationResult()
+    bc.validate_panel_review(doc, "spec.md", r)
+    assert "ORPHANED-TRAJECTORY-ROW:" in _detail_blob(r)
+    assert r.passed and r.has_warnings  # WARN, not blocking
+
+
+def test_r10_orphan_diagnostic_names_row(tmp_path):
+    rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
+    doc = (
+        "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n" + _crow(29) + "\n\n"
+        "## Approval\n\n- [x] Approved\n- **Content Hash:** `h`\n"
+    )
+    r = bc.ValidationResult()
+    bc.validate_panel_review(doc, "spec.md", r)
+    blob = _detail_blob(r)
+    assert "line " in blob and "| 29" in blob  # names the specific row
+    assert "make the row contiguous" in blob.lower() or "contiguous" in blob.lower()
+    assert "delet" in blob.lower()  # offers the delete remedy too
+
+
+def test_r10_no_false_positive_body_prose_or_fenced(tmp_path):
+    rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
+    doc = (
+        "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n"
+        "```\n| 88 | fenced |\n```\n\nsee `| 77 | prose |` inline\n\n"
+        "| A | B |\n|---|---|\n| 99 | x |\n\n"
+        "## Approval\n\n- [x] Approved\n- **Content Hash:** `h`\n"
+    )
+    r = bc.ValidationResult()
+    bc.validate_panel_review(doc, "spec.md", r)
+    assert "ORPHANED-TRAJECTORY-ROW:" not in _detail_blob(r)
+
+
+def test_r10_warn_to_fail_transition_on_tag_gain(tmp_path):
+    rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
+    base = "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n{ORPHAN}\n\n## Approval\n\n- [x] Approved\n- **Content Hash:** `h`\n"
+    warn_doc = base.replace("{ORPHAN}", _crow(2))  # Pass <= max, no tag -> WARN
+    r1 = bc.ValidationResult()
+    bc.validate_panel_review(warn_doc, "spec.md", r1)
+    assert r1.passed and r1.has_warnings
+    fail_doc = base.replace("{ORPHAN}", _crow(2, notes="upstream-panel aaaaaaaa"))  # gains a tag
+    r2 = bc.ValidationResult()
+    bc.validate_panel_review(fail_doc, "spec.md", r2)
+    assert not r2.passed  # escalated to blocking FAIL
+
+
+def test_r10_detector_runs_before_r9_reconcile(tmp_path):
+    # A genuine tag on an ORPHANED row: R9 reconcile can't see it (keeps the
+    # obligation open) AND R10 raises an independent blocking FAIL.
+    key = "specs/F1-x/spec.md"
+    p = Path(tmp_path) / key
+    p.parent.mkdir(parents=True)
+    rows = "".join(_crow(pn) + "\n" for pn in (1, 2, 3))
+    doc = (
+        "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n"
+        + _crow(4, notes="upstream-panel ffffffff") + "\n\n"  # ORPHANED tag row
+        "## Approval\n\n- [x] Approved\n- **Content Hash:** `" + "f" * 16 + "`\n"
+    )
+    p.write_text(doc, encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, key, "f" * 16, "t", 3)
+    # R9 reconcile cannot see the orphaned tag -> obligation stays open
+    assert bc.reconcile_pending_review(tmp_path, "specs/F1-x") == [(key, "upstream-panel ffffffff")]
+    # R10 independently FAILs on the orphan
+    r = bc.ValidationResult()
+    bc.validate_panel_review(doc, "spec.md", r)
+    assert not r.passed and "ORPHANED-TRAJECTORY-ROW:" in _detail_blob(r)
+
+
+def test_r10_detection_does_not_mutate_document(tmp_path):
+    d = _orphan_spec(tmp_path, "specs/F1-x", _crow(29))
+    before = (d / "spec.md").read_bytes()
+    _run_vs(str(d), "--phase", "spec", "--project-root", str(tmp_path))
+    assert (d / "spec.md").read_bytes() == before  # no auto-heal
+
+
 # The audit: the union of the `def test_` names declared across T1/T2/T3/T6/T7 +
 # T11's 3 integration tests (the ownership model's single source of truth). The
 # meta-test below FAILS by NAME on any missing one — never trusts a headline
@@ -742,6 +1542,62 @@ _UNION_TEST_NAMES = (
     "test_changed_since_stamp_empty_hash_fires",
     "test_read_pending_review_unknown_schema_version_strict_raises",
     "test_approve_misconfigured_project_root_warns_and_recovers",
+    # --- Pending-review churn: R1–R8 (T5) ---
+    "test_convergence_only_no_marker_spec",
+    "test_convergence_only_no_marker_blueprint",
+    "test_convergence_only_unrelated_entry_undisturbed",
+    "test_substantive_edit_still_writes_marker_spec",
+    "test_substantive_edit_still_writes_marker_blueprint",
+    "test_latest_pass_detail_edit_writes_marker",
+    "test_defense_mutation_writes_marker",
+    "test_deferred_dispositions_mutation_writes_marker",
+    "test_close_path_tag_stamp_terminates",
+    "test_close_path_fixture_hash_matches",
+    "test_migration_fail_emitted_old_basis",
+    "test_migration_fail_exit_code_nonzero",
+    "test_migration_fail_distinguishable_from_pending_review",
+    "test_migration_restamp_no_marker_spec",
+    "test_migration_restamp_no_marker_blueprint",
+    "test_migration_concurrent_edit_writes_marker",
+    "test_migration_round_trip_idempotent",
+    "test_migration_grown_trajectory_writes_marker",
+    "test_bare_archive_write_validation_clean",
+    "test_v1_v2_equal_no_migration_message",
+    "test_migration_severity_is_fail_not_warn",
+    "test_migration_message_contains_basis_migration_token",
+    "test_migration_restamp_suppress_msg_token",
+    "test_body_prose_basis_decoy_still_migration_fail",
+    "test_v2_basis_genuine_edit_stale_fail",
+    "test_approval_section_prose_decoy_bounds_correct",
+    "test_approval_rewrite_scoped_body_prose_untouched",
+    # --- Pending-review churn: R9 (T12) ---
+    "test_r9_f47_six_step_repro_clears_via_doctrine_path",
+    "test_r9_post_archive_restamp_preserves_two_consecutive_restamps",
+    "test_r9_substantive_edit_while_open_preserves_not_second_marker",
+    "test_r9_preserved_obligation_clears_on_doctrine_tag",
+    "test_r9_reconcile_readout_corrupt_marker_still_fails_loud",
+    "test_r9_corrupt_marker_on_approve_aborts_not_silent_create",
+    "test_r9_tag_detection_uses_raw_not_hashed_text",
+    "test_r9_legacy_v1_obligation_surfaces_via_unsatisfiable_detector",
+    "test_r9_task_tick_restamp_does_not_enter_r9_branch",
+    "test_r9_convergence_only_restamp_mid_obligation_preserves",
+    "test_r9_basis_migration_restamp_mid_obligation_preserves",
+    "test_r9_no_open_obligation_fresh_edit_creates_new",
+    "test_r9_unsatisfiable_detector_fires_when_tag_below_anchor",
+    "test_r9_unsatisfiable_detector_no_false_positive_no_tag_yet",
+    "test_r9_unsatisfiable_remedy_is_content_attested",
+    "test_r9_unsatisfiable_diagnostic_distinct_from_generic_pending",
+    # --- Pending-review churn: R10 integration (T14) ---
+    "test_r10_load_bearing_orphan_fails_both_validators",
+    "test_r10_non_load_bearing_orphan_warns_not_blocks",
+    "test_r10_orphan_diagnostic_names_row",
+    "test_r10_no_false_positive_body_prose_or_fenced",
+    "test_r10_warn_to_fail_transition_on_tag_gain",
+    "test_r10_detector_runs_before_r9_reconcile",
+    "test_r10_detection_does_not_mutate_document",
+    # --- Code-review remediations (medium-effort review of 5739d94) ---
+    "test_genuine_v1_edit_is_stale_not_migration",
+    "test_approve_no_approval_section_errors",
 )
 
 _AUDIT_TEST_NAME = "test_audit_union_test_names_present"

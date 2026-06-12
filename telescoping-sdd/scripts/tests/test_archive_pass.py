@@ -1940,3 +1940,87 @@ def test_apply_edits_applies_descending():
     assert ap._apply_edits(lines, list(reversed(edits))) == expected
     # Input list is not mutated.
     assert lines == ["0", "1", "2", "3", "4", "5"]
+
+
+# ---------------------------------------------------------------------------
+# R10: orphaned-Trajectory-row guard on the write path (T15 / DEF-15/16).
+# ---------------------------------------------------------------------------
+
+_GUARD_TRAJ_HEADER = (
+    "## Panel Review\n\n### Trajectory\n\n"
+    "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+    "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+)
+
+
+def _guard_row(p, notes="—"):
+    return f"| {p} | 2026-06-12 | 0 | 0 | 0 | 0 | 0 | {notes} |"
+
+
+def _doc_no_orphan():
+    return (
+        "# D\n\n" + _GUARD_TRAJ_HEADER
+        + _guard_row(1) + "\n" + _guard_row(2) + "\n\n"
+        "### Sealed dispositions\n\n_None yet._\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+
+
+def _doc_with_orphan():
+    # A `| 29 | ... |` row stranded below the table's blank-line terminator.
+    return (
+        "# D\n\n" + _GUARD_TRAJ_HEADER
+        + _guard_row(1) + "\n" + _guard_row(2) + "\n\n"
+        + _guard_row(29) + "\n\n"
+        "### Sealed dispositions\n\n_None yet._\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
+    )
+
+
+def test_archive_guard_refuses_self_strand(tmp_path):
+    # An append whose own write would strand a row (present in new, absent in old)
+    # -> the guard refuses (SystemExit), no write performed.
+    import pytest
+    ap = _load_archive_pass()
+    with pytest.raises(SystemExit):
+        ap._orphan_guard(tmp_path / "spec.md", _doc_no_orphan(), _doc_with_orphan())
+
+
+def test_archive_guard_preexisting_orphan_still_appends(tmp_path, capsys):
+    # A PRE-EXISTING orphan (present in BOTH old and new) -> the guard SURFACES a
+    # non-blocking notice and STILL proceeds (no SystemExit) — the operator is not
+    # dead-ended. This pins the prospective-vs-pre-append SET DIFF, not a naive
+    # "any orphan present?" check (which would wrongly refuse).
+    ap = _load_archive_pass()
+    old = _doc_with_orphan()
+    new = old.replace(_guard_row(2) + "\n\n", _guard_row(2) + "\n" + _guard_row(3) + "\n\n")
+    ap._orphan_guard(tmp_path / "spec.md", old, new)  # must NOT raise
+    err = capsys.readouterr().err
+    assert ap.ORPHANED_TRAJECTORY_TOKEN in err
+    assert "already has an orphaned" in err
+
+
+def test_archive_guard_dry_run_does_not_exit_on_self_strand(tmp_path, capsys):
+    # Code-review fix #7: under dry_run a would-strand write is surfaced as a notice
+    # but does NOT raise SystemExit (a preview must be side-effect-free, non-fatal).
+    ap = _load_archive_pass()
+    ap._orphan_guard(tmp_path / "spec.md", _doc_no_orphan(), _doc_with_orphan(), dry_run=True)
+    err = capsys.readouterr().err
+    assert ap.ORPHANED_TRAJECTORY_TOKEN in err
+    assert "dry-run" in err
+
+
+def test_archive_normal_trajectory_unaffected(tmp_path):
+    # A well-formed Trajectory -> archive behaviour is unchanged (no orphan notice,
+    # the Latest pass detail row is promoted to a new contiguous Trajectory row).
+    artifact = _artifact_with_trajectory(
+        tmp_path,
+        [_traj_row(pass_n=1, highs=2, addressed=2)],
+        latest_rows="| [HIGH] | critic | concern A | Addressed | fixed in §2 |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    assert "ORPHANED-TRAJECTORY-ROW:" not in proc.stderr
+    text = artifact.read_text()
+    # behaviour preserved: a new Pass 2 row is appended contiguously
+    assert "| 2 " in text or "| 2 |" in text
