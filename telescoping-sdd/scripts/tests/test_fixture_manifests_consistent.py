@@ -27,6 +27,13 @@ from _fixture_contract import (  # noqa: E402
 
 FIXTURE_ROOTS = (
     _REPO_ROOT / "telescoping-sdd" / "scripts" / "tests" / "fixtures",
+    # Per-skill fixture trees (I3.6): the guard previously rooted only at the
+    # shared-scripts fixtures, so a static fixture added under a skill's own
+    # tests/ would silently escape the manifest check. find_static_fixture_dirs
+    # skips roots that don't exist, so these are harmless until a skill grows a
+    # fixtures/ dir — at which point it is guarded automatically.
+    _REPO_ROOT / "telescoping-sdd" / "skills" / "project-blueprint" / "scripts" / "tests" / "fixtures",
+    _REPO_ROOT / "telescoping-sdd" / "skills" / "spec-driven-dev" / "scripts" / "tests" / "fixtures",
 )
 
 

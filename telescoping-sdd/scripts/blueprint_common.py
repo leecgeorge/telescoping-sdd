@@ -52,6 +52,8 @@ from trajectory import (  # noqa: E402,F401
 from content_hash import (  # noqa: E402,F401
     APPROVAL_HASH_LINE,
     APPROVAL_HASH_LINE_STRICT,
+    CONTENT_HASH_HEX,
+    CONTENT_HASH_WIDTH,
     HASH_BASIS_CURRENT,
     HASH_BASIS_LINE,
     approval_hash,
@@ -120,6 +122,19 @@ PANEL_TRAJECTORY_ROW = re.compile(
 )
 
 PANEL_SEAL_ENTRY = re.compile(r"^-\s+`\[SEAL-\d+\]`", re.MULTILINE)
+
+# Canonical set of workflow-internal inline tag families — the `[FAMILY-N]`
+# tokens stamped into artifact prose: SEAL/DEF panel dispositions (spec/design/
+# tasks phases, owned by archive_pass.py), SCOPE/ARCH panel dispositions (scope/
+# architecture phases), and CFC cross-feature-contract tags (owned by
+# cfc_parser.py). SINGLE SOURCE so the Business Brief filter that strips these
+# from stakeholder HTML (render_business_brief, I3.5) builds its allowlist from
+# this tuple rather than re-hardcoding a list that can silently drift from the
+# grammar. test_inline_tag_families_parity asserts every family a validator
+# actually recognizes is a member here.
+INLINE_TAG_FAMILIES = ("SEAL", "DEF", "SCOPE", "ARCH", "CFC")
+# Regex fragment alternating the families, e.g. rf" ?\[(?:{INLINE_TAG_FAMILIES_RE})-\d+\]".
+INLINE_TAG_FAMILIES_RE = "|".join(INLINE_TAG_FAMILIES)
 
 PANEL_LATEST_DETAIL_ROW = re.compile(
     r"^\|\s*\[(?:HIGH|MED|LOW)\]", re.MULTILINE

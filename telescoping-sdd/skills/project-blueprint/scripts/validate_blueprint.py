@@ -25,11 +25,18 @@ import unicodedata
 from pathlib import Path
 from typing import Optional
 
-# Locate shared helpers at telescoping-sdd/scripts/ — sibling of telescoping-sdd/skills/.
-# Use sys.path.append (not insert) so this module never displaces the
-# caller's sys.path[0] (regression guard for T3 AC).
+# sys.path bootstrap — skill entry point (audit R3.5: one idiom across entry
+# points). Put telescoping-sdd/scripts/ (the shared helpers, sibling of
+# telescoping-sdd/skills/) on sys.path via an idempotent guarded APPEND. Append,
+# never insert(0): a skill validator runs under the plugin/marketplace runtime,
+# where displacing the caller's sys.path[0] would break its module resolution
+# (regression guard for T3 AC). The `not in` guard stops repeated imports from
+# stacking duplicate entries. Shared-script entry points (reconcile.py,
+# artifact_prefix.py) use a guarded insert(0) instead — nothing else bootstraps
+# them, so they must take precedence.
 _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
-sys.path.append(str(_SHARED_SCRIPTS))
+if str(_SHARED_SCRIPTS) not in sys.path:
+    sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
     APPROVAL_HASH_LINE_STRICT,
@@ -1605,6 +1612,114 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
     return result
 
 
+def _validate_plan_cfc_coverage(
+    content: str,
+    result: ValidationResult,
+    blueprint_dir: Path,
+    project_root: Optional[Path],
+) -> None:
+    """Cross-artifact CFC validation for PLAN.md (audit R3.2 — split out of
+    validate_plan).
+
+    Three concerns, in order: (1) validate the optional `## Cross-Feature
+    Contracts` section's field structure + the `**Implemented by:**` delegation
+    field; (2) walk `specs/` ONCE (classification + malformed-dirname /
+    derived-dir / duplicate-dir WARNs); (3) when any CFC entry or `[CFC-N]` tag
+    exists, emit per-CFC coverage WARNs and the orphan-tag scan. The specs/ walk
+    is unconditional — even a CFC-less PLAN must be scanned for orphan tags left
+    behind by a removed CFC. Mutates `result`; returns nothing.
+    """
+    # ## Cross-Feature Contracts is optional — absence is not a failure.
+    # When present, validate field structure, regex, uniqueness, and emit
+    # the owner-silent Enforcement WARN.
+    cfc_entries = validate_cfc_section(content, result)
+
+    # `**Implemented by:**` — optional per-feature cross-project delegation field
+    # (CPD I8). Validate every occurrence positionally (malformed value /
+    # duplicate-in-block FAILs); absence and preamble occurrences are silent.
+    _parse_implemented_by(content, result)
+
+    # Cross-artifact CFC checks (coverage walk + orphan-tag scan). specs/ is
+    # walked unconditionally — even a PLAN with no CFCs must be scanned for
+    # orphan [CFC-N] tags (it may have removed its CFCs and left orphans behind).
+    # ONE walk of specs/ (`_classified_spec_entries`) feeds BOTH the SpecState
+    # classification AND the malformed-dirname WARNs, so each entry is listed and
+    # classified once (it was iterated/classified twice before).
+    # Resolve the specs/ walk root through the shared marker-walk (honoring an
+    # explicit --project-root) rather than hard-coding blueprint_dir.parent, which
+    # assumed specs/ is a sibling of blueprint/ and silently produced an empty
+    # walk on a non-sibling layout (e.g. docs/blueprint/ + repo-root specs/) —
+    # audit R3.3. Falls back to blueprint_dir.parent if no marker root is found.
+    walk_root = arch_find_project_root(blueprint_dir, project_root) or blueprint_dir.parent
+    spec_entries = _classified_spec_entries(walk_root)
+    _emit_malformed_dirname_warns(spec_entries, result)
+    # CPD derived-dir exclusion (I10): read the sibling registry ONCE here and
+    # pass it in — never re-read per directory. `_states_from_entries` excludes
+    # derived dirs from coverage; this surfaces the sibling-gated informational
+    # WARN for any derived dir lacking a matching master sibling.
+    derived_registry = project_registry.read_projects_config(walk_root)
+    _emit_derived_dir_warns(spec_entries, derived_registry, walk_root, result)
+    spec_states = _states_from_entries(spec_entries)
+    has_any_cfc_tags = any(
+        s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
+    )
+
+    # Duplicate-feature-dir detection runs ONCE here — OUTSIDE the coverage block
+    # below (which only runs when there is CFC work) — so a non-CFC PLAN with
+    # colliding spec directories still gets the WARN.
+    _emit_duplicate_feature_dir_warns(spec_states, result)
+
+    if cfc_entries or has_any_cfc_tags:
+        prior_hashes = read_cfc_hashes(content)
+        coverages = compute_coverage(cfc_entries, spec_states)
+        orphans = scan_orphan_tags(cfc_entries, spec_states, prior_hashes)
+
+        # Coverage walk: emit a WARN only for `partially-bound`. `fully-bound`
+        # and `unbound` produce no validator-level row — the PLAN author
+        # gets a clean output unless there's actually work to do. (Per P2-16
+        # from the post-implementation review: the previous all-three-states
+        # emission was output noise that obscured real findings.)
+        for cov in coverages:
+            if cov.status == "partially-bound":
+                result.add(
+                    f"PLAN.md CFC-{cov.cfc_number} coverage",
+                    False,
+                    f"partially-bound: "
+                    + ", ".join(
+                        f"F{fid}=[{cov.feature_states.get(fid, '?')}]"
+                        for fid in cov.participating
+                    ),
+                    warn_only=True,
+                )
+            elif cov.status == "fully-bound":
+                # Surface in-flight vs shipped distinction in the detail
+                # string (P3-10) so the PLAN author can judge urgency at a
+                # glance. Emitted as PASS — the binding is complete.
+                state_summary = ", ".join(
+                    f"F{fid}=[{cov.feature_states.get(fid, '?')}]"
+                    for fid in cov.participating
+                )
+                result.add(
+                    f"PLAN.md CFC-{cov.cfc_number} coverage",
+                    True,
+                    f"fully-bound: {state_summary}",
+                )
+            # `unbound` produces no validator row — work hasn't started on
+            # any participant; informational noise the PLAN author doesn't
+            # need to see while drafting other sections.
+
+        # Orphan-tag scan: each orphan emits a WARN. The validator surfaces
+        # them as actionable; the user fixes via the remediation paths in
+        # workflow-overview.md § Bound-Spec Immutability.
+        for orphan in orphans:
+            result.add(
+                f"PLAN.md orphan-tag scan: {orphan.subtype}",
+                False,
+                orphan.message,
+                warn_only=True,
+            )
+
+
 def validate_plan(
     blueprint_dir: Path, project_root: Optional[Path] = None
 ) -> ValidationResult:
@@ -1781,95 +1896,10 @@ def validate_plan(
             False,
         )
 
-    # ## Cross-Feature Contracts is optional — absence is not a failure.
-    # When present, validate field structure, regex, uniqueness, and emit
-    # the owner-silent Enforcement WARN.
-    cfc_entries = validate_cfc_section(content, result)
-
-    # `**Implemented by:**` — optional per-feature cross-project delegation field
-    # (CPD I8). Validate every occurrence positionally (malformed value /
-    # duplicate-in-block FAILs); absence and preamble occurrences are silent.
-    _parse_implemented_by(content, result)
-
-    # Cross-artifact CFC checks (coverage walk + orphan-tag scan). specs/ is
-    # walked unconditionally — even a PLAN with no CFCs must be scanned for
-    # orphan [CFC-N] tags (it may have removed its CFCs and left orphans behind).
-    # ONE walk of specs/ (`_classified_spec_entries`) feeds BOTH the SpecState
-    # classification AND the malformed-dirname WARNs, so each entry is listed and
-    # classified once (it was iterated/classified twice before).
-    # Resolve the specs/ walk root through the shared marker-walk (honoring an
-    # explicit --project-root) rather than hard-coding blueprint_dir.parent, which
-    # assumed specs/ is a sibling of blueprint/ and silently produced an empty
-    # walk on a non-sibling layout (e.g. docs/blueprint/ + repo-root specs/) —
-    # audit R3.3. Falls back to blueprint_dir.parent if no marker root is found.
-    walk_root = arch_find_project_root(blueprint_dir, project_root) or blueprint_dir.parent
-    spec_entries = _classified_spec_entries(walk_root)
-    _emit_malformed_dirname_warns(spec_entries, result)
-    # CPD derived-dir exclusion (I10): read the sibling registry ONCE here and
-    # pass it in — never re-read per directory. `_states_from_entries` excludes
-    # derived dirs from coverage; this surfaces the sibling-gated informational
-    # WARN for any derived dir lacking a matching master sibling.
-    derived_registry = project_registry.read_projects_config(walk_root)
-    _emit_derived_dir_warns(spec_entries, derived_registry, walk_root, result)
-    spec_states = _states_from_entries(spec_entries)
-    has_any_cfc_tags = any(
-        s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
-    )
-
-    # Duplicate-feature-dir detection runs ONCE here — OUTSIDE the coverage block
-    # below (which only runs when there is CFC work) — so a non-CFC PLAN with
-    # colliding spec directories still gets the WARN.
-    _emit_duplicate_feature_dir_warns(spec_states, result)
-
-    if cfc_entries or has_any_cfc_tags:
-        prior_hashes = read_cfc_hashes(content)
-        coverages = compute_coverage(cfc_entries, spec_states)
-        orphans = scan_orphan_tags(cfc_entries, spec_states, prior_hashes)
-
-        # Coverage walk: emit a WARN only for `partially-bound`. `fully-bound`
-        # and `unbound` produce no validator-level row — the PLAN author
-        # gets a clean output unless there's actually work to do. (Per P2-16
-        # from the post-implementation review: the previous all-three-states
-        # emission was output noise that obscured real findings.)
-        for cov in coverages:
-            if cov.status == "partially-bound":
-                result.add(
-                    f"PLAN.md CFC-{cov.cfc_number} coverage",
-                    False,
-                    f"partially-bound: "
-                    + ", ".join(
-                        f"F{fid}=[{cov.feature_states.get(fid, '?')}]"
-                        for fid in cov.participating
-                    ),
-                    warn_only=True,
-                )
-            elif cov.status == "fully-bound":
-                # Surface in-flight vs shipped distinction in the detail
-                # string (P3-10) so the PLAN author can judge urgency at a
-                # glance. Emitted as PASS — the binding is complete.
-                state_summary = ", ".join(
-                    f"F{fid}=[{cov.feature_states.get(fid, '?')}]"
-                    for fid in cov.participating
-                )
-                result.add(
-                    f"PLAN.md CFC-{cov.cfc_number} coverage",
-                    True,
-                    f"fully-bound: {state_summary}",
-                )
-            # `unbound` produces no validator row — work hasn't started on
-            # any participant; informational noise the PLAN author doesn't
-            # need to see while drafting other sections.
-
-        # Orphan-tag scan: each orphan emits a WARN. The validator surfaces
-        # them as actionable; the user fixes via the remediation paths in
-        # workflow-overview.md § Bound-Spec Immutability.
-        for orphan in orphans:
-            result.add(
-                f"PLAN.md orphan-tag scan: {orphan.subtype}",
-                False,
-                orphan.message,
-                warn_only=True,
-            )
+    # Cross-artifact CFC validation: section field-structure, `**Implemented
+    # by:**`, the specs/ coverage walk, and the orphan-tag scan (audit R3.2 —
+    # extracted to keep validate_plan's own complexity down).
+    _validate_plan_cfc_coverage(content, result, blueprint_dir, project_root)
 
     validate_resolved(content, "PLAN.md", result)
     validate_panel_review(content, "PLAN.md", result)
@@ -1881,247 +1911,184 @@ def validate_plan(
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Validate project blueprint artifacts.",
-        epilog="Example: python validate_blueprint.py blueprint/",
-    )
-    parser.add_argument(
-        "blueprint_dir",
-        type=Path,
-        help="Path to the blueprint directory (e.g., blueprint/)",
-    )
-    parser.add_argument(
-        "--phase",
-        choices=["scope", "architecture", "plan", "all"],
-        default="all",
-        help="Which phase to validate (default: all existing files)",
-    )
-    # Mode flags are mutually exclusive: each selects a distinct operation, and
-    # argparse rejects any combination (exit 2) rather than silently resolving by
-    # if-ordering (audit I3.2). --force is a modifier of --approve and stays on
-    # the main parser.
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--approve",
-        choices=["scope", "architecture", "plan"],
-        help="Approve a phase document (marks it approved with content hash)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Skip the pre-approval validation gate (use after manually reviewing FAIL items)",
-    )
-    mode_group.add_argument(
-        "--write-arch-config",
-        action="store_true",
-        help="Read the '**Architecture token:**' from ARCHITECTURE.md and persist "
-        "it to <project-root>/.sdd/architecture.json so the declared stack crosses "
-        "the blueprint→SDD seam. Standalone op (does NOT run during --approve and "
-        "touches no content hash).",
-    )
-    parser.add_argument(
-        "--output",
-        choices=["text", "json"],
-        default="text",
-        help="Output format (default: text)",
-    )
-    parser.add_argument(
-        "--project-root",
-        type=Path,
-        default=None,
-        help="Project root for the .sdd/ pending-review marker (default: walk up "
-        "from blueprint_dir)",
-    )
-    mode_group.add_argument(
-        "--decline-pending",
-        action="store_true",
-        help="Clear this blueprint's pending-review obligations — an explicit, "
-        "auditable decision to skip the upstream panel re-review.",
-    )
-    mode_group.add_argument(
-        "--restore-anchor",
-        action="store_true",
-        help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
-        "obligation whose genuine `upstream-panel` tag is already present on an "
-        "archived Trajectory row. Content-attested: clears ONLY when the real tag "
-        "exists (never asserts a panel ran); no marker-cache editing.",
-    )
-    args = parser.parse_args()
+def _handle_decline_pending(blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """`--decline-pending` mode (audit R3.2 — extracted from main).
 
-    blueprint_dir = args.blueprint_dir.resolve()
-    if not blueprint_dir.is_dir():
-        print(f"Error: {blueprint_dir} is not a directory")
-        sys.exit(2)
-
-    # R7 mixed-state surfacing: non-blocking nudge ONLY when a mixed dir is
-    # renamer-fixable (the helper suppresses the nudge on a same-artifact
-    # collision, where the validator is about to FAIL with the ambiguity detail).
-    _warn = mixed_state_warning(str(args.blueprint_dir), blueprint_dir)
-    if _warn:
-        print(_warn)
-
-    project_root = args.project_root.resolve() if args.project_root else None
-    if project_root is not None and not project_root.is_dir():
-        print(f"Error: --project-root {project_root} is not a directory")
-        sys.exit(2)
-
-    # Handle --decline-pending: clear this blueprint's pending obligations (an
-    # auditable user decision, logged to stdout; validator-owned marker lifecycle).
-    if args.decline_pending:
-        root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
-        try:
-            removed = clear_pending_entries_for_prefix(root, bp_rel)
-        except MarkerCorruptError as exc:
-            print(
-                f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
-                f".sdd/pending-review.json manually."
-            )
-            sys.exit(1)
-        if removed:
-            noun = "entry" if len(removed) == 1 else "entries"
-            print(
-                f"Declined upstream panel re-review; cleared {len(removed)} pending "
-                f"{noun}: {', '.join(removed)}"
-            )
-        else:
-            print(f"No pending-review entries found for {blueprint_dir}.")
-        sys.exit(0)
-
-    # Handle --restore-anchor: clear a legacy re-anchored (UNSATISFIABLE)
-    # obligation whose genuine `upstream-panel` tag is already archived.
-    # Content-attested — clears ONLY where the real tag is present.
-    if args.restore_anchor:
-        root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
-        try:
-            restored = restore_anchor_for_prefix(root, bp_rel)
-        except MarkerCorruptError as exc:
-            print(
-                f"Cannot restore: {exc}. The marker is corrupt; inspect or delete "
-                f".sdd/pending-review.json manually."
-            )
-            sys.exit(1)
-        if restored:
-            noun = "obligation" if len(restored) == 1 else "obligations"
-            print(
-                f"Restored anchor; cleared {len(restored)} satisfied {noun} "
-                f"(genuine upstream-panel tag present): {', '.join(restored)}"
-            )
-        else:
-            print(
-                f"No restorable obligations for {blueprint_dir} (none carry a "
-                f"genuine upstream-panel tag yet)."
-            )
-        sys.exit(0)
-
-    # Handle --write-arch-config: carry the blueprint's declared stack across the
-    # blueprint→SDD seam. Standalone and explicit — NOT folded into --approve, so
-    # it never interacts with the PLAN content hash or the CFC cascade. Writes via
-    # the SAME shared writer the SDD side uses (source="blueprint"), to the project
-    # root (parent of blueprint/).
-    if args.write_arch_config:
-        arch_path = resolve_artifact(blueprint_dir, "ARCHITECTURE.md")
-        content = read_file(arch_path)
-        if content is None:
-            print(f"Error: {arch_path} does not exist")
-            sys.exit(2)
-        token = parse_arch_token(content)
-        if token is None:
-            print(
-                "Error: ARCHITECTURE.md has no '**Architecture token:** `<value>`' "
-                "line. Add one under ## Technology Choices (e.g. "
-                "`**Architecture token:** \\`generic\\``)."
-            )
-            sys.exit(2)
-        if token not in KNOWN_ARCH_TOKENS:
-            print(
-                f"Error: architecture token '{token}' is not recognized; "
-                f"must be one of {sorted(KNOWN_ARCH_TOKENS)}."
-            )
-            sys.exit(2)
-        project_root = blueprint_dir.parent
-        written = write_arch_config(
-            project_root,
-            token,
-            KNOWN_ARCH_TOKENS,
-            source="blueprint",
-            detected_from="ARCHITECTURE.md",
+    Clear this blueprint's pending-review obligations — an auditable user decision
+    (logged to stdout), validator-owned marker lifecycle. Returns an exit code.
+    """
+    root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
+    try:
+        removed = clear_pending_entries_for_prefix(root, bp_rel)
+    except MarkerCorruptError as exc:
+        print(
+            f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
+            f".sdd/pending-review.json manually."
         )
-        print(f"Persisted stack '{token}' (from ARCHITECTURE.md) to {written}")
-        sys.exit(0)
+        return 1
+    if removed:
+        noun = "entry" if len(removed) == 1 else "entries"
+        print(
+            f"Declined upstream panel re-review; cleared {len(removed)} pending "
+            f"{noun}: {', '.join(removed)}"
+        )
+    else:
+        print(f"No pending-review entries found for {blueprint_dir}.")
+    return 0
 
-    # Handle --approve
-    if args.approve:
-        file_map = {
-            "scope": "SCOPE.md",
-            "architecture": "ARCHITECTURE.md",
-            "plan": "PLAN.md",
-        }
-        target = resolve_artifact(blueprint_dir, file_map[args.approve])
-        if not target.is_file():
-            print(f"Error: {target} does not exist")
-            sys.exit(2)
 
-        validators = {
-            "scope": validate_scope,
-            "architecture": validate_architecture,
-            "plan": lambda d: validate_plan(d, project_root),
-        }
-        # Compute the pre-approval result once: it drives both the Decision-E
-        # gate and the CFC-drift surfacing below.
-        pre_result = validators[args.approve](blueprint_dir)
+def _handle_restore_anchor(blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """`--restore-anchor` mode (audit R3.2 — extracted from main).
 
-        # Decision E — gate on validation. Approving a structurally-broken
-        # document silently corrupts state and produces a confusing
-        # "approved, but next validate FAILs" 3am scenario. Refuse to stamp
-        # unless validation passes. --force overrides after the user has
-        # read the FAIL items.
-        if not args.force and not pre_result.passed:
-            print(f"Refusing to approve {target.name}: validation FAILed.")
-            print(pre_result.summary())
-            print(
-                f"\nFix the FAIL items above, OR re-run with --force to "
-                f"approve anyway (you take responsibility for the "
-                f"approved-but-invalid state)."
-            )
-            sys.exit(1)
+    Clear a legacy re-anchored (UNSATISFIABLE) obligation whose genuine
+    `upstream-panel` tag is already archived. Content-attested — clears ONLY where
+    the real tag is present. Returns an exit code.
+    """
+    root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
+    try:
+        restored = restore_anchor_for_prefix(root, bp_rel)
+    except MarkerCorruptError as exc:
+        print(
+            f"Cannot restore: {exc}. The marker is corrupt; inspect or delete "
+            f".sdd/pending-review.json manually."
+        )
+        return 1
+    if restored:
+        noun = "obligation" if len(restored) == 1 else "obligations"
+        print(
+            f"Restored anchor; cleared {len(restored)} satisfied {noun} "
+            f"(genuine upstream-panel tag present): {', '.join(restored)}"
+        )
+    else:
+        print(
+            f"No restorable obligations for {blueprint_dir} (none carry a "
+            f"genuine upstream-panel tag yet)."
+        )
+    return 0
 
-        # Surface CFC drift / coverage WARNs BEFORE approve_document refreshes
-        # the per-CFC content-hash baseline (which overwrites the prior state
-        # the orphaned-stale-content scan compares against). These are
-        # warn_only rows, so they did not block the Decision-E gate above —
-        # without this, a clean `--approve plan` would silently drop them and
-        # then erase the drift baseline (CFC D1-2).
-        cfc_warns = [
-            (n, s, d)
-            for (n, s, d) in pre_result.checks
-            if s == "WARN" and ("orphan-tag scan" in n or "CFC" in n)
-        ]
-        if cfc_warns:
-            print(
-                "CFC coverage / drift warnings — review before approving "
-                "(approval (re)stamps the per-CFC content-hash baseline):"
-            )
-            for n, s, d in cfc_warns:
-                print(f"  [{s}] {n}" + (f" — {d}" if d else ""))
-            print()
 
-        try:
-            stamped = approve_document(target, project_root=project_root)
-        except MarkerCorruptError as exc:
-            # The document was stamped (atomic) before restamp_or_suppress hit the
-            # corrupt marker — surface it cleanly instead of a traceback, and exit
-            # non-zero so the operator re-records the obligation (audit R2.6).
-            print(
-                f"WARNING: {target} was stamped, but its re-approval obligation "
-                f"was NOT recorded: {exc}. The .sdd/pending-review.json marker is "
-                f"corrupt (e.g. unresolved git conflict markers). Fix it and "
-                f"re-run --approve so the obligation for this edit is recorded.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        sys.exit(0 if stamped else 1)
+def _handle_write_arch_config(blueprint_dir: Path) -> int:
+    """`--write-arch-config` mode (audit R3.2 — extracted from main).
 
+    Carry the blueprint's declared stack across the blueprint→SDD seam. Standalone
+    and explicit — NOT folded into --approve, so it never interacts with the PLAN
+    content hash or the CFC cascade. Writes via the SAME shared writer the SDD side
+    uses (source="blueprint"), to the project root (parent of blueprint/). Returns
+    an exit code.
+    """
+    arch_path = resolve_artifact(blueprint_dir, "ARCHITECTURE.md")
+    content = read_file(arch_path)
+    if content is None:
+        print(f"Error: {arch_path} does not exist")
+        return 2
+    token = parse_arch_token(content)
+    if token is None:
+        print(
+            "Error: ARCHITECTURE.md has no '**Architecture token:** `<value>`' "
+            "line. Add one under ## Technology Choices (e.g. "
+            "`**Architecture token:** \\`generic\\``)."
+        )
+        return 2
+    if token not in KNOWN_ARCH_TOKENS:
+        print(
+            f"Error: architecture token '{token}' is not recognized; "
+            f"must be one of {sorted(KNOWN_ARCH_TOKENS)}."
+        )
+        return 2
+    project_root = blueprint_dir.parent
+    written = write_arch_config(
+        project_root,
+        token,
+        KNOWN_ARCH_TOKENS,
+        source="blueprint",
+        detected_from="ARCHITECTURE.md",
+    )
+    print(f"Persisted stack '{token}' (from ARCHITECTURE.md) to {written}")
+    return 0
+
+
+def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """`--approve {scope,architecture,plan}` mode (audit R3.2 — extracted from main).
+
+    Gates on the matching phase validator (Decision E), surfaces CFC drift/coverage
+    WARNs before approve_document refreshes the per-CFC baseline, then stamps.
+    Returns an exit code.
+    """
+    file_map = {
+        "scope": "SCOPE.md",
+        "architecture": "ARCHITECTURE.md",
+        "plan": "PLAN.md",
+    }
+    target = resolve_artifact(blueprint_dir, file_map[args.approve])
+    if not target.is_file():
+        print(f"Error: {target} does not exist")
+        return 2
+
+    validators = {
+        "scope": validate_scope,
+        "architecture": validate_architecture,
+        "plan": lambda d: validate_plan(d, project_root),
+    }
+    # Compute the pre-approval result once: it drives both the Decision-E
+    # gate and the CFC-drift surfacing below.
+    pre_result = validators[args.approve](blueprint_dir)
+
+    # Decision E — gate on validation. Approving a structurally-broken
+    # document silently corrupts state and produces a confusing
+    # "approved, but next validate FAILs" 3am scenario. Refuse to stamp
+    # unless validation passes. --force overrides after the user has
+    # read the FAIL items.
+    if not args.force and not pre_result.passed:
+        print(f"Refusing to approve {target.name}: validation FAILed.")
+        print(pre_result.summary())
+        print(
+            f"\nFix the FAIL items above, OR re-run with --force to "
+            f"approve anyway (you take responsibility for the "
+            f"approved-but-invalid state)."
+        )
+        return 1
+
+    # Surface CFC drift / coverage WARNs BEFORE approve_document refreshes
+    # the per-CFC content-hash baseline (which overwrites the prior state
+    # the orphaned-stale-content scan compares against). These are
+    # warn_only rows, so they did not block the Decision-E gate above —
+    # without this, a clean `--approve plan` would silently drop them and
+    # then erase the drift baseline (CFC D1-2).
+    cfc_warns = [
+        (n, s, d)
+        for (n, s, d) in pre_result.checks
+        if s == "WARN" and ("orphan-tag scan" in n or "CFC" in n)
+    ]
+    if cfc_warns:
+        print(
+            "CFC coverage / drift warnings — review before approving "
+            "(approval (re)stamps the per-CFC content-hash baseline):"
+        )
+        for n, s, d in cfc_warns:
+            print(f"  [{s}] {n}" + (f" — {d}" if d else ""))
+        print()
+
+    try:
+        stamped = approve_document(target, project_root=project_root)
+    except MarkerCorruptError as exc:
+        # The document was stamped (atomic) before restamp_or_suppress hit the
+        # corrupt marker — surface it cleanly instead of a traceback, and exit
+        # non-zero so the operator re-records the obligation (audit R2.6).
+        print(
+            f"WARNING: {target} was stamped, but its re-approval obligation "
+            f"was NOT recorded: {exc}. The .sdd/pending-review.json marker is "
+            f"corrupt (e.g. unresolved git conflict markers). Fix it and "
+            f"re-run --approve so the obligation for this edit is recorded.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0 if stamped else 1
+
+
+def _run_validation(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """Default mode: validate the requested phase(s), reconcile pending-review,
+    print the summary (audit R3.2 — extracted from main). Returns an exit code
+    (1 if anything FAILed, else 0)."""
     use_json = args.output == "json"
 
     if not use_json:
@@ -2224,8 +2191,107 @@ def main():
         else:
             print("Some validations failed. See FAIL items above.")
 
-    if not all_passed:
-        sys.exit(1)
+    return 1 if not all_passed else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Validate project blueprint artifacts.",
+        epilog="Example: python validate_blueprint.py blueprint/",
+    )
+    parser.add_argument(
+        "blueprint_dir",
+        type=Path,
+        help="Path to the blueprint directory (e.g., blueprint/)",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=["scope", "architecture", "plan", "all"],
+        default="all",
+        help="Which phase to validate (default: all existing files)",
+    )
+    # Mode flags are mutually exclusive: each selects a distinct operation, and
+    # argparse rejects any combination (exit 2) rather than silently resolving by
+    # if-ordering (audit I3.2). --force is a modifier of --approve and stays on
+    # the main parser.
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--approve",
+        choices=["scope", "architecture", "plan"],
+        help="Approve a phase document (marks it approved with content hash)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the pre-approval validation gate (use after manually reviewing FAIL items)",
+    )
+    mode_group.add_argument(
+        "--write-arch-config",
+        action="store_true",
+        help="Read the '**Architecture token:**' from ARCHITECTURE.md and persist "
+        "it to <project-root>/.sdd/architecture.json so the declared stack crosses "
+        "the blueprint→SDD seam. Standalone op (does NOT run during --approve and "
+        "touches no content hash).",
+    )
+    parser.add_argument(
+        "--output",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help="Project root for the .sdd/ pending-review marker (default: walk up "
+        "from blueprint_dir)",
+    )
+    mode_group.add_argument(
+        "--decline-pending",
+        action="store_true",
+        help="Clear this blueprint's pending-review obligations — an explicit, "
+        "auditable decision to skip the upstream panel re-review.",
+    )
+    mode_group.add_argument(
+        "--restore-anchor",
+        action="store_true",
+        help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
+        "obligation whose genuine `upstream-panel` tag is already present on an "
+        "archived Trajectory row. Content-attested: clears ONLY when the real tag "
+        "exists (never asserts a panel ran); no marker-cache editing.",
+    )
+    args = parser.parse_args()
+
+    blueprint_dir = args.blueprint_dir.resolve()
+    if not blueprint_dir.is_dir():
+        print(f"Error: {blueprint_dir} is not a directory")
+        sys.exit(2)
+
+    # R7 mixed-state surfacing: non-blocking nudge ONLY when a mixed dir is
+    # renamer-fixable (the helper suppresses the nudge on a same-artifact
+    # collision, where the validator is about to FAIL with the ambiguity detail).
+    _warn = mixed_state_warning(str(args.blueprint_dir), blueprint_dir)
+    if _warn:
+        print(_warn)
+
+    project_root = args.project_root.resolve() if args.project_root else None
+    if project_root is not None and not project_root.is_dir():
+        print(f"Error: --project-root {project_root} is not a directory")
+        sys.exit(2)
+
+    # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,
+    # so at most one of these is set; each handler returns a process exit code.
+    # The default (no mode flag) runs validation.
+    if args.decline_pending:
+        sys.exit(_handle_decline_pending(blueprint_dir, project_root))
+    if args.restore_anchor:
+        sys.exit(_handle_restore_anchor(blueprint_dir, project_root))
+    if args.write_arch_config:
+        sys.exit(_handle_write_arch_config(blueprint_dir))
+    if args.approve:
+        sys.exit(_handle_approve(args, blueprint_dir, project_root))
+
+    sys.exit(_run_validation(args, blueprint_dir, project_root))
 
 
 if __name__ == "__main__":

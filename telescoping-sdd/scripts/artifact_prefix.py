@@ -24,6 +24,12 @@ import os
 import sys
 from pathlib import Path
 
+# sys.path bootstrap — shared-script ENTRY POINT (audit R3.5: one idiom across
+# entry points). This script lives in telescoping-sdd/scripts/ alongside the
+# shared helpers it imports; nothing else bootstraps it, so it puts its own dir
+# on sys.path via a guarded insert(0) — taking precedence so the imports resolve.
+# (Skill validators under skills/*/scripts/ use a guarded APPEND instead, to avoid
+# displacing the plugin runtime's sys.path[0].)
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))

@@ -57,8 +57,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.10.0"
-CHANGELOG_FIRST_ENTRY = "## 2.10.0 — Audit remediation wave 3.5a (shared approve_document core)"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.11.0"
+CHANGELOG_FIRST_ENTRY = "## 2.11.0 — Audit remediation final cleanup (R3.2, R3.5, I3.1/I3.4/I3.5/I3.6)"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):

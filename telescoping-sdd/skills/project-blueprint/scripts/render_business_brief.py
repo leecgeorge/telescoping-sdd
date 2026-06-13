@@ -14,11 +14,20 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# sys.path bootstrap — skill entry point / renderer (audit R3.5: one idiom across
+# entry points). Put the shared helpers (telescoping-sdd/scripts/) AND this
+# script's own dir (for the validate_blueprint sibling import) on sys.path via
+# idempotent guarded appends. Append, never insert(0): displacing the caller's
+# sys.path[0] under the plugin runtime breaks resolution (the textual append/
+# insert contract is pinned by a regression test). The `not in` guards stop
+# duplicate entries on repeated imports.
 _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 _VALIDATE_DIR = Path(__file__).resolve().parent
 
-sys.path.append(str(_SHARED_SCRIPTS))
-sys.path.append(str(_VALIDATE_DIR))
+if str(_SHARED_SCRIPTS) not in sys.path:
+    sys.path.append(str(_SHARED_SCRIPTS))
+if str(_VALIDATE_DIR) not in sys.path:
+    sys.path.append(str(_VALIDATE_DIR))
 
 import argparse  # noqa: E402
 import base64  # noqa: E402
@@ -32,7 +41,11 @@ from datetime import datetime, timezone  # noqa: E402
 from html.parser import HTMLParser  # noqa: E402
 from urllib.parse import urlparse  # noqa: E402
 
-from blueprint_common import verify_content_hash_any_basis  # noqa: E402
+from blueprint_common import (  # noqa: E402
+    CONTENT_HASH_HEX,
+    INLINE_TAG_FAMILIES_RE,
+    verify_content_hash_any_basis,
+)
 from validate_blueprint import approval_hash, has_approval  # noqa: E402
 
 
@@ -171,8 +184,12 @@ _FILTER_PANEL_REVIEW_SECTION = re.compile(
 _FILTER_APPROVAL_SECTION = re.compile(
     r"^## Approval[ \t]*\r?$.*?(?=^## |\Z)", re.MULTILINE | re.DOTALL
 )
-_FILTER_INLINE_TOKENS = re.compile(r" ?\[(SEAL|DEF|SCOPE|ARCH|CFC)-\d+\]")
-_FILTER_CONTENT_HASH = re.compile(r"\*\*Content Hash:\*\*[ \t]*`[0-9a-f]{16}`")
+# Allowlist + hash width sourced from the shared grammar (I3.5) so a new tag
+# family or a change to the content-hash width can't leave a stray token / hash
+# leaking into the stakeholder HTML. INLINE_TAG_FAMILIES_RE and CONTENT_HASH_HEX
+# both live in blueprint_common/content_hash; see test_filter_constants_sourced.
+_FILTER_INLINE_TOKENS = re.compile(r" ?\[(%s)-\d+\]" % INLINE_TAG_FAMILIES_RE)
+_FILTER_CONTENT_HASH = re.compile(r"\*\*Content Hash:\*\*[ \t]*`%s`" % CONTENT_HASH_HEX)
 
 
 def filter_content(content: str) -> str:

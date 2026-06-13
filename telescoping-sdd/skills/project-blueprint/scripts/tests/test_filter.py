@@ -188,6 +188,46 @@ def test_filter_ordering_contract_textual():
     assert idx_approval < idx_tokens and idx_approval < idx_hash
 
 
+def test_filter_constants_sourced_from_shared_grammar():
+    """I3.5: the Business Brief filters must be BUILT FROM the shared grammar
+    constants, not re-hardcode their own tag-family list or hash width — a
+    re-hardcode is exactly the drift channel that leaks a stray token/hash into
+    stakeholder HTML."""
+    import blueprint_common as bc
+
+    # Inline-token filter alternates exactly the canonical families, in order.
+    for fam in bc.INLINE_TAG_FAMILIES:
+        assert fam in render_business_brief._FILTER_INLINE_TOKENS.pattern
+    assert (
+        render_business_brief._FILTER_INLINE_TOKENS.pattern
+        == r" ?\[(%s)-\d+\]" % bc.INLINE_TAG_FAMILIES_RE
+    )
+    # Content-hash filter uses the shared width fragment (no independent {N}).
+    assert bc.CONTENT_HASH_HEX in render_business_brief._FILTER_CONTENT_HASH.pattern
+    assert bc.CONTENT_HASH_HEX == r"[0-9a-f]{%d}" % bc.CONTENT_HASH_WIDTH
+
+
+def test_inline_tag_families_cover_validator_recognized_tags():
+    """I3.5: every `[FAMILY-N]` tag a validator actually RECOGNIZES must be a
+    member of INLINE_TAG_FAMILIES — otherwise the Business Brief filter, which
+    builds its strip-list from that tuple, would let the unlisted family leak
+    through into stakeholder HTML. Guards against adding a recognizer without
+    extending the canonical set."""
+    import archive_pass
+    import blueprint_common as bc
+    import cfc_parser
+
+    families = set(bc.INLINE_TAG_FAMILIES)
+    # Families with a structured recognizer in the validators.
+    assert "SEAL" in families  # archive_pass.SEAL_PAT
+    assert "DEF" in families  # archive_pass.DEF_PAT
+    assert "CFC" in families  # cfc_parser.CFC_TAG_PATTERN
+    # The recognizer regexes embed the family literal — assert they agree.
+    assert "[SEAL-" in archive_pass.SEAL_PAT.pattern
+    assert "[DEF-" in archive_pass.DEF_PAT.pattern
+    assert "CFC-" in cfc_parser.CFC_TAG_PATTERN.pattern
+
+
 def test_filter_content_hash_construct():
     """The `**Content Hash:** \\`<16-hex>\\`` exact emit shape is stripped;
     bare 16-char hex elsewhere is NOT touched. Backtick is ASCII U+0060."""

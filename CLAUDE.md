@@ -104,7 +104,7 @@ python telescoping-sdd/skills/project-blueprint/scripts/validate_blueprint.py bl
 .venv/bin/pytest telescoping-sdd/scripts/tests/test_archive_pass.py::test_mode_flags_are_mutually_exclusive -q  # single test
 ```
 
-Tests live in two places: `telescoping-sdd/scripts/tests/` covers shared scripts (`archive_pass.py`, `blueprint_common.py`), fixture-manifest consistency, and skill→subagent resolution. Per-skill tests live under `telescoping-sdd/skills/project-blueprint/scripts/tests/`. There is no pytest config file and no CI — tests are run manually.
+Tests live in three places: `telescoping-sdd/scripts/tests/` covers shared scripts (`archive_pass.py`, `blueprint_common.py`), fixture-manifest consistency, and skill→subagent resolution; per-skill tests live under `telescoping-sdd/skills/project-blueprint/scripts/tests/` **and** `telescoping-sdd/skills/spec-driven-dev/scripts/tests/`. There is no pytest config file. CI runs the full suite on Python 3.9 + 3.12 via `.github/workflows/tests.yml`; you can also run it manually with the `.venv/bin/pytest telescoping-sdd/ -q` invocation above.
 
 ## Loading the Plugin
 
