@@ -48,6 +48,7 @@ from blueprint_common import (  # noqa: E402
     Severity,
     ValidationResult,
     approval_section_bounds,
+    approve_document as _approve_document_core,
     changed_since_stamp,
     check_approval,
     check_previous_phase_approved,
@@ -361,139 +362,19 @@ def approve_document(
     task_tick: bool = False,
     project_root: Optional[Path] = None,
 ) -> bool:
-    """Mark a document as approved by checking the box and writing the content hash.
+    """Mark a document as approved (thin wrapper over the shared core, audit 3.5a).
 
-    Returns True when the document was actually stamped, False when approval
-    could not be applied (no `## Approval` section, or its checkbox / Content-Hash
-    line is missing so the substitutions would silently no-op). Callers MUST
-    propagate a False return as a non-zero exit — stamping nothing while exiting
-    0 is the silent-corruption failure this guards against (audit R1.5).
-
-    Writes are atomic (temp-file + os.replace) to guard against partial-state
-    corruption on Ctrl-C / disk-full / process kill mid-write.
-
-    On a CHANGED-document re-stamp (R1/R2 — the freshly-computed hash differs
-    from the stored one on a previously-approved doc) this prints the
-    REAPPROVAL_REMINDER and writes a `.sdd/pending-review.json` marker entry,
-    UNLESS ``task_tick`` is set (the Phase-4 task-tick carve-out, which
-    suppresses both and prints a stdout audit line). Keyword-only params with
-    safe defaults keep existing 1-arg callers unaffected.
+    Delegates to ``blueprint_common.approve_document``. The SDD side has no
+    producer hook (the PLAN.md per-CFC hash refresh is blueprint-only), so this
+    passes ``content_transform=None`` and forwards the Phase-4 ``task_tick``
+    carve-out. Signature is preserved byte-for-byte so all in-process callers and
+    tests keep working; see the core for the full contract (R1.5 / R2.6).
     """
-    original_content = file_path.read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
-    # Read the prior stored hash BEFORE the trim/rewrite mutates the file (DEF-06).
-    stored_hash = read_stored_hash(original_content)
-
-    # Trim the `### Trajectory` table to the latest 15 data rows BEFORE
-    # computing the document hash — the trimmed table is part of the
-    # approved content. Older rows are replaced with a single elided
-    # summary row at the top of the data section; re-approval merges
-    # the existing elided count with new elisions.
-    content = trim_trajectory_table(original_content)
-    content_trimmed = content  # post-trim (no CFC refresh on the spec side)
-
-    # Compute hash before modifying approval section
-    content_hash = compute_content_hash(content)
-
-    # Update the checkbox, the Content-Hash line, AND the `- **Hash basis:** v2`
-    # bullet — all scoped to the `## Approval` section slice (R8/AD10). The prior
-    # document-wide `re.sub` would silently rewrite a body-prose example of those
-    # lines in a self-documenting artifact; scoping via the shared
-    # approval_section_bounds fixes that and matches the blueprint validator.
-    approval = approval_section_bounds(content)
-    if approval is None:
-        # No `## Approval` section -> nothing to stamp. Fail loudly rather than
-        # writing the file back unchanged and printing a false "Approved:" line.
-        print(
-            f"Error: {file_path} has no `## Approval` section; cannot approve.",
-            file=sys.stderr,
-        )
-        return False
-    body_start, body_end = approval
-    approval_body = content[body_start:body_end]
-    approval_body = re.sub(
-        r"- \[ \] Approved to proceed",
-        "- [x] Approved to proceed",
-        approval_body,
+    return _approve_document_core(
+        file_path,
+        task_tick=task_tick,
+        project_root=project_root,
     )
-    approval_body = re.sub(
-        r"\*\*Content Hash:\*\*\s*`[^`]*`",
-        f"**Content Hash:** `{content_hash}`",
-        approval_body,
-    )
-    approval_body = _upsert_basis_line(approval_body)
-
-    # Verify the substitutions actually landed before writing. A `## Approval`
-    # section whose checkbox or Content-Hash line is missing/mangled makes the
-    # re.subs above silently no-op; without this guard the file would be
-    # rewritten without a real stamp and "Approved:" would print a false success
-    # (audit R1.5). Checkbox check accepts an already-checked box (re-stamp).
-    checkbox_ok = "[x] Approved to proceed" in approval_body
-    hash_ok = f"**Content Hash:** `{content_hash}`" in approval_body
-    if not (checkbox_ok and hash_ok):
-        missing = []
-        if not checkbox_ok:
-            missing.append("a `- [ ] Approved to proceed` checkbox")
-        if not hash_ok:
-            missing.append("a `- **Content Hash:** `...`` line")
-        print(
-            f"Error: {file_path}'s `## Approval` section is missing "
-            f"{' and '.join(missing)}; cannot approve (nothing stamped).",
-            file=sys.stderr,
-        )
-        return False
-    content = content[:body_start] + approval_body + content[body_end:]
-
-    # Atomic write: temp-file then os.replace. The temp file lives in the
-    # same directory as the target so os.replace is atomic on POSIX. On
-    # failure the temp file is removed; the original target stays intact.
-    # The temp-file path is appended to the re-raised exception so
-    # cross-mount (EXDEV) or permission errors point at a real artifact
-    # (per the light-touch verification pass, critic finding #3).
-    tmp = file_path.with_suffix(file_path.suffix + ".tmp")
-    tmp_removed = False
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, file_path)
-    except Exception as exc:
-        try:
-            tmp.unlink(missing_ok=True)
-            tmp_removed = True
-        except Exception:
-            pass
-        tmp_status = "removed" if tmp_removed else f"left at {tmp}"
-        exc.args = (
-            *exc.args,
-            f"atomic write to {file_path} failed; temp file {tmp_status}",
-        )
-        raise
-    print(f"Approved: {file_path} (hash: {content_hash})")
-
-    # R1/R2: changed-document re-stamp handling (printed AFTER the Approved line).
-    if task_tick:
-        # Phase-4 task-tick carve-out (DEF-01/RI-11): suppress reminder + marker.
-        # v1-posture: the bypass is stdout-audited + fail-closed (absent flag ->
-        # the gate fires). A git-durable Trajectory tag is a v2 enhancement, out
-        # of v1 scope.
-        print(
-            f"task-tick: pending-review suppressed for {file_path} "
-            f"(Phase-4 carve-out)"
-        )
-        return True
-    root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
-    # restamp_or_suppress may raise MarkerCorruptError (strict marker read) AFTER
-    # the document is already stamped. approve_document lets it propagate so
-    # in-process callers see the failure; the CLI --approve branch catches it for
-    # a clean "stamped, obligation NOT recorded" exit rather than a traceback
-    # (audit R2.6).
-    restamp_or_suppress(
-        content_hash,
-        stored_hash=stored_hash,
-        original_content=original_content,
-        content_trimmed=content_trimmed,
-        marker_root=root,
-        doc_rel=doc_rel,
-    )
-    return True
 
 
 # check_previous_phase_approved is imported from blueprint_common (audit R2.1);

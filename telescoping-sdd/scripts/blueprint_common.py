@@ -474,6 +474,136 @@ def check_previous_phase_approved(
         )
 
 
+def _atomic_write(target: Path, content: str) -> None:
+    """Write `content` to `target` atomically via temp-file + os.replace.
+
+    Guards against partial-state corruption on Ctrl-C / disk-full / process kill
+    mid-write. The temp file lives beside the target (so os.replace is atomic on
+    POSIX); on failure it is removed and the original is untouched. The temp path
+    is appended to the re-raised exception so cross-mount (EXDEV) / permission
+    errors point at a real artifact.
+    """
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp_removed = False
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+            tmp_removed = True
+        except Exception:
+            pass
+        tmp_status = "removed" if tmp_removed else f"left at {tmp}"
+        exc.args = (*exc.args, f"atomic write to {target} failed; temp file {tmp_status}")
+        raise
+
+
+def approve_document(
+    file_path: Path,
+    *,
+    task_tick: bool = False,
+    project_root: "Optional[Path]" = None,
+    content_transform=None,
+) -> bool:
+    """Shared approve_document core (audit 3.5a) — both validators wrap this.
+
+    Marks a document approved: trims the Trajectory table, optionally applies a
+    PRODUCER hook to the trimmed content (`content_transform(content, file_path)`
+    — the blueprint side refreshes PLAN.md's per-CFC hash sub-block here; the SDD
+    side passes None), computes the content hash, scopes the checkbox / Content-
+    Hash / Hash-basis rewrites to the `## Approval` slice, verifies they landed
+    (R1.5), writes atomically, prints `Approved:`, and on a CHANGED re-stamp calls
+    restamp_or_suppress — UNLESS the CONSUMER flag `task_tick` is set (the SDD
+    Phase-4 carve-out, which suppresses the marker and prints an audit line).
+
+    Returns True when stamped, False when approval could not be applied (no
+    `## Approval` section, or its checkbox / Content-Hash line is missing so the
+    substitutions would silently no-op). Callers MUST propagate a False return as
+    a non-zero exit — stamping nothing while exiting 0 is the silent-corruption
+    failure this guards against (R1.5). restamp_or_suppress may raise
+    MarkerCorruptError AFTER the stamp; this lets it propagate so in-process
+    callers see it (the CLI --approve branches catch it for a clean exit, R2.6).
+    """
+    original_content = file_path.read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
+    # Read the prior stored hash BEFORE the trim/transform mutates content (DEF-06).
+    stored_hash = read_stored_hash(original_content)
+
+    # Trim the `### Trajectory` table to the latest rows BEFORE hashing — the
+    # trimmed table is part of the approved content.
+    content = trim_trajectory_table(original_content)
+    content_trimmed = content  # post-trim, pre-transform: the migration baseline
+
+    # Producer hook (e.g. PLAN.md per-CFC hash refresh) applied post-trim, pre-hash
+    # so the refreshed sub-block is part of the document-level hash.
+    if content_transform is not None:
+        content = content_transform(content, file_path)
+
+    content_hash = compute_content_hash(content)
+
+    # Checkbox + Content-Hash + `- **Hash basis:** v2`, scoped to the `## Approval`
+    # slice via the shared approval_section_bounds (R8/AD10) — a document-wide
+    # re.sub would rewrite a body-prose example of those lines.
+    approval = approval_section_bounds(content)
+    if approval is None:
+        print(
+            f"Error: {file_path} has no `## Approval` section; cannot approve.",
+            file=sys.stderr,
+        )
+        return False
+    body_start, body_end = approval
+    approval_body = content[body_start:body_end]
+    approval_body = re.sub(
+        r"- \[ \] Approved to proceed", "- [x] Approved to proceed", approval_body
+    )
+    approval_body = re.sub(
+        r"\*\*Content Hash:\*\*\s*`[^`]*`",
+        f"**Content Hash:** `{content_hash}`",
+        approval_body,
+    )
+    approval_body = _upsert_basis_line(approval_body)
+
+    # Verify the substitutions landed before writing — a missing/mangled checkbox
+    # or Content-Hash line makes the re.subs no-op, which would stamp nothing yet
+    # print a false success (R1.5). Accepts an already-checked box (re-stamp).
+    checkbox_ok = "[x] Approved to proceed" in approval_body
+    hash_ok = f"**Content Hash:** `{content_hash}`" in approval_body
+    if not (checkbox_ok and hash_ok):
+        missing = []
+        if not checkbox_ok:
+            missing.append("a `- [ ] Approved to proceed` checkbox")
+        if not hash_ok:
+            missing.append("a `- **Content Hash:** `...`` line")
+        print(
+            f"Error: {file_path}'s `## Approval` section is missing "
+            f"{' and '.join(missing)}; cannot approve (nothing stamped).",
+            file=sys.stderr,
+        )
+        return False
+    content = content[:body_start] + approval_body + content[body_end:]
+
+    _atomic_write(file_path, content)
+    print(f"Approved: {file_path} (hash: {content_hash})")
+
+    if task_tick:
+        # SDD Phase-4 task-tick carve-out (DEF-01/RI-11): suppress reminder + marker.
+        print(
+            f"task-tick: pending-review suppressed for {file_path} "
+            f"(Phase-4 carve-out)"
+        )
+        return True
+    root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
+    restamp_or_suppress(
+        content_hash,
+        stored_hash=stored_hash,
+        original_content=original_content,
+        content_trimmed=content_trimmed,
+        marker_root=root,
+        doc_rel=doc_rel,
+    )
+    return True
+
+
 def is_shipped_from_contents(
     spec_content: Optional[str],
     design_content: Optional[str],
