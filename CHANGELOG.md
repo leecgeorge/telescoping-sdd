@@ -2,6 +2,18 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.6.0 — Audit remediation wave 3 (validator consolidation)
+Structural dedup of the two validators, all behavior-preserving except where a bug was fixed. No artifact-format or `.sdd/` schema change.
+
+- **Duplicated validator logic consolidated (R2.1):** `check_approval`, `_resolve_marker_root_and_key`, and `check_previous_phase_approved` were near-byte-identical copies in both validators (the "duplicate logic" drift channel that produced the R10 divergence). They now live in `blueprint_common`, imported by both; `check_previous_phase_approved` takes the per-skill phase ordering as a parameter. `validate_spec` also drops its byte-identical `read_file` / `has_section` / TBD / UNCHECKED / UNRESOLVED copies. Net −61 lines; a contract test pins both validators to the single implementation.
+- **Cross-skill seam grammars moved into `cfc_parser` (R2.3):** the `**PLAN feature identifier:**` line and the tasks-checkbox `[CFC-N]` binding were compiled as separate byte-identical copies in each validator with no symmetry test. Both now import the single `cfc_parser` object. A new shared `feature_breakdown_numbers()` (scoped to `## Feature Breakdown`) is the one resolver for "which features exist", used by the consumer's identifier resolution and all five producer feature operations — closing the producer/consumer scoping mismatch where a feature defined outside Feature Breakdown validated clean on the producer but broke every consuming spec.
+- **CLI dispatch now tested (R2.2):** the `main()` argparse-to-function dispatch had zero coverage. New `test_cli_dispatch.py` pins `validate_blueprint --write-arch-config` (success + 3 error exits), `--decline-pending`, `--restore-anchor`, and `validate_spec --set-language` / `--decline-pending` / `--restore-anchor`.
+- **Regex-fragility bugs (R2.4):** `has_section` matched the section name anywhere in a heading, so a required `Goals` section was satisfied by an unrelated `## Non-Goals` heading — now anchored to the start of the heading text. Three checkbox char classes accepted only lowercase `[ x]` (a task/criterion ticked `[X]` was uncounted) — unified to `[ xX]`.
+- **Transactional `--approve` on a corrupt marker (R2.6):** a CHANGED re-stamp whose obligation could not be recorded because `.sdd/pending-review.json` is corrupt raised an uncaught traceback AFTER the document was stamped, silently dropping the obligation. The CLI `--approve` branch now catches `MarkerCorruptError`, prints a loud "stamped, but its re-approval obligation was NOT recorded" warning, and exits non-zero (`approve_document` still raises for in-process callers).
+- **archive_pass Pass-parsing aligned with the shared reader (R2.7):** archive_pass — the sole writer of the Trajectory table the validators read — computed its next-pass number with `str.isdigit()` + direct `r["Pass"]` indexing, the exact pattern `_is_ascii_int` was written to replace. A Unicode-digit Pass cell (`²`) crashed `int()` and a renamed header `KeyError`'d; both now skip gracefully, matching the reader.
+
+Deferred to a later wave (higher-risk, noted in each commit): the ~12 unanchored section-body extractors and approval-read scoping (R2.4); surfacing rename-stranded marker keys (R2.6); the fence-aware locator swap and lossy Sealed/Deferred rewrite in archive_pass (R2.7).
+
 ## 2.5.0 — Audit remediation (correctness, installed-product, and prose fixes)
 Remediation of an external codebase audit, in two waves. Every fix ships with tests; the suite is now CI-gated (see below).
 

@@ -142,6 +142,28 @@ def test_archive_writes_utf8_atomically(tmp_path):
     assert not (tmp_path / "spec.md.tmp").exists()
 
 
+def test_archive_handles_unicode_digit_pass_without_crash(tmp_path):
+    """R2.7: a Trajectory row whose Pass cell is a non-ASCII digit ('²') must not
+    crash next-pass computation (str.isdigit() is True for it but int() raises).
+    The writer now uses _is_ascii_int — matching the hash/anchor reader — so the
+    Unicode-digit row is skipped and next pass = max(ASCII passes) + 1."""
+    unicode_row = {
+        "Pass": "²", "Date": "2026-05-15", "HIGHs": "0", "Regressions": "0",
+        "Addressed": "0", "Deferred": "0", "Sealed": "0", "Notes": "weird",
+    }
+    ascii_row = _traj_row(3, highs=0)
+    artifact = _artifact_with_trajectory(
+        tmp_path, [unicode_row, ascii_row],
+        latest_rows="| [MED] | pragmatist | minor | Addressed | fixed |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    text = artifact.read_text(encoding="utf-8")
+    # The appended row is pass 4 (max ASCII 3 + 1), not a crash or pass derived
+    # from the Unicode-digit row.
+    assert "| 4 " in text
+
+
 def test_normal_pass_marks_convergence(tmp_path):
     """A NORMAL pass with zero HIGH concerns gets 'converged (0 HIGH)' in Notes."""
     artifact = _artifact_with_latest(

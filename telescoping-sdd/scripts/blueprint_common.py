@@ -18,6 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, Optional
 
+# arch_config is a leaf module (no blueprint_common dependency), so this import
+# is one-directional. Used by the shared _resolve_marker_root_and_key (R2.1).
+from arch_config import find_project_root as arch_find_project_root
+
 # ---------------------------------------------------------------------------
 # Regex constants
 # ---------------------------------------------------------------------------
@@ -107,9 +111,17 @@ class ValidationResult:
 
 
 def has_section(content: str, section_name: str) -> bool:
-    """True if content contains the section name as a heading or bold label."""
+    """True if content contains the section name as a heading or bold label.
+
+    The heading match anchors the name to the START of the heading text (after
+    the `#`s), with a trailing word boundary. The prior `^#+\\s+.*<name>` allowed
+    the name anywhere in the heading, so a required `Goals` section was satisfied
+    by an unrelated `## Non-Goals` heading (audit R2.4). The bold fallback already
+    anchors the `**` immediately before the name, so `**Non-Goals**` does not
+    satisfy `Goals`.
+    """
     heading = re.compile(
-        rf"^#+\s+.*{re.escape(section_name)}", re.MULTILINE | re.IGNORECASE
+        rf"^#+\s+{re.escape(section_name)}\b", re.MULTILINE | re.IGNORECASE
     )
     bold = re.compile(rf"\*\*{re.escape(section_name)}", re.IGNORECASE)
     return bool(heading.search(content) or bold.search(content))
@@ -552,6 +564,129 @@ def read_file(path: Path) -> Optional[str]:
     if path.is_file():
         return path.read_text(encoding="utf-8-sig")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Shared validator helpers (audit R2.1)
+#
+# check_approval, _resolve_marker_root_and_key, and check_previous_phase_approved
+# were near-byte-identical copies in both validate_blueprint.py and
+# validate_spec.py — the "duplicate logic" drift channel the audit flagged. They
+# live here now, imported by both; check_previous_phase_approved takes the
+# per-skill phase ordering as a parameter (the sole real difference).
+# ---------------------------------------------------------------------------
+
+
+def check_approval(content: str, filename: str, result: "ValidationResult") -> bool:
+    """Check if a document is approved and the approval is still valid.
+
+    Returns True if the document is approved and its stored hash matches.
+    """
+    if not _APPROVAL_HEADER.search(content):
+        result.add(f"{filename} has Approval section", False, "Missing ## Approval section")
+        return False
+
+    result.add(f"{filename} has Approval section", True)
+
+    is_approved = bool(_APPROVAL_CHECKBOX.search(content))
+    result.add(f"{filename} is approved", is_approved)
+
+    if not is_approved:
+        return False
+
+    hash_match = APPROVAL_HASH_LINE_STRICT.search(content)
+    if not hash_match:
+        result.add(f"{filename} approval hash present", False, "No content hash found")
+        return False
+
+    stored_hash = hash_match.group(1)
+    hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
+    if (
+        not hashes_match
+        and stored_hash != "pending"
+        and read_hash_basis(content) == "v1"
+        and is_basis_migration_only(
+            original_content=content,
+            stored_hash=stored_hash,
+            content_trimmed=trim_trajectory_table(content),
+        )
+    ):
+        # R4: a v1-basis artifact whose ONLY change is the basis (no substantive
+        # edit) is a MIGRATION — emit the distinguishable HASH-BASIS-MIGRATION FAIL.
+        # A genuine edit to a v1 artifact falls through to the normal stale FAIL
+        # below (its --approve WILL create a marker, so the migration message —
+        # which promises none — must not fire for it).
+        result.add(f"{filename} hash basis is current", False, HASH_BASIS_MIGRATION_MSG)
+        return False
+    result.add(
+        f"{filename} has not been modified since approval",
+        hashes_match,
+        f"Stored: {stored_hash}, Current: {compute_content_hash(content)}"
+        if not hashes_match
+        else "",
+    )
+    return hashes_match
+
+
+def _resolve_marker_root_and_key(
+    path: Path, project_root: Optional[Path]
+) -> "tuple[Path, str]":
+    """Resolve the `.sdd/` marker root and `path`'s project-root-relative key.
+
+    Uses `project_root` when given, else walks up from `path` via
+    `arch_find_project_root`. Write-side containment guard: if `path` is NOT
+    under the resolved root (a misconfigured `--project-root` that isn't an
+    ancestor would otherwise yield a `../…` key that reconcile permanently
+    rejects -> stuck-pending deadlock), fall back to walking up from `path`
+    (guaranteed an ancestor) and WARN.
+    """
+    start = path if path.is_dir() else path.parent
+    root = (
+        project_root if project_root is not None else arch_find_project_root(start)
+    )
+    rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
+    if rel.startswith("..") or os.path.isabs(rel):
+        print(
+            f"WARNING: project root {root} is not an ancestor of {path}; "
+            f"resolving the .sdd/ marker root by walking up from the document "
+            f"instead (ignoring the supplied root for the marker).",
+            file=sys.stderr,
+        )
+        root = arch_find_project_root(start)
+        rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
+    return Path(root), rel
+
+
+def check_previous_phase_approved(
+    target_dir: Path,
+    current_phase: str,
+    result: "ValidationResult",
+    phase_order: dict,
+) -> None:
+    """Verify the previous phase's document is approved before this phase.
+
+    `phase_order` maps each phase to its predecessor's artifact filename (e.g.
+    `{"design": "spec.md", "tasks": "design.md"}` for SDD, or
+    `{"architecture": "SCOPE.md", "plan": "ARCHITECTURE.md"}` for blueprint) —
+    the sole per-skill difference, so it is a parameter rather than a fork.
+    """
+    prev_file = phase_order.get(current_phase)
+    if prev_file is None:
+        return  # first phase has no predecessor
+
+    prev_path = resolve_artifact(target_dir, prev_file)
+    prev_content = read_file(prev_path)
+    if prev_content is None:
+        result.add(f"Previous phase ({prev_file}) exists", False)
+        return
+
+    approved = check_approval(prev_content, f"previous phase ({prev_file})", result)
+    if not approved:
+        result.add(
+            f"Previous phase ({prev_file}) approved before this phase",
+            False,
+            f"{prev_file} must be approved before proceeding",
+        )
 
 
 def is_shipped_from_contents(
