@@ -127,6 +127,28 @@ def has_section(content: str, section_name: str) -> bool:
     return bool(heading.search(content) or bold.search(content))
 
 
+def section_body(content: str, section_name: str) -> Optional[str]:
+    """Return the body of an H2 `## <name>` section (text after the heading line
+    up to the next `## ` heading or EOF), or None if the H2 heading is absent.
+
+    The heading is anchored to the start of a line, so an H3 `### <name>` is NOT
+    read as the H2 section — the prior unanchored `## <name>\\s*\\n(.*?)` extractors
+    matched `## <name>` as a substring of `### <name>` (audit R2.4/3.5b). A present
+    but empty section returns "" (distinct from an absent section's None) so
+    callers can tell "section missing" from "section empty".
+    """
+    # [ \t] (not \s) around the name so trailing blank lines are NOT consumed —
+    # otherwise an empty section immediately followed by another `## ` heading
+    # would over-read into the next section. Terminator `\n##\s` stops at the next
+    # H2 but not an H3 (`### `, whose 3rd char is `#`, fails the `\s`).
+    m = re.search(
+        rf"^##[ \t]+{re.escape(section_name)}[ \t]*$\n(.*?)(?=\n##\s|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return m.group(1) if m else None
+
+
 def section_has_content(content: str, section_name: str) -> bool:
     """True if a section exists and has substantive content after the heading."""
     heading = re.compile(
@@ -497,15 +519,28 @@ def _upsert_basis_line(approval_body: str) -> str:
 
 
 def has_approval(content: str) -> bool:
-    """Return True if the content has a `## Approval` section with a checked box."""
-    if not _APPROVAL_HEADER.search(content):
+    """Return True if the content has a `## Approval` section with a checked box.
+
+    The checkbox is read ONLY inside the `## Approval` section (audit 3.5c) — the
+    write path was already scoped (R8), so a body-prose `- [x] Approved` example
+    before the real section must not be read as approval state.
+    """
+    bounds = approval_section_bounds(content)
+    if bounds is None:
         return False
-    return bool(_APPROVAL_CHECKBOX.search(content))
+    body = content[bounds[0]:bounds[1]]
+    return bool(_APPROVAL_CHECKBOX.search(body))
 
 
 def approval_hash(content: str) -> Optional[str]:
-    """Return the stamped `**Content Hash:**` value, or None if absent or 'pending'."""
-    m = APPROVAL_HASH_LINE_STRICT.search(content)
+    """Return the stamped `**Content Hash:**` value, or None if absent or 'pending'.
+
+    Read ONLY inside the `## Approval` section (audit 3.5c).
+    """
+    bounds = approval_section_bounds(content)
+    if bounds is None:
+        return None
+    m = APPROVAL_HASH_LINE_STRICT.search(content[bounds[0]:bounds[1]])
     if m is None:
         return None
     value = m.group(1)
@@ -582,19 +617,26 @@ def check_approval(content: str, filename: str, result: "ValidationResult") -> b
 
     Returns True if the document is approved and its stored hash matches.
     """
-    if not _APPROVAL_HEADER.search(content):
+    # The checkbox and Content-Hash lines are read ONLY inside the ## Approval
+    # section (audit 3.5c) — matching the scoped write path — so a body-prose
+    # `- [x] Approved` / `**Content Hash:**` example before the section is never
+    # read as real approval state. The hash itself still verifies over the WHOLE
+    # document (verify_content_hash(content, ...) below).
+    bounds = approval_section_bounds(content)
+    if bounds is None:
         result.add(f"{filename} has Approval section", False, "Missing ## Approval section")
         return False
+    approval_body = content[bounds[0]:bounds[1]]
 
     result.add(f"{filename} has Approval section", True)
 
-    is_approved = bool(_APPROVAL_CHECKBOX.search(content))
+    is_approved = bool(_APPROVAL_CHECKBOX.search(approval_body))
     result.add(f"{filename} is approved", is_approved)
 
     if not is_approved:
         return False
 
-    hash_match = APPROVAL_HASH_LINE_STRICT.search(content)
+    hash_match = APPROVAL_HASH_LINE_STRICT.search(approval_body)
     if not hash_match:
         result.add(f"{filename} approval hash present", False, "No content hash found")
         return False
@@ -1203,6 +1245,12 @@ ORPHANED_TRAJECTORY_TOKEN = "ORPHANED-TRAJECTORY-ROW:"
 # strictly-`> anchor` reconcile can never clear it.
 UNSATISFIABLE_OBLIGATION_TOKEN = "UNSATISFIABLE-OBLIGATION:"
 
+# 3.5d stranded-obligation token: a pending-review entry whose target file no
+# longer exists (typically a renamed/deleted spec directory), which moves the
+# obligation out of the prefix-scoped reconcile's view so it would otherwise be
+# both invisible and unclearable.
+STRANDED_OBLIGATION_TOKEN = "STRANDED-OBLIGATION:"
+
 # The loud reminder printed AFTER the `Approved:` line on a changed-document
 # re-stamp (R1). Contains the four spec-mandated verbatim strings.
 REAPPROVAL_REMINDER = (
@@ -1232,14 +1280,19 @@ def now_iso_utc() -> str:
 
 
 def read_stored_hash(content: str) -> str:
-    """Value in the document's `**Content Hash:**` line, or 'pending'. [T1]
+    """Value in the `## Approval` section's `**Content Hash:**` line, or 'pending'. [T1]
 
     Captures the backtick content broadly so a present-but-malformed value is
     returned VERBATIM (not collapsed to 'pending') — that lets
-    changed_since_stamp fail closed on corruption. Returns 'pending' only when
-    the line is absent or literally holds 'pending'.
+    changed_since_stamp fail closed on corruption. Returns 'pending' when the
+    `## Approval` section or the line is absent, or the line literally holds
+    'pending'. Read is scoped to the Approval section (audit 3.5c) so a body-prose
+    Content-Hash example is never read as the stored hash.
     """
-    m = APPROVAL_HASH_LINE.search(content)
+    bounds = approval_section_bounds(content)
+    if bounds is None:
+        return "pending"
+    m = APPROVAL_HASH_LINE.search(content[bounds[0]:bounds[1]])
     if not m:
         return "pending"
     return m.group(1).strip()
@@ -1250,7 +1303,13 @@ def _is_valid_16_hex(value: str) -> bool:
 
 
 def _approval_checkbox_checked(content: str) -> bool:
-    return bool(re.search(r"-\s*\[[xX]\]\s*Approved to proceed", content))
+    # Scoped to the ## Approval section (audit 3.5c) — a body-prose checkbox
+    # example must not register as approval state.
+    bounds = approval_section_bounds(content)
+    if bounds is None:
+        return False
+    body = content[bounds[0]:bounds[1]]
+    return bool(re.search(r"-\s*\[[xX]\]\s*Approved to proceed", body))
 
 
 def changed_since_stamp(new_content_hash: str, stored_hash: str, content: str) -> bool:
@@ -1940,11 +1999,38 @@ def reconcile_to_result(
             f"`{decline_cmd}`.",
         )
         return result
+
+    # The marker parsed (reconcile_pending_review succeeded above); a non-strict
+    # re-read fetches the remaining entry fields for classification and the
+    # stranded-obligation scan.
+    pending = read_pending_review(project_root, strict=False)["pending"]
+
+    # Stranded-obligation surfacing (audit 3.5d). A pending entry whose target
+    # file no longer exists AND is outside this run's prefix scope is typically a
+    # renamed/deleted spec directory: the file moved out of scope, so the
+    # prefix-scoped reconcile never sees it and it can't be declined from the new
+    # directory. Surface it as a WARN (out-of-scope only — an in-scope missing
+    # file already surfaces as the FAIL below) so the obligation is never silent.
+    root = Path(project_root)
+    for key in pending:
+        if _prefix_in_scope(key, path_prefix):
+            continue
+        if not _key_is_contained(root, key):
+            continue  # hostile keys own a separate WARN inside reconcile
+        if not (root / key).exists():
+            result.add(
+                "pending-review",
+                False,
+                f"{STRANDED_OBLIGATION_TOKEN} pending-review entry for {key} points "
+                f"at a file that no longer exists (likely a renamed or deleted spec "
+                f"directory). The obligation is outside this run's scope, so it can "
+                f"neither reconcile nor be declined from here. Restore the original "
+                f"path, or decline it against its original location.",
+                warn_only=True,
+            )
+
     if not still_pending:
         return result
-    # The marker parsed (reconcile_pending_review succeeded above); a non-strict
-    # re-read just fetches the remaining entry fields for classification.
-    pending = read_pending_review(project_root, strict=False)["pending"]
     for doc_rel, expected_tag in still_pending:
         entry = pending.get(doc_rel, {})
         if _obligation_is_unsatisfiable(project_root, doc_rel, entry):

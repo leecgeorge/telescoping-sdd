@@ -163,6 +163,28 @@ def test_section_has_content_missing_section():
     assert bc.section_has_content("# Title\n", "Goals") is False
 
 
+def test_section_body_returns_body_up_to_next_h2():
+    content = "## Goals\n\n- one\n- two\n\n## Non-Goals\n\n- skip\n"
+    assert bc.section_body(content, "Goals") == "\n- one\n- two\n"
+    assert bc.section_body(content, "Non-Goals") == "\n- skip\n"
+
+
+def test_section_body_absent_returns_none_empty_returns_str():
+    assert bc.section_body("# Title\n", "Goals") is None  # absent -> None
+    # Present but immediately followed by the next H2 -> empty body (must NOT
+    # over-read into the next section).
+    assert bc.section_body("## Goals\n\n## Next\n\nx\n", "Goals") == ""
+
+
+def test_section_body_h3_not_read_as_h2():
+    """R2.4/3.5b: an H3 `### Goals` must NOT be read as the H2 `## Goals` section
+    (the prior `## Goals\\s*\\n` matched `## Goals` as a substring of `### Goals`)."""
+    content = "## Real\n\nx\n\n### Goals\n\n- nested, not the section\n"
+    assert bc.section_body(content, "Goals") is None
+    # And it does not collide with an unrelated superstring heading either.
+    assert bc.section_body("## Non-Goals\n\n- a\n", "Goals") is None
+
+
 # ---------------------------------------------------------------------------
 # extract_panel_section
 # ---------------------------------------------------------------------------
@@ -425,6 +447,26 @@ def test_has_approval_true_false():
     # Header present but checkbox unticked → not approved.
     unticked = "# Doc\n\n## Approval\n\n- [ ] Approved to proceed to next phase\n"
     assert bc.has_approval(unticked) is False
+
+
+def test_approval_reads_are_scoped_to_the_approval_section():
+    """3.5c: a body-prose `- [x] Approved` / `**Content Hash:**` example BEFORE
+    the real (unchecked, pending) ## Approval section must not be read as approval
+    state — reads are scoped to the section, matching the scoped write path."""
+    doc = (
+        "# Doc\n\n"
+        "## How approval works (example)\n\n"
+        "When done, you write:\n\n"
+        "- [x] Approved to proceed to next phase\n"
+        "- **Content Hash:** `abcabcabcabcabcd`\n\n"
+        "## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n"
+    )
+    assert bc.has_approval(doc) is False
+    assert bc._approval_checkbox_checked(doc) is False
+    assert bc.approval_hash(doc) is None          # real section is pending
+    assert bc.read_stored_hash(doc) == "pending"  # not the body-prose example
 
 
 def test_approval_hash_value_and_pending():
@@ -1198,3 +1240,33 @@ def test_trajectory_locators_agree_on_panel_table():
         _traj_row(3) + "\n" + _traj_row(4) + "\n\n## Approval",
     )
     assert bc.compute_content_hash(doc2) == h1
+
+
+def test_reconcile_surfaces_stranded_obligation(tmp_path):
+    """3.5d: a pending entry whose target file no longer exists AND is out of the
+    current prefix scope (a renamed/deleted spec dir) is surfaced as a non-blocking
+    WARN, so it is never silent — even though the prefix-scoped reconcile can't
+    see it."""
+    # Seed an obligation for a path that does not exist on disk.
+    bc.upsert_pending_entry(tmp_path, "specs/F3-old/spec.md", "a" * 16, "t", 1)
+    # Reconcile on a DIFFERENT prefix (the renamed dir).
+    res = bc.reconcile_to_result(
+        tmp_path, "specs/F3-new",
+        decline_cmd="validate_spec.py specs/F3-new --decline-pending",
+    )
+    blob = " | ".join(c[2] for c in res.checks)
+    assert bc.STRANDED_OBLIGATION_TOKEN in blob
+    assert "specs/F3-old/spec.md" in blob
+    # Non-blocking: surfaced as a WARN, the result still passes.
+    assert res.passed and res.has_warnings
+
+
+def test_reconcile_no_stranded_warn_when_target_exists(tmp_path):
+    """An out-of-scope obligation whose target file DOES exist is not stranded."""
+    (tmp_path / "specs" / "F9-other").mkdir(parents=True)
+    (tmp_path / "specs" / "F9-other" / "spec.md").write_text("# x\n", encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, "specs/F9-other/spec.md", "a" * 16, "t", 1)
+    res = bc.reconcile_to_result(
+        tmp_path, "specs/F3-new", decline_cmd="x",
+    )
+    assert bc.STRANDED_OBLIGATION_TOKEN not in " | ".join(c[2] for c in res.checks)

@@ -2,6 +2,13 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.7.0 — Audit remediation wave 3.5 (regex/approval-read + reconcile)
+The Medium-risk sub-items deferred out of Wave 3, group 1. All behavior-preserving except where a bug was fixed; no artifact-format or `.sdd/` schema change.
+
+- **Anchored `section_body()` helper (3.5b):** the 11 section-body extractors in `validate_blueprint` used an unanchored `## <name>\s*\n(.*?)`, which matched `## <name>` as a substring of an H3 `### <name>` — so an H3 heading was read as the H2 section. A new `blueprint_common.section_body()` anchors the heading to line-start, restricts trailing whitespace so an empty section can't over-read into the next one, and distinguishes absent (None) from empty (""). All 11 call sites use it.
+- **Approval reads scoped to the `## Approval` section (3.5c):** the write path was scoped to the Approval slice (R8), but `check_approval` / `has_approval` / `approval_hash` / `read_stored_hash` / `_approval_checkbox_checked` still scanned document-wide and took the first match — so a self-documenting artifact quoting `- [x] Approved` or `**Content Hash:**` in body prose before the real section was read as approved state. All five reads now go through `approval_section_bounds`; the hash still verifies over the whole document.
+- **Rename-stranded obligations surfaced (3.5d):** pending-review entries are path-keyed, so `mv specs/F3-old specs/F3-new` left the obligation out of the new prefix's reconcile scope — silently dropping the upstream-panel re-review FAIL and leaving the entry unclearable. `reconcile_to_result` now surfaces any out-of-scope pending entry whose target file no longer exists as a non-blocking `STRANDED-OBLIGATION:` WARN, so it is never silent. (Fully clearing it from the renamed location still needs a key-migration op — a separately-scoped change.)
+
 ## 2.6.0 — Audit remediation wave 3 (validator consolidation)
 Structural dedup of the two validators, all behavior-preserving except where a bug was fixed. No artifact-format or `.sdd/` schema change.
 
