@@ -11,7 +11,7 @@
       "name": "telescoping-sdd",
       "source": "./telescoping-sdd",
       "description": "Telescoping Spec-Driven Development: project-blueprint (project tier) + spec-driven-dev (feature tier)",
-      "version": "2.8.0",
+      "version": "2.9.0",
       "license": "MIT",
       "repository": "https://github.com/leecgeorge/telescoping-sdd.git",
       "keywords": [

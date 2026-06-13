@@ -2,6 +2,12 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.9.0 — Audit remediation wave 3.5 group 2 (artifact-mutation safety)
+The two High-risk artifact-mutation sub-items deferred out of Wave 3 — both bug fixes to the in-place `archive_pass.py` rewriter, where the failure mode is data loss. No artifact-format or `.sdd/` schema change.
+
+- **Fence-aware Trajectory/section locator (3.5e):** `archive_pass.find_section` matched the first heading-shaped line with no fence tracking, so a self-documenting artifact that quotes `### Trajectory` (or `### Sealed dispositions`, etc.) inside a ``` block made the writer lock onto the fenced example while `blueprint_common`'s fence-aware hash/anchor reader used the real table — they disagreed on which table is canonical. `find_section` now tracks fence state in both the heading-find and section-end loops, matching the reader.
+- **Non-lossy Sealed/Deferred rewrite (3.5f):** promoting a new entry into a Sealed/Deferred section that already had entries replaced the whole entry span with a block rebuilt from the matched single-line entries only — silently deleting any interleaved non-matching line (a hand-wrapped entry's continuation, an HTML comment, operator prose). New entries are now inserted after the last existing entry rather than rewriting the span, so the existing entries and everything interleaved among them survive verbatim (behavior is identical for the no-interleaving common case).
+
 ## 2.8.0 — Audit remediation wave 4 (monolith paydown)
 The monolith-paydown wave: the `blueprint_common` God-module split plus the contained correctness items. Behavior-preserving except where a bug was fixed; the public API is byte-identical (re-exports) and there is no artifact-format or `.sdd/` schema change.
 
