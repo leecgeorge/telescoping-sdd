@@ -10,7 +10,7 @@ Intentional asymmetries vs the sibling (do NOT "sync" these away):
 - Architecture/Design middle panelist differs: telescoping-sdd:ops-reviewer (blueprint) vs telescoping-sdd:testability-reviewer (spec-driven-dev), including in example tables.
 - Halt-and-rescope routes to the user revising project scope/phase boundary (blueprint) vs to the project-blueprint amendment workflow then a spec-loop restart (spec-driven-dev).
 - Upstream-halt / sibling-artifact targets are SCOPE.md / ARCHITECTURE.md (blueprint) vs spec.md / design.md (spec-driven-dev).
-- Blueprint-only: the two-paragraph "Cap-pressure caveat" inside `## The Loop` (cap-pressure / domain-ignorance discipline leaning on Self-Check (e)/(f) and CFC-producer authoring) has no spec-driven-dev counterpart.
+- The two-paragraph "Cap-pressure caveat" inside `## The Loop` carries shared skill-agnostic doctrine (resist cap-pressure bias toward applying every finding; accept-as-risk is first-class; the verbatim-quote forcing function) but its examples diverge by role: blueprint leans on Self-Check (e)/(f) and CFC-**producer** authoring; spec-driven-dev leans on Self-Check (a)–(d) and the CFC-**consumer** surface (`[CFC-N]` tags + enforcement tasks). Keep the shared doctrine in sync; the role-specific examples are an intentional asymmetry.
 Otherwise the copies differ only cosmetically (phase-vocabulary mapping, filenames, illustrative example values).
 -->
 

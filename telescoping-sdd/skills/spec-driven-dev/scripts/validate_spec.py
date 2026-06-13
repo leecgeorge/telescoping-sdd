@@ -33,9 +33,18 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# Locate shared helpers at telescoping-sdd/scripts/ — sibling of telescoping-sdd/skills/.
+# sys.path bootstrap — skill entry point (audit R3.5: one idiom across entry
+# points). Put telescoping-sdd/scripts/ (the shared helpers, sibling of
+# telescoping-sdd/skills/) on sys.path via an idempotent guarded APPEND. Append,
+# never insert(0): a skill validator runs under the plugin/marketplace runtime,
+# where displacing the caller's sys.path[0] would break its module resolution
+# (regression-guarded). The `not in` guard stops repeated imports from stacking
+# duplicate entries. Shared-script entry points (reconcile.py, artifact_prefix.py)
+# use a guarded insert(0) instead — nothing else bootstraps them, so they must
+# take precedence.
 _SHARED_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
-sys.path.append(str(_SHARED_SCRIPTS))
+if str(_SHARED_SCRIPTS) not in sys.path:
+    sys.path.append(str(_SHARED_SCRIPTS))
 
 from blueprint_common import (  # noqa: E402
     APPROVAL_HASH_LINE_STRICT,
@@ -1317,6 +1326,279 @@ def validate_cfc_consumer(
 # Main
 # ---------------------------------------------------------------------------
 
+def _handle_decline_pending(spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--decline-pending` mode (audit R3.2 — extracted from main).
+
+    Clear this spec dir's pending-review obligations — an auditable user decision
+    (logged to stdout), the validator-owned marker lifecycle (no hand-edited
+    JSON). DEF-01/RI-11 v1-posture: the bypass trace is stdout-audited +
+    fail-closed (the gate fires by default). Returns a process exit code.
+    """
+    root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
+    try:
+        removed = clear_pending_entries_for_prefix(root, spec_rel)
+    except MarkerCorruptError as exc:
+        print(
+            f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
+            f".sdd/pending-review.json manually."
+        )
+        return 1
+    if removed:
+        noun = "entry" if len(removed) == 1 else "entries"
+        print(
+            f"Declined upstream panel re-review; cleared {len(removed)} pending "
+            f"{noun}: {', '.join(removed)}"
+        )
+    else:
+        print(f"No pending-review entries found for {spec_dir}.")
+    return 0
+
+
+def _handle_restore_anchor(spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--restore-anchor` mode (audit R3.2 — extracted from main).
+
+    Clear a legacy re-anchored (UNSATISFIABLE) obligation whose genuine
+    `upstream-panel` tag is already archived. Content-attested — clears ONLY where
+    the real tag is present (never asserts a panel ran), so it is strictly
+    stronger than --decline-pending. Returns a process exit code.
+    """
+    root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
+    try:
+        restored = restore_anchor_for_prefix(root, spec_rel)
+    except MarkerCorruptError as exc:
+        print(
+            f"Cannot restore: {exc}. The marker is corrupt; inspect or delete "
+            f".sdd/pending-review.json manually."
+        )
+        return 1
+    if restored:
+        noun = "obligation" if len(restored) == 1 else "obligations"
+        print(
+            f"Restored anchor; cleared {len(restored)} satisfied {noun} "
+            f"(genuine upstream-panel tag present): {', '.join(restored)}"
+        )
+    else:
+        print(
+            f"No restorable obligations for {spec_dir} (none carry a genuine "
+            f"upstream-panel tag yet)."
+        )
+    return 0
+
+
+def _handle_approve(args, spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--approve {spec,design,tasks}` mode (audit R3.2 — extracted from main).
+
+    Gates on the directory↔identifier cross-check (all three targets) and, unless
+    --force/--task-tick, the matching phase validator (Decision E), then stamps
+    via approve_document. Returns a process exit code.
+    """
+    file_map = {"spec": "spec.md", "design": "design.md", "tasks": "tasks.md"}
+    target = resolve_artifact(spec_dir, file_map[args.approve])
+    if not target.is_file():
+        print(f"Error: {target} does not exist")
+        return 2
+    # Directory<->identifier cross-check gates ALL three approve targets
+    # (spec/design/tasks). It reads the identifier from spec.md, so it runs
+    # for design/tasks approvals too; a mismatch blocks approval before any
+    # file is written.
+    dir_check = check_dir_identifier(spec_dir)
+    if not dir_check.passed:
+        print(dir_check.summary())
+        print(
+            f"Refusing to approve {target.name}: spec-directory cross-check "
+            f"FAILed. Fix the directory name or in-file identifier above."
+        )
+        return 1
+
+    # Decision E (mirrored from validate_blueprint) — gate approval on the
+    # matching phase validator. Approving a structurally-broken document
+    # (missing sections, unresolved [TBD]s, a panel that never ran, an
+    # unapproved upstream phase) silently corrupts state and recreates the
+    # "approved, but next validate FAILs" 3am scenario the blueprint gate
+    # exists to prevent. The design/tasks validators also run
+    # check_previous_phase_approved, so this gate additionally enforces the
+    # Specify -> Design -> Tasks ordering on the approve path. --force
+    # overrides after the user has read the FAIL items.
+    #
+    # Skipped under --task-tick: that is the Phase-4 carve-out for
+    # re-stamping tasks.md after ticking already-approved tasks; the content
+    # was gated at the initial `--approve tasks`, and re-validating each tick
+    # would risk blocking the interactive implement loop.
+    if not args.force and not args.task_tick:
+        if args.approve == "spec":
+            pre_result = validate_spec(spec_dir)
+        else:
+            gate_language, _ = resolve_language(
+                spec_dir,
+                explicit=args.language,
+                detector=detect_language,
+                known_languages=list(LANGUAGE_PROFILES.keys()),
+                project_root=project_root,
+            )
+            if args.approve == "design":
+                pre_result = validate_design(spec_dir, gate_language)
+            else:
+                pre_result = validate_tasks(spec_dir, gate_language)
+        if not pre_result.passed:
+            print(f"Refusing to approve {target.name}: validation FAILed.")
+            print(pre_result.summary())
+            print(
+                "\nFix the FAIL items above, OR re-run with --force to "
+                "approve anyway (you take responsibility for the "
+                "approved-but-invalid state)."
+            )
+            return 1
+
+    try:
+        stamped = approve_document(
+            target, task_tick=args.task_tick, project_root=project_root
+        )
+    except MarkerCorruptError as exc:
+        # The document was stamped (atomic) before restamp_or_suppress hit the
+        # corrupt marker — surface it cleanly instead of a traceback, and exit
+        # non-zero so the operator re-records the obligation (audit R2.6).
+        print(
+            f"WARNING: {target} was stamped, but its re-approval obligation "
+            f"was NOT recorded: {exc}. The .sdd/pending-review.json marker is "
+            f"corrupt (e.g. unresolved git conflict markers). Fix it and "
+            f"re-run --approve so the obligation for this edit is recorded.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0 if stamped else 1
+
+
+def _handle_set_language(args, spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--set-language` mode (audit R3.2 — extracted from main).
+
+    The single, explicit write path for the declare-once store. Deliberately
+    separate from --approve — it touches NO content hash and does NOT run during
+    approval, so it cannot collide with the CFC cascade. Returns a process exit
+    code.
+    """
+    root = arch_find_project_root(spec_dir, project_root)
+    written = write_arch_config(
+        root,
+        args.set_language,
+        list(LANGUAGE_PROFILES.keys()),
+        source="user",
+    )
+    print(f"Persisted stack '{args.set_language}' to {written}")
+    return 0
+
+
+def _run_validation(args, spec_dir: Path, project_root: Optional[Path]) -> int:
+    """Default mode: validate the requested phase(s), reconcile pending-review,
+    print the summary (audit R3.2 — extracted from main). Returns a process exit
+    code (1 if anything FAILed, else 0)."""
+    # Resolve the stack via the shared resolver: explicit flag > persisted config
+    # > marker auto-detect (which itself falls back to the neutral profile). This
+    # is the SAME code path any other consumer uses, so the prose layer and the
+    # script layer cannot drift to different answers.
+    language, language_source = resolve_language(
+        spec_dir,
+        explicit=args.language,
+        detector=detect_language,
+        known_languages=list(LANGUAGE_PROFILES.keys()),
+        project_root=project_root,
+    )
+    use_json = args.output == "json"
+
+    if not use_json:
+        print(f"Validating: {spec_dir}")
+        print(f"Language:   {language} (from {language_source})\n")
+
+    all_passed = True
+    has_any_warnings = False
+    json_output: dict = {
+        "spec_dir": str(spec_dir),
+        "language": language,
+        "language_source": language_source,
+        "phases": {},
+    }
+    validators = {
+        "spec": ("Spec (spec.md)", lambda d: validate_spec(d)),
+        "design": ("Design (design.md)", lambda d: validate_design(d, language)),
+        "tasks": ("Tasks (tasks.md)", lambda d: validate_tasks(d, language)),
+    }
+
+    for phase_key, (label, validator) in validators.items():
+        if args.phase not in ("all", phase_key):
+            continue
+
+        # In "all" mode, skip phases whose files don't exist yet
+        _bare = "spec.md" if phase_key == "spec" else f"{phase_key}.md"
+        expected_file = resolve_artifact(spec_dir, _bare)
+        if args.phase == "all" and not expected_file.exists():
+            continue
+
+        result = validator(spec_dir)
+
+        if not result.passed:
+            status = "FAILED"
+        elif result.has_warnings:
+            status = "PASSED (with warnings)"
+        else:
+            status = "PASSED"
+
+        if use_json:
+            json_output["phases"][phase_key] = {
+                "status": status,
+                "checks": result.to_dict(),
+            }
+        else:
+            print(f"{label}: {status}")
+            print(result.summary())
+            print()
+
+        if not result.passed:
+            all_passed = False
+        if result.has_warnings:
+            has_any_warnings = True
+
+    # R2 (dispatch-level): reconcile pending-review ONCE for this spec dir,
+    # regardless of --phase (so --phase design/tasks can't bypass the gate, and
+    # an absent spec.md doesn't make a design/tasks obligation vanish). Surfaced
+    # as a top-level `pending_review` result — uniform with validate_blueprint.
+    root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
+    pending_result = reconcile_to_result(
+        root,
+        spec_rel,
+        decline_cmd=f"validate_spec.py {spec_dir} --decline-pending",
+        restore_cmd=f"validate_spec.py {spec_dir} --restore-anchor",
+    )
+    if pending_result.checks:
+        if use_json:
+            json_output["pending_review"] = pending_result.to_dict()
+        else:
+            print(
+                f"Pending-review: "
+                f"{'FAILED' if not pending_result.passed else 'PASSED'}"
+            )
+            print(pending_result.summary())
+            print()
+        if not pending_result.passed:
+            all_passed = False
+
+    if use_json:
+        if all_passed and not has_any_warnings:
+            json_output["result"] = "passed"
+        elif all_passed:
+            json_output["result"] = "passed_with_warnings"
+        else:
+            json_output["result"] = "failed"
+        print(json.dumps(json_output, indent=2))
+    else:
+        if all_passed and not has_any_warnings:
+            print("All validations passed.")
+        elif all_passed and has_any_warnings:
+            print("All validations passed with warnings. Review WARN items above.")
+        else:
+            print("Some validations failed. See FAIL items above.")
+
+    return 1 if not all_passed else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Validate spec-driven development artifacts.",
@@ -1423,257 +1705,19 @@ def main():
         print("Error: --task-tick is only valid with --approve tasks")
         sys.exit(2)
 
-    # Handle --decline-pending: clear this spec dir's pending obligations. An
-    # auditable user decision (logged to stdout), the validator-owned lifecycle
-    # for the marker (no hand-edited JSON).
-    # DEF-01 / RI-11 v1-posture: the bypass trace is stdout-audited + fail-closed
-    # (the gate fires by default). A git-durable Trajectory tag for declines is a
-    # recorded v2 enhancement, deliberately out of v1 scope.
+    # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,
+    # so at most one of these is set; each handler returns a process exit code.
+    # The default (no mode flag) runs validation.
     if args.decline_pending:
-        root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
-        try:
-            removed = clear_pending_entries_for_prefix(root, spec_rel)
-        except MarkerCorruptError as exc:
-            print(
-                f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
-                f".sdd/pending-review.json manually."
-            )
-            sys.exit(1)
-        if removed:
-            noun = "entry" if len(removed) == 1 else "entries"
-            print(
-                f"Declined upstream panel re-review; cleared {len(removed)} pending "
-                f"{noun}: {', '.join(removed)}"
-            )
-        else:
-            print(f"No pending-review entries found for {spec_dir}.")
-        sys.exit(0)
-
-    # Handle --restore-anchor: clear a legacy re-anchored (UNSATISFIABLE)
-    # obligation whose genuine `upstream-panel` tag is already archived.
-    # Content-attested — clears ONLY where the real tag is present (never asserts
-    # a panel ran), so it is strictly stronger than --decline-pending.
+        sys.exit(_handle_decline_pending(spec_dir, project_root))
     if args.restore_anchor:
-        root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
-        try:
-            restored = restore_anchor_for_prefix(root, spec_rel)
-        except MarkerCorruptError as exc:
-            print(
-                f"Cannot restore: {exc}. The marker is corrupt; inspect or delete "
-                f".sdd/pending-review.json manually."
-            )
-            sys.exit(1)
-        if restored:
-            noun = "obligation" if len(restored) == 1 else "obligations"
-            print(
-                f"Restored anchor; cleared {len(restored)} satisfied {noun} "
-                f"(genuine upstream-panel tag present): {', '.join(restored)}"
-            )
-        else:
-            print(
-                f"No restorable obligations for {spec_dir} (none carry a genuine "
-                f"upstream-panel tag yet)."
-            )
-        sys.exit(0)
-
-    # Handle --approve
+        sys.exit(_handle_restore_anchor(spec_dir, project_root))
     if args.approve:
-        file_map = {"spec": "spec.md", "design": "design.md", "tasks": "tasks.md"}
-        target = resolve_artifact(spec_dir, file_map[args.approve])
-        if not target.is_file():
-            print(f"Error: {target} does not exist")
-            sys.exit(2)
-        # Directory<->identifier cross-check gates ALL three approve targets
-        # (spec/design/tasks). It reads the identifier from spec.md, so it runs
-        # for design/tasks approvals too; a mismatch blocks approval before any
-        # file is written.
-        dir_check = check_dir_identifier(spec_dir)
-        if not dir_check.passed:
-            print(dir_check.summary())
-            print(
-                f"Refusing to approve {target.name}: spec-directory cross-check "
-                f"FAILed. Fix the directory name or in-file identifier above."
-            )
-            sys.exit(1)
-
-        # Decision E (mirrored from validate_blueprint) — gate approval on the
-        # matching phase validator. Approving a structurally-broken document
-        # (missing sections, unresolved [TBD]s, a panel that never ran, an
-        # unapproved upstream phase) silently corrupts state and recreates the
-        # "approved, but next validate FAILs" 3am scenario the blueprint gate
-        # exists to prevent. The design/tasks validators also run
-        # check_previous_phase_approved, so this gate additionally enforces the
-        # Specify -> Design -> Tasks ordering on the approve path. --force
-        # overrides after the user has read the FAIL items.
-        #
-        # Skipped under --task-tick: that is the Phase-4 carve-out for
-        # re-stamping tasks.md after ticking already-approved tasks; the content
-        # was gated at the initial `--approve tasks`, and re-validating each tick
-        # would risk blocking the interactive implement loop.
-        if not args.force and not args.task_tick:
-            if args.approve == "spec":
-                pre_result = validate_spec(spec_dir)
-            else:
-                gate_language, _ = resolve_language(
-                    spec_dir,
-                    explicit=args.language,
-                    detector=detect_language,
-                    known_languages=list(LANGUAGE_PROFILES.keys()),
-                    project_root=project_root,
-                )
-                if args.approve == "design":
-                    pre_result = validate_design(spec_dir, gate_language)
-                else:
-                    pre_result = validate_tasks(spec_dir, gate_language)
-            if not pre_result.passed:
-                print(f"Refusing to approve {target.name}: validation FAILed.")
-                print(pre_result.summary())
-                print(
-                    "\nFix the FAIL items above, OR re-run with --force to "
-                    "approve anyway (you take responsibility for the "
-                    "approved-but-invalid state)."
-                )
-                sys.exit(1)
-
-        try:
-            stamped = approve_document(
-                target, task_tick=args.task_tick, project_root=project_root
-            )
-        except MarkerCorruptError as exc:
-            # The document was stamped (atomic) before restamp_or_suppress hit the
-            # corrupt marker — surface it cleanly instead of a traceback, and exit
-            # non-zero so the operator re-records the obligation (audit R2.6).
-            print(
-                f"WARNING: {target} was stamped, but its re-approval obligation "
-                f"was NOT recorded: {exc}. The .sdd/pending-review.json marker is "
-                f"corrupt (e.g. unresolved git conflict markers). Fix it and "
-                f"re-run --approve so the obligation for this edit is recorded.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        sys.exit(0 if stamped else 1)
-
-    # Handle --set-language: the single, explicit write path for the declare-once
-    # store. Deliberately separate from --approve — it touches NO content hash and
-    # does NOT run during approval, so it cannot collide with the CFC cascade.
+        sys.exit(_handle_approve(args, spec_dir, project_root))
     if args.set_language:
-        root = arch_find_project_root(spec_dir, project_root)
-        written = write_arch_config(
-            root,
-            args.set_language,
-            list(LANGUAGE_PROFILES.keys()),
-            source="user",
-        )
-        print(f"Persisted stack '{args.set_language}' to {written}")
-        sys.exit(0)
+        sys.exit(_handle_set_language(args, spec_dir, project_root))
 
-    # Resolve the stack via the shared resolver: explicit flag > persisted config
-    # > marker auto-detect (which itself falls back to the neutral profile). This
-    # is the SAME code path any other consumer uses, so the prose layer and the
-    # script layer cannot drift to different answers.
-    language, language_source = resolve_language(
-        spec_dir,
-        explicit=args.language,
-        detector=detect_language,
-        known_languages=list(LANGUAGE_PROFILES.keys()),
-        project_root=project_root,
-    )
-    use_json = args.output == "json"
-
-    if not use_json:
-        print(f"Validating: {spec_dir}")
-        print(f"Language:   {language} (from {language_source})\n")
-
-    all_passed = True
-    has_any_warnings = False
-    json_output: dict = {
-        "spec_dir": str(spec_dir),
-        "language": language,
-        "language_source": language_source,
-        "phases": {},
-    }
-    validators = {
-        "spec": ("Spec (spec.md)", lambda d: validate_spec(d)),
-        "design": ("Design (design.md)", lambda d: validate_design(d, language)),
-        "tasks": ("Tasks (tasks.md)", lambda d: validate_tasks(d, language)),
-    }
-
-    for phase_key, (label, validator) in validators.items():
-        if args.phase not in ("all", phase_key):
-            continue
-
-        # In "all" mode, skip phases whose files don't exist yet
-        _bare = "spec.md" if phase_key == "spec" else f"{phase_key}.md"
-        expected_file = resolve_artifact(spec_dir, _bare)
-        if args.phase == "all" and not expected_file.exists():
-            continue
-
-        result = validator(spec_dir)
-
-        if not result.passed:
-            status = "FAILED"
-        elif result.has_warnings:
-            status = "PASSED (with warnings)"
-        else:
-            status = "PASSED"
-
-        if use_json:
-            json_output["phases"][phase_key] = {
-                "status": status,
-                "checks": result.to_dict(),
-            }
-        else:
-            print(f"{label}: {status}")
-            print(result.summary())
-            print()
-
-        if not result.passed:
-            all_passed = False
-        if result.has_warnings:
-            has_any_warnings = True
-
-    # R2 (dispatch-level): reconcile pending-review ONCE for this spec dir,
-    # regardless of --phase (so --phase design/tasks can't bypass the gate, and
-    # an absent spec.md doesn't make a design/tasks obligation vanish). Surfaced
-    # as a top-level `pending_review` result — uniform with validate_blueprint.
-    root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
-    pending_result = reconcile_to_result(
-        root,
-        spec_rel,
-        decline_cmd=f"validate_spec.py {spec_dir} --decline-pending",
-        restore_cmd=f"validate_spec.py {spec_dir} --restore-anchor",
-    )
-    if pending_result.checks:
-        if use_json:
-            json_output["pending_review"] = pending_result.to_dict()
-        else:
-            print(
-                f"Pending-review: "
-                f"{'FAILED' if not pending_result.passed else 'PASSED'}"
-            )
-            print(pending_result.summary())
-            print()
-        if not pending_result.passed:
-            all_passed = False
-
-    if use_json:
-        if all_passed and not has_any_warnings:
-            json_output["result"] = "passed"
-        elif all_passed:
-            json_output["result"] = "passed_with_warnings"
-        else:
-            json_output["result"] = "failed"
-        print(json.dumps(json_output, indent=2))
-    else:
-        if all_passed and not has_any_warnings:
-            print("All validations passed.")
-        elif all_passed and has_any_warnings:
-            print("All validations passed with warnings. Review WARN items above.")
-        else:
-            print("Some validations failed. See FAIL items above.")
-
-    if not all_passed:
-        sys.exit(1)
+    sys.exit(_run_validation(args, spec_dir, project_root))
 
 
 if __name__ == "__main__":

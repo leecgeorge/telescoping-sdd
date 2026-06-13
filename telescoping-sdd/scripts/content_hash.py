@@ -24,6 +24,17 @@ from trajectory import _strip_trajectory_rows, trim_trajectory_table
 
 HASH_BASIS_CURRENT = "v2"
 
+# Width (in lowercase hex chars) of the content hash — the SHA-256 prefix kept by
+# compute_content_hash(). SINGLE SOURCE: the two producers below slice to this
+# width, and CONTENT_HASH_HEX builds the matching consumer regex fragment so a
+# downstream matcher (e.g. the Business Brief `**Content Hash:**` strip, I3.5)
+# can never hardcode a width that drifts from what is actually emitted.
+CONTENT_HASH_WIDTH = 16
+# Regex fragment matching exactly one emitted content hash (lowercase hex, since
+# hexdigest() emits lowercase). Use inside a larger pattern, e.g.
+# rf"`{CONTENT_HASH_HEX}`". NOT anchored — callers add their own context.
+CONTENT_HASH_HEX = r"[0-9a-f]{%d}" % CONTENT_HASH_WIDTH
+
 # Bullet-tolerant basis-line regex. Matches `- **Hash basis:** vN` (written
 # form) and bare `**Hash basis:** vN`. DUAL-USE: (1) document-wide in
 # content_for_hashing() to neutralize any basis-line occurrence so it never
@@ -117,13 +128,13 @@ def compute_content_hash_v1(content: str) -> str:
     """
     return hashlib.sha256(
         _content_for_hashing_v1_frozen(content).encode("utf-8")
-    ).hexdigest()[:16]
+    ).hexdigest()[:CONTENT_HASH_WIDTH]
 
 
 def compute_content_hash(content: str) -> str:
     """SHA-256 (16-hex-char prefix) of content_for_hashing(content)."""
     body = content_for_hashing(content)
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:CONTENT_HASH_WIDTH]
 
 
 def verify_content_hash(content: str, stored_hash: str) -> bool:
