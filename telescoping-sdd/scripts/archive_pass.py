@@ -770,7 +770,7 @@ def main():
         )
         sys.exit(EXIT_FORMAT_VIOLATION)
 
-    content = art.read_text(encoding="utf-8")
+    content = art.read_text(encoding="utf-8-sig")  # BOM-tolerant; rewrite drops it (R2.5)
     lines = content.splitlines()
 
     panel = find_section(lines, H_PANEL_REVIEW)

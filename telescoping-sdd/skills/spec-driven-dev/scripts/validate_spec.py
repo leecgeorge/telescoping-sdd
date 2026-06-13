@@ -220,6 +220,39 @@ TASK_REQUIREMENT_REF_PATTERN = re.compile(r"\*\*Requirement:\*\*\s*((?:R\d+(?:,\
 # Language detection
 # ---------------------------------------------------------------------------
 
+def _matching_languages(base: Path) -> list[str]:
+    """Languages whose markers are present in `base`, in profile-declaration order.
+
+    The neutral profile has no markers, so this only ever returns marker-bearing
+    stacks (python/java) — never 'generic'.
+    """
+    matched = []
+    for lang, profile in LANGUAGE_PROFILES.items():
+        has_file = any((base / f).exists() for f in profile["project_markers"])
+        has_dir = any((base / d).is_dir() for d in profile["dir_markers"])
+        if has_file or has_dir:
+            matched.append(lang)
+    return matched
+
+
+def _pick_language(matched: list[str], where: Path) -> str:
+    """Pick the winning language from `matched` (first by declaration order).
+
+    On a tie (markers for more than one stack in the same directory — e.g. a Java
+    service with a Python tooling layer) print a one-line notice so the silent
+    declaration-order tie-break is visible and the user can override with
+    --set-language (audit I3.3).
+    """
+    if len(matched) > 1:
+        print(
+            f"Note: markers for multiple stacks were found in {where}: "
+            f"{', '.join(matched)}. Auto-detect chose '{matched[0]}' by "
+            f"declaration order. Run `--set-language` to choose explicitly.",
+            file=sys.stderr,
+        )
+    return matched[0]
+
+
 def detect_language(spec_dir: Path, project_root: Optional[Path] = None) -> str:
     """Auto-detect project language from project root markers.
 
@@ -227,20 +260,14 @@ def detect_language(spec_dir: Path, project_root: Optional[Path] = None) -> str:
     Otherwise walks up from spec_dir looking for markers.
     """
     if project_root is not None:
-        for lang, profile in LANGUAGE_PROFILES.items():
-            if any((project_root / f).exists() for f in profile["project_markers"]):
-                return lang
-            if any((project_root / d).is_dir() for d in profile["dir_markers"]):
-                return lang
-        return NEUTRAL_LANGUAGE  # neutral fallback — not "python"
+        matched = _matching_languages(project_root)
+        return _pick_language(matched, project_root) if matched else NEUTRAL_LANGUAGE
 
     search_dir = spec_dir.resolve()
     for _ in range(10):  # max 10 levels up
-        for lang, profile in LANGUAGE_PROFILES.items():
-            if any((search_dir / f).exists() for f in profile["project_markers"]):
-                return lang
-            if any((search_dir / d).is_dir() for d in profile["dir_markers"]):
-                return lang
+        matched = _matching_languages(search_dir)
+        if matched:
+            return _pick_language(matched, search_dir)
         parent = search_dir.parent
         if parent == search_dir:
             break
@@ -267,9 +294,13 @@ def get_profile(language: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def read_file(path: Path) -> Optional[str]:
-    """Read file contents or return None if it doesn't exist."""
+    """Read file contents (BOM-tolerant) or return None if it doesn't exist.
+
+    utf-8-sig strips a leading BOM so producer and consumer hash identical text
+    (audit R2.5); safe for non-BOM files.
+    """
     if path.is_file():
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     return None
 
 
@@ -439,7 +470,7 @@ def approve_document(
     suppresses both and prints a stdout audit line). Keyword-only params with
     safe defaults keep existing 1-arg callers unaffected.
     """
-    original_content = file_path.read_text(encoding="utf-8")
+    original_content = file_path.read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
     # Read the prior stored hash BEFORE the trim/rewrite mutates the file (DEF-06).
     stored_hash = read_stored_hash(original_content)
 
@@ -591,7 +622,7 @@ def _read_plan_identifier(
     """
     if spec_content is None:
         try:
-            with open(resolve_artifact(spec_dir, "spec.md"), encoding="utf-8") as fh:
+            with open(resolve_artifact(spec_dir, "spec.md"), encoding="utf-8-sig") as fh:
                 spec_content = fh.read()
         except (OSError, UnicodeDecodeError):
             return None
@@ -1531,7 +1562,14 @@ def main():
         default="all",
         help="Which phase to validate (default: all existing files)",
     )
-    parser.add_argument(
+    # Mode flags are mutually exclusive: each selects a distinct operation, and
+    # argparse rejects any combination (exit 2) rather than silently resolving by
+    # if-ordering — e.g. `--approve spec --set-language java` previously approved
+    # and silently dropped the language write (audit I3.2). --task-tick / --force
+    # are modifiers of --approve, and --language modifies validation, so they stay
+    # on the main parser.
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--approve",
         choices=["spec", "design", "tasks"],
         help="Approve a phase document (marks it approved with content hash)",
@@ -1549,13 +1587,13 @@ def main():
         "take responsibility for the approved-but-invalid state). Mirrors "
         "validate_blueprint.py's Decision-E override.",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--decline-pending",
         action="store_true",
         help="Clear this spec dir's pending-review obligations — an explicit, "
         "auditable decision to skip the upstream panel re-review.",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--restore-anchor",
         action="store_true",
         help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
@@ -1570,7 +1608,7 @@ def main():
         help="Project language for THIS run (default: persisted config, else "
         "auto-detect). Does not persist; use --set-language to persist.",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--set-language",
         choices=list(LANGUAGE_PROFILES.keys()),
         default=None,

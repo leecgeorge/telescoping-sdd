@@ -14,6 +14,8 @@ Otherwise the copies differ only cosmetically (skill name in intro, section titl
 
 End-to-end walkthroughs of the project-blueprint workflow.
 
+> **Artifact filenames:** these walkthroughs use the bare names (`SCOPE.md`, `ARCHITECTURE.md`, `PLAN.md`) as shorthand. The skill emits the `NN_`-prefixed form (`01_SCOPE.md`, `02_ARCHITECTURE.md`, `03_PLAN.md`) by default; both forms resolve on read.
+
 ## Example 1: Starting a New Project
 
 User says: "I want to plan a new project for a task management API"

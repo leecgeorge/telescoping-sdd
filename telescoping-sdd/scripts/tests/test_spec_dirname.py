@@ -337,7 +337,7 @@ def test_spec_dirname_is_stdlib_only():
     """R4 mitigation: spec_dirname imports no third-party packages."""
     source = _SPEC_DIRNAME_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    stdlib_ok = {"re", "sys", "unicodedata", "typing", "__future__"}
+    stdlib_ok = {"re", "sys", "unicodedata", "typing", "pathlib", "__future__"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for n in node.names:

@@ -14,6 +14,8 @@ Otherwise the copies differ only cosmetically (skill name in intro, section titl
 
 End-to-end walkthroughs of the spec-driven-dev workflow.
 
+> **Artifact filenames:** these walkthroughs use the bare names (`spec.md`, `design.md`, `tasks.md`) as shorthand. The skill emits the `NN_`-prefixed form (`01_spec.md`, `02_design.md`, `03_tasks.md`) by default; both forms resolve on read.
+
 ## Example 1: Starting Fresh
 
 User says: "Create a spec for a CLI todo app"

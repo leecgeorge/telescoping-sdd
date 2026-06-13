@@ -202,6 +202,25 @@ def test_detect_language_still_finds_java(tmp_path):
     assert vs.detect_language(tmp_path, project_root=tmp_path) == "java"
 
 
+def test_detect_language_polyglot_tie_prints_notice(tmp_path, capsys):
+    # Both Python and Java markers in the same dir: resolves to python (declaration
+    # order) AND prints a one-line notice naming both, recommending --set-language.
+    (tmp_path / "requirements.txt").write_text("x\n", encoding="utf-8")
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    assert vs.detect_language(tmp_path, project_root=tmp_path) == "python"
+    err = capsys.readouterr().err
+    assert "multiple stacks" in err
+    assert "python" in err and "java" in err
+    assert "--set-language" in err
+
+
+def test_detect_language_single_marker_is_silent(tmp_path, capsys):
+    # No tie -> no notice (only fires when more than one stack matches).
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    assert vs.detect_language(tmp_path, project_root=tmp_path) == "python"
+    assert capsys.readouterr().err == ""
+
+
 def test_get_profile_unknown_key_falls_back_to_generic(tmp_path):
     # An as-yet-unsupported language (e.g. typescript) must NOT resolve to python.
     prof = vs.get_profile("typescript")

@@ -101,6 +101,40 @@ def test_approve_malformed_approval_section_exits_nonzero(tmp_path):
     assert "- [ ] Approved to proceed" in (d / "spec.md").read_text(encoding="utf-8")
 
 
+def test_bom_artifact_approves_and_revalidates_clean(tmp_path):
+    """A UTF-8 BOM artifact must not wedge at 'stale hash' (audit R2.5). Approval
+    reads BOM-tolerantly and rewrites without the BOM; re-validation matches."""
+    d = tmp_path / "specs" / "F1-demo"
+    d.mkdir(parents=True)
+    body = (
+        "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n"
+    )
+    (d / "spec.md").write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))  # UTF-8 BOM
+    r = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    # The rewrite dropped the BOM and stamped a real hash.
+    assert not (d / "spec.md").read_bytes().startswith(b"\xef\xbb\xbf")
+    assert _stored_hash(d / "spec.md") not in ("", "pending")
+    # Re-validating the now-approved doc shows no stale-hash FAIL.
+    v = _run_vs(str(d), "--phase", "spec", "--project-root", str(tmp_path))
+    assert "stale" not in v.stdout.lower()
+
+
+def test_mode_flags_are_mutually_exclusive(tmp_path):
+    """--approve and --set-language are mutually exclusive: argparse rejects the
+    combination (exit 2) instead of silently dropping the language write (I3.2)."""
+    d = _broken_spec_dir(tmp_path)
+    r = _run_vs(str(d), "--approve", "spec", "--set-language", "java",
+                "--project-root", str(tmp_path))
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert "not allowed with argument" in r.stderr
+    # Nothing was approved and no language was persisted.
+    assert _stored_hash(d / "spec.md") == "pending"
+    assert not (tmp_path / ".sdd" / "architecture.json").exists()
+
+
 def test_approve_design_blocked_when_spec_not_approved(tmp_path):
     """The design/tasks validators run check_previous_phase_approved, so the
     gate also enforces Specify -> Design -> Tasks ordering on the approve path."""

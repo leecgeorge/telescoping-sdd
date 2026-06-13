@@ -1427,7 +1427,7 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
     POST-CFC-refresh content_hash (the value written to `**Content Hash:**`), so
     the change decision and the marker agree (H2).
     """
-    original_content = file_path.read_text(encoding="utf-8")
+    original_content = file_path.read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
     # Read the prior stored hash BEFORE trim/CFC-refresh mutates the content (DEF-06).
     stored_hash = read_stored_hash(original_content)
 
@@ -2130,7 +2130,12 @@ def main():
         default="all",
         help="Which phase to validate (default: all existing files)",
     )
-    parser.add_argument(
+    # Mode flags are mutually exclusive: each selects a distinct operation, and
+    # argparse rejects any combination (exit 2) rather than silently resolving by
+    # if-ordering (audit I3.2). --force is a modifier of --approve and stays on
+    # the main parser.
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--approve",
         choices=["scope", "architecture", "plan"],
         help="Approve a phase document (marks it approved with content hash)",
@@ -2140,7 +2145,7 @@ def main():
         action="store_true",
         help="Skip the pre-approval validation gate (use after manually reviewing FAIL items)",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--write-arch-config",
         action="store_true",
         help="Read the '**Architecture token:**' from ARCHITECTURE.md and persist "
@@ -2161,13 +2166,13 @@ def main():
         help="Project root for the .sdd/ pending-review marker (default: walk up "
         "from blueprint_dir)",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--decline-pending",
         action="store_true",
         help="Clear this blueprint's pending-review obligations — an explicit, "
         "auditable decision to skip the upstream panel re-review.",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--restore-anchor",
         action="store_true",
         help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
