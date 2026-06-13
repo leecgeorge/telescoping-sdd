@@ -55,6 +55,7 @@ from blueprint_common import (  # noqa: E402
     extract_panel_section,
     has_approval,
     has_section,
+    section_body,
     _resolve_marker_root_and_key,
     is_basis_migration_only,
     is_shipped_from_contents,
@@ -1585,11 +1586,8 @@ def validate_scope(blueprint_dir: Path) -> ValidationResult:
     # Check for at least one target user defined
     user_sections = re.findall(r"^###\s+.+", content, re.MULTILINE)
     # Filter to only user sections (within Target Users)
-    target_users_match = re.search(
-        r"## Target Users\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if target_users_match:
-        user_block = target_users_match.group(1)
+    user_block = section_body(content, "Target Users")
+    if user_block is not None:
         user_entries = re.findall(r"^###\s+.+", user_block, re.MULTILINE)
         result.add(
             "SCOPE.md defines at least one target user",
@@ -1604,9 +1602,8 @@ def validate_scope(blueprint_dir: Path) -> ValidationResult:
         )
 
     # Check for at least one goal
-    goals_match = re.search(r"## Goals\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
-    if goals_match:
-        goals_block = goals_match.group(1)
+    goals_block = section_body(content, "Goals")
+    if goals_block is not None:
         goal_items = re.findall(r"^-\s+.+", goals_block, re.MULTILINE)
         result.add(
             "SCOPE.md has at least one goal",
@@ -1616,11 +1613,8 @@ def validate_scope(blueprint_dir: Path) -> ValidationResult:
         result.add("SCOPE.md has at least one goal", False)
 
     # Check for at least one non-goal
-    nongoals_match = re.search(
-        r"## Non-Goals\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if nongoals_match:
-        nongoals_block = nongoals_match.group(1)
+    nongoals_block = section_body(content, "Non-Goals")
+    if nongoals_block is not None:
         nongoal_items = re.findall(r"^-\s+.+", nongoals_block, re.MULTILINE)
         result.add(
             "SCOPE.md has at least one non-goal",
@@ -1630,11 +1624,8 @@ def validate_scope(blueprint_dir: Path) -> ValidationResult:
         result.add("SCOPE.md has at least one non-goal", False)
 
     # Check for at least one constraint
-    constraints_match = re.search(
-        r"## Constraints\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if constraints_match:
-        constraints_block = constraints_match.group(1)
+    constraints_block = section_body(content, "Constraints")
+    if constraints_block is not None:
         # Look for table rows (pipe-delimited) beyond the header
         table_rows = re.findall(
             r"^\|[^|]+\|[^|]+\|", constraints_block, re.MULTILINE
@@ -1674,11 +1665,8 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
         )
 
     # Check for at least one component defined (### heading within Components section)
-    components_match = re.search(
-        r"## Components\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if components_match:
-        component_block = components_match.group(1)
+    component_block = section_body(content, "Components")
+    if component_block is not None:
         component_entries = re.findall(r"^###\s+.+", component_block, re.MULTILINE)
         result.add(
             "ARCHITECTURE.md defines at least one component",
@@ -1695,11 +1683,8 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
         )
 
     # Check for at least one technology choice in table
-    tech_match = re.search(
-        r"## Technology Choices\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if tech_match:
-        tech_block = tech_match.group(1)
+    tech_block = section_body(content, "Technology Choices")
+    if tech_block is not None:
         table_rows = re.findall(r"^\|[^|]+\|", tech_block, re.MULTILINE)
         has_tech_data = len(table_rows) > 2  # header + separator + at least one row
         result.add(
@@ -1720,11 +1705,8 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
     )
 
     # Check for component interaction details (table or diagram)
-    interactions_match = re.search(
-        r"## Component Interactions\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if interactions_match:
-        interaction_block = interactions_match.group(1)
+    interaction_block = section_body(content, "Component Interactions")
+    if interaction_block is not None:
         has_diagram = bool(re.search(r"```", interaction_block))
         has_table = bool(re.search(r"\|.*\|.*\|", interaction_block))
         result.add(
@@ -1824,11 +1806,8 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
     )
 
     # Check MVP definition contains feature references
-    mvp_match = re.search(
-        r"## MVP Definition\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if mvp_match:
-        mvp_block = mvp_match.group(1)
+    mvp_block = section_body(content, "MVP Definition")
+    if mvp_block is not None:
         mvp_features = FEATURE_ID_PATTERN.findall(mvp_block)
         result.add(
             "PLAN.md MVP definition references specific features",
@@ -1844,11 +1823,8 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
         )
 
     # Check implementation order has entries
-    order_match = re.search(
-        r"## Implementation Order\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if order_match:
-        order_block = order_match.group(1)
+    order_block = section_body(content, "Implementation Order")
+    if order_block is not None:
         order_features = FEATURE_ID_PATTERN.findall(order_block)
         result.add(
             "PLAN.md implementation order references features",
@@ -1881,11 +1857,8 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
         )
 
     # Check feature dependency coverage
-    deps_match = re.search(
-        r"## Feature Dependencies\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if deps_match:
-        deps_block = deps_match.group(1)
+    deps_block = section_body(content, "Feature Dependencies")
+    if deps_block is not None:
         dep_features = set(FEATURE_ID_PATTERN.findall(deps_block))
         defined_features = {str(n) for n in feature_breakdown_numbers(content)}
         missing_deps = defined_features - dep_features
@@ -1906,11 +1879,8 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
             )
 
     # Check milestones have feature references
-    milestones_match = re.search(
-        r"## Milestones\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL
-    )
-    if milestones_match:
-        milestones_block = milestones_match.group(1)
+    milestones_block = section_body(content, "Milestones")
+    if milestones_block is not None:
         milestone_entries = re.findall(
             r"^###\s+Milestone\s+\d+:", milestones_block, re.MULTILINE
         )
