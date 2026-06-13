@@ -62,6 +62,7 @@ from blueprint_common import (  # noqa: E402
     stamped_at_pass_from_content,
     trim_trajectory_table,
     upsert_pending_entry,
+    validate_panel_review,
     verify_content_hash,
     _upsert_basis_line,
 )
@@ -210,39 +211,9 @@ REQUIREMENT_ID_PATTERN = re.compile(r"^###\s+R(\d+):", re.MULTILINE)
 # Regex to extract requirement references from task Requirement lines (supports comma-separated like "R1, R3")
 TASK_REQUIREMENT_REF_PATTERN = re.compile(r"\*\*Requirement:\*\*\s*((?:R\d+(?:,\s*)?)+)")
 
-# Regex to match panel concerns still awaiting user input (disposition column
-# in `### Latest pass detail`, or in the legacy single Panel Review table).
-# A concern in this disposition must be resolved before validation passes.
-PANEL_UNRESOLVED_DISPOSITION = re.compile(
-    r"\|\s*User input needed\s*\|", re.IGNORECASE
-)
-
-# Regex to match a valid final disposition in `### Latest pass detail` (new
-# format) or the legacy single `## Panel Review` table. The trailing `—` form
-# is the legacy "Panel ran clean" marker, kept for backwards compatibility.
-PANEL_RESOLVED_DISPOSITION = re.compile(
-    r"\|\s*(Addressed|Deferred(?:\s*→[^|]*)?|Sealed|Accepted as risk|Halt and re-scope|—)\s*\|",
-    re.IGNORECASE,
-)
-
-# New-format evidence (post-#5 layout): a row in `### Trajectory` starts with a
-# numeric Pass and ISO-8601 Date. archive_pass.py appends one per archived pass,
-# so any presence indicates the panel has run at least once.
-PANEL_TRAJECTORY_ROW = re.compile(
-    r"^\|\s*\d+\s*\|\s*\d{4}-\d{2}-\d{2}\s*\|", re.MULTILINE
-)
-
-# New-format evidence: a `[SEAL-NN]` entry in `### Sealed dispositions`
-# represents a durable user-directed or accepted-as-risk decision.
-PANEL_SEAL_ENTRY = re.compile(r"^-\s+`\[SEAL-\d+\]`", re.MULTILINE)
-
-# New-format evidence: a row in `### Latest pass detail` starts with a
-# bracketed severity tag in the Severity column. The bracket disambiguates
-# data rows from the column-name header (where `Addressed`, `Deferred`,
-# `Sealed` etc. appear as column labels in `### Trajectory`).
-PANEL_LATEST_DETAIL_ROW = re.compile(
-    r"^\|\s*\[(?:HIGH|MED|LOW)\]", re.MULTILINE
-)
+# Panel-review parsing (regexes + validate_panel_review) lives in
+# blueprint_common so both validators behave identically — including the R10
+# orphaned-Trajectory-row diagnostic (C7), which the prior local copy omitted.
 
 
 # ---------------------------------------------------------------------------
@@ -337,100 +308,10 @@ def validate_resolved(content: str, filename: str, result: ValidationResult) -> 
     )
 
 
-def _extract_panel_section(content: str) -> str:
-    """Return the body of the '## Panel Review' section with HTML comments
-    stripped, or an empty string if the section is missing.
-
-    Stripping comments prevents false positives from example disposition text
-    inside `<!-- ... -->` instructions embedded in the template.
-    """
-    match = re.search(
-        r"^##\s+Panel Review\s*\n(.*?)(?=\n^##\s+|\Z)",
-        content,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not match:
-        return ""
-    body = match.group(1)
-    return re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
-
-
-def validate_panel_review(content: str, filename: str, result: ValidationResult) -> None:
-    """Check that the Panel Review section is present, has real content, and
-    has no unresolved concerns still in the 'User input needed' disposition.
-
-    The Panel Review section is the output of the three-persona pre-gate
-    stress test. Two formats are accepted:
-
-    * **New format:** three sub-sections —
-      `### Trajectory`, `### Sealed dispositions`, `### Latest pass detail`.
-      `archive_pass.py` maintains the Trajectory table; sealed items move into
-      Sealed dispositions; Latest pass detail is cleared between passes.
-    * **Legacy format:** a single `## Panel Review` table with one row per
-      concern, plus an optional `| — | — | No concerns raised | — |
-      Panel ran clean |` row when the panel raised nothing.
-
-    Evidence the panel has run is any of: a resolved-disposition row, a
-    Trajectory row, or a `[SEAL-NN]` entry. An artifact lacking all three —
-    the template state — fails validation.
-    """
-    panel_body = _extract_panel_section(content)
-
-    # Check the section has substantive content. Presence is already covered
-    # by the per-phase required-sections check for spec/design; tasks does not
-    # use a required-sections list, so this also acts as the presence check
-    # for tasks.md.
-    has_body = bool(panel_body.strip())
-    result.add(
-        f"{filename} 'Panel Review' section has content",
-        has_body,
-        "Panel Review section is missing, empty, or contains only placeholder text"
-        if not has_body
-        else "",
-    )
-    if not has_body:
-        return
-
-    # Check for any unresolved panel concerns (disposition 'User input needed')
-    unresolved = PANEL_UNRESOLVED_DISPOSITION.findall(panel_body)
-    result.add(
-        f"{filename} has no unresolved panel concerns",
-        len(unresolved) == 0,
-        f"{len(unresolved)} concern(s) still in 'User input needed' disposition"
-        if unresolved
-        else "",
-    )
-
-    # Evidence the panel has run depends on which format the artifact uses.
-    # We detect new format by the presence of `### Trajectory`. For new format,
-    # PANEL_RESOLVED_DISPOSITION is not used because `Addressed`, `Deferred`,
-    # and `Sealed` appear as column-name labels in the Trajectory header row
-    # and would produce false positives.
-    is_new_format = "### Trajectory" in panel_body
-    if is_new_format:
-        has_trajectory = bool(PANEL_TRAJECTORY_ROW.search(panel_body))
-        has_seal = bool(PANEL_SEAL_ENTRY.search(panel_body))
-        has_latest = bool(PANEL_LATEST_DETAIL_ROW.search(panel_body))
-        panel_ran = has_trajectory or has_seal or has_latest
-        missing_msg = (
-            "No evidence found — panel has not run or its results were not "
-            "written. Expected at least one of: a Trajectory row "
-            "(numeric Pass + ISO date), a `[SEAL-NN]` entry, or a row in "
-            "Latest pass detail with a bracketed severity tag."
-        )
-    else:
-        # Legacy single-table format: resolved disposition row or "Panel ran
-        # clean" marker.
-        panel_ran = bool(PANEL_RESOLVED_DISPOSITION.search(panel_body))
-        missing_msg = (
-            "No resolved dispositions found — panel has not run or results "
-            "were not written"
-        )
-    result.add(
-        f"{filename} 'Panel Review' shows the panel has run",
-        panel_ran,
-        missing_msg if not panel_ran else "",
-    )
+# validate_panel_review is imported from blueprint_common (see import block).
+# The prior local copy was a pre-R10 fork that silently omitted the
+# orphaned-Trajectory-row check; sharing the canonical implementation is what
+# makes spec/design/tasks behave identically to SCOPE/ARCHITECTURE/PLAN (C7/R5).
 
 
 # ---------------------------------------------------------------------------
@@ -539,8 +420,14 @@ def approve_document(
     *,
     task_tick: bool = False,
     project_root: Optional[Path] = None,
-) -> None:
+) -> bool:
     """Mark a document as approved by checking the box and writing the content hash.
+
+    Returns True when the document was actually stamped, False when approval
+    could not be applied (no `## Approval` section, or its checkbox / Content-Hash
+    line is missing so the substitutions would silently no-op). Callers MUST
+    propagate a False return as a non-zero exit — stamping nothing while exiting
+    0 is the silent-corruption failure this guards against (audit R1.5).
 
     Writes are atomic (temp-file + os.replace) to guard against partial-state
     corruption on Ctrl-C / disk-full / process kill mid-write.
@@ -580,7 +467,7 @@ def approve_document(
             f"Error: {file_path} has no `## Approval` section; cannot approve.",
             file=sys.stderr,
         )
-        return
+        return False
     body_start, body_end = approval
     approval_body = content[body_start:body_end]
     approval_body = re.sub(
@@ -594,6 +481,26 @@ def approve_document(
         approval_body,
     )
     approval_body = _upsert_basis_line(approval_body)
+
+    # Verify the substitutions actually landed before writing. A `## Approval`
+    # section whose checkbox or Content-Hash line is missing/mangled makes the
+    # re.subs above silently no-op; without this guard the file would be
+    # rewritten without a real stamp and "Approved:" would print a false success
+    # (audit R1.5). Checkbox check accepts an already-checked box (re-stamp).
+    checkbox_ok = "[x] Approved to proceed" in approval_body
+    hash_ok = f"**Content Hash:** `{content_hash}`" in approval_body
+    if not (checkbox_ok and hash_ok):
+        missing = []
+        if not checkbox_ok:
+            missing.append("a `- [ ] Approved to proceed` checkbox")
+        if not hash_ok:
+            missing.append("a `- **Content Hash:** `...`` line")
+        print(
+            f"Error: {file_path}'s `## Approval` section is missing "
+            f"{' and '.join(missing)}; cannot approve (nothing stamped).",
+            file=sys.stderr,
+        )
+        return False
     content = content[:body_start] + approval_body + content[body_end:]
 
     # Atomic write: temp-file then os.replace. The temp file lives in the
@@ -631,7 +538,7 @@ def approve_document(
             f"task-tick: pending-review suppressed for {file_path} "
             f"(Phase-4 carve-out)"
         )
-        return
+        return True
     root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
     restamp_or_suppress(
         content_hash,
@@ -641,6 +548,7 @@ def approve_document(
         marker_root=root,
         doc_rel=doc_rel,
     )
+    return True
 
 
 def check_previous_phase_approved(
@@ -1635,6 +1543,13 @@ def main():
         "reminder + pending-review marker (only valid with --approve tasks).",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --approve: stamp even when the phase validator FAILs (you "
+        "take responsibility for the approved-but-invalid state). Mirrors "
+        "validate_blueprint.py's Decision-E override.",
+    )
+    parser.add_argument(
         "--decline-pending",
         action="store_true",
         help="Clear this spec dir's pending-review obligations — an explicit, "
@@ -1771,8 +1686,50 @@ def main():
                 f"FAILed. Fix the directory name or in-file identifier above."
             )
             sys.exit(1)
-        approve_document(target, task_tick=args.task_tick, project_root=project_root)
-        sys.exit(0)
+
+        # Decision E (mirrored from validate_blueprint) — gate approval on the
+        # matching phase validator. Approving a structurally-broken document
+        # (missing sections, unresolved [TBD]s, a panel that never ran, an
+        # unapproved upstream phase) silently corrupts state and recreates the
+        # "approved, but next validate FAILs" 3am scenario the blueprint gate
+        # exists to prevent. The design/tasks validators also run
+        # check_previous_phase_approved, so this gate additionally enforces the
+        # Specify -> Design -> Tasks ordering on the approve path. --force
+        # overrides after the user has read the FAIL items.
+        #
+        # Skipped under --task-tick: that is the Phase-4 carve-out for
+        # re-stamping tasks.md after ticking already-approved tasks; the content
+        # was gated at the initial `--approve tasks`, and re-validating each tick
+        # would risk blocking the interactive implement loop.
+        if not args.force and not args.task_tick:
+            if args.approve == "spec":
+                pre_result = validate_spec(spec_dir)
+            else:
+                gate_language, _ = resolve_language(
+                    spec_dir,
+                    explicit=args.language,
+                    detector=detect_language,
+                    known_languages=list(LANGUAGE_PROFILES.keys()),
+                    project_root=project_root,
+                )
+                if args.approve == "design":
+                    pre_result = validate_design(spec_dir, gate_language)
+                else:
+                    pre_result = validate_tasks(spec_dir, gate_language)
+            if not pre_result.passed:
+                print(f"Refusing to approve {target.name}: validation FAILed.")
+                print(pre_result.summary())
+                print(
+                    "\nFix the FAIL items above, OR re-run with --force to "
+                    "approve anyway (you take responsibility for the "
+                    "approved-but-invalid state)."
+                )
+                sys.exit(1)
+
+        stamped = approve_document(
+            target, task_tick=args.task_tick, project_root=project_root
+        )
+        sys.exit(0 if stamped else 1)
 
     # Handle --set-language: the single, explicit write path for the declare-once
     # store. Deliberately separate from --approve — it touches NO content hash and

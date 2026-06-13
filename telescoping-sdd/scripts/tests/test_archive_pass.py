@@ -121,6 +121,27 @@ def test_strict_bar_stamps_trajectory_notes(tmp_path):
     assert "strict-bar pass; converged (0 HIGH)" in text
 
 
+def test_archive_writes_utf8_atomically(tmp_path):
+    """The artifact is written as UTF-8 (not the platform-default locale) and
+    atomically (no leftover temp file). A Deferred disposition emits the non-ASCII
+    arrow into the Trajectory/Deferred sections; that byte must round-trip as the
+    UTF-8 sequence, not be mojibaked or fail to encode (audit R1.3)."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | pragmatist | minor thing | Deferred → PLAN.md | Routed because: downstream work |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    raw = artifact.read_bytes()
+    # Decodes cleanly as UTF-8 (would raise if written via a lossy/locale codec)...
+    text = raw.decode("utf-8")
+    # ...and the arrow is present as the genuine UTF-8 encoding of U+2192.
+    assert "→" in text
+    assert b"\xe2\x86\x92" in raw
+    # Atomic write leaves no temp sibling behind.
+    assert not (tmp_path / "spec.md.tmp").exists()
+
+
 def test_normal_pass_marks_convergence(tmp_path):
     """A NORMAL pass with zero HIGH concerns gets 'converged (0 HIGH)' in Notes."""
     artifact = _artifact_with_latest(

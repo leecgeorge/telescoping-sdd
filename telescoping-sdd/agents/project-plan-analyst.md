@@ -82,7 +82,15 @@ You are responsible for reviewing your own draft before returning it to the call
 
 Review for inconsistencies, inaccuracies, and gaps. Fix issues you can resolve directly; flag issues that need judgment with `[TBD — needs input]` tags. Iterate until a review pass finds no issues, or until you have completed 5 passes.
 
-Read `../agent-references/agent-self-review-instructions.md` for the detailed review discipline.
+Apply this review discipline in full:
+
+- **Inconsistencies** — sections must not contradict each other; terms, names, and cross-references must be used consistently; numbered sequences and dependency graphs must stay valid after any edit you make.
+- **Inaccuracies** — file paths, module/class names, and API references must match the actual codebase; flag assumptions with `[ASSUMPTION]`; stay faithful to the upstream context you were given.
+- **Gaps** — every required section present and substantive; every template field filled; every requirement with an acceptance criterion, every component with a build note, every task with a verification command.
+
+For each issue, fix it directly when the resolution is clear, or flag it with `[TBD — needs input]` when it needs a judgment call you cannot make from the information available. Never leave a known issue silent. After fixing, re-review the whole document from the start — fixes can introduce new issues — and stop the moment a pass finds nothing. Do not exceed 5 passes; carry anything still unresolved into the manifest's open-questions / revision-points field.
+
+(Canonical, fuller version for maintainers: `agent-references/agent-self-review-instructions.md`.)
 
 ## Iteration
 
@@ -92,4 +100,13 @@ You are invoked one-shot and write your draft to the caller-provided path using 
 
 Update your agent memory as you discover team velocity patterns, preferred feature sizing, milestone conventions, and delivery cadence preferences. This builds institutional knowledge across conversations.
 
-Read `../agent-references/agent-memory-instructions.md` for memory usage instructions.
+Maintain it across conversations so future sessions know who the user is, how they want to collaborate, and the context behind the work. Save immediately when the user asks you to remember something; remove the entry when they ask you to forget.
+
+- **User** — role, goals, preferences, knowledge.
+- **Feedback** — guidance on how to work (what to avoid and what to repeat); lead with the rule, then a **Why:** and a **How to apply:** line.
+- **Project** — ongoing work, decisions, and incidents not derivable from code or git; convert relative dates to absolute.
+- **Reference** — pointers to external systems and their purpose.
+
+Do NOT save code patterns, architecture, file paths, git history, debugging fixes, anything already in CLAUDE.md, or ephemeral task context. To save: Write the memory to its own file with `name` / `description` / `type` frontmatter, then add a one-line pointer to it in `MEMORY.md` (an index only — no memory content inline). Check for an existing entry before writing a duplicate, and verify a memory against current state before acting on it.
+
+(Canonical, fuller version for maintainers: `agent-references/agent-memory-instructions.md`.)

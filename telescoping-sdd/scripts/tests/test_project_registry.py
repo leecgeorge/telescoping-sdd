@@ -355,6 +355,30 @@ def test_containment_final_component_symlink_rejected(tmp_path: Path):
     assert result != "TOP SECRET\n"
 
 
+def test_containment_symlink_rejected_without_o_nofollow(tmp_path: Path, monkeypatch):
+    """On a platform lacking os.O_NOFOLLOW (Windows), safe_read_sibling must not
+    raise AttributeError (never-raises contract, audit R1.8) and must still refuse
+    a final-component symlink via the lstat-based fallback."""
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    root = _make_repo_root(tmp_path, "residents")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET\n", encoding="utf-8")
+    link = root / "blueprint" / "PLAN.md"
+    link.symlink_to(secret)
+
+    result = pr.safe_read_sibling(link, root)
+    assert result is None  # lstat fallback refused the symlink; secret never read
+
+
+def test_safe_read_sibling_without_o_nofollow_reads_regular_file(tmp_path: Path, monkeypatch):
+    """The lstat fallback path still reads a genuine regular sibling file."""
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    root = _make_repo_root(tmp_path, "residents")
+    target = root / "blueprint" / "PLAN.md"
+    target.write_text("hello sibling\n", encoding="utf-8")
+    assert pr.safe_read_sibling(target, root) == "hello sibling\n"
+
+
 def test_containment_non_regular_target(tmp_path: Path, monkeypatch):
     """A non-regular target (FIFO / socket) → S_ISREG reject, returns None, no hang."""
     root = _make_repo_root(tmp_path, "residents")
