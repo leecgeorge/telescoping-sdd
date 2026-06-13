@@ -127,7 +127,7 @@ Both skills share a panel-review loop. On rich documents the panel keeps surfaci
 
 `archive_pass.py` requires `--phase {1,2,3}` and drives phase-dependent trigger logic:
 - **Phase 1:** existing `Deferred → DOWNSTREAM` accumulation drives the strict-bar signal; no tag mechanism.
-- **Phase 2 / 3:** panelists prefix every HIGH `Concern` with `[contract]`, `[detail]` (Phase 3 only), or `[upstream]`. `[upstream]` auto-routes to halt votes regardless of disposition. Phase 3's strict-bar signal switches from `Deferred → DOWNSTREAM` accumulation to `[detail]`-tag accumulation (Phase 3 has no further phase to defer to). The script stashes a `tags=dXuYcZ` substring in the `### Trajectory` Notes so subsequent passes can compare.
+- **Phase 2 / 3:** the synthesizer prefixes every HIGH `Concern` with `[contract]`, `[detail]` (Phase 3 only), or `[upstream]` when recording it (the tags are synthesizer-owned advisory labels — see `panel-review.md` § Concern tagging). `[upstream]` auto-routes to halt votes regardless of disposition. Phase 3's strict-bar signal switches from `Deferred → DOWNSTREAM` accumulation to `[detail]`-tag accumulation (Phase 3 has no further phase to defer to). The script stashes a `tags=dXuYcZ` substring in the `### Trajectory` Notes so subsequent passes can compare.
 
 Auto-detection is live: after every NORMAL archive `archive_pass.py` emits a `STRICT-BAR-SIGNAL:` advisory on stdout when both trigger conditions are met. The synthesizer reads the advisory and asks the user before switching mode.
 

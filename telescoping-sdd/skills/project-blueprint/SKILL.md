@@ -13,7 +13,7 @@ A structured workflow that produces project planning documents before any featur
 
 ## Overview
 
-Every project blueprint follows three phases. **Always get user approval before moving to the next phase.**
+Every project blueprint follows three gated phases (Scope, Architecture, Implementation Plan), plus an optional fourth Business Brief render step. **Always get user approval before moving to the next phase.**
 
 1. **Scope** — Define what we're building and why (`SCOPE.md`) — drafted by the `telescoping-sdd:project-spec-analyst` agent
 2. **Architecture** — Design how it fits together (`ARCHITECTURE.md`) — drafted by the `telescoping-sdd:project-architecture-analyst` agent
@@ -49,9 +49,9 @@ This skill emits blueprint artifacts with a two-digit `NN_` ordinal prefix (`01_
 
 **Interactive rename offer (at most once per directory per session).** When you enter the workflow on an existing project, assess whether to offer the hash-safe renamer:
 
-1. **Run the gate:** `python telescoping-sdd/scripts/artifact_prefix.py --check blueprint/`. Offer the rename **only if** stdout is exactly `OFFER`. The gate prints `OFFER` only for a *mixed* (bare + prefixed) directory in an interactive, non-CI session; otherwise it prints `SUPPRESS` and you say nothing about renaming.
+1. **Run the gate:** `python <shared-script-path>/artifact_prefix.py --check blueprint/`. Offer the rename **only if** stdout is exactly `OFFER`. The gate prints `OFFER` only for a *mixed* (bare + prefixed) directory in an interactive, non-CI session; otherwise it prints `SUPPRESS` and you say nothing about renaming.
 2. **Pending-review pre-check.** Before presenting the offer as actionable, confirm the directory has no open `.sdd/pending-review.json` obligation. If one exists, surface that pending obligation instead of the offer — the renamer refuses while a review is pending (a rename would orphan the relpath-keyed marker), so resolve or `--decline-pending` the review first.
-3. **If you offer and the user accepts:** run `python telescoping-sdd/scripts/artifact_prefix.py blueprint/` (renames in place; file content is untouched, so no approval or content hash is invalidated).
+3. **If you offer and the user accepts:** run `python <shared-script-path>/artifact_prefix.py blueprint/` (renames in place; file content is untouched, so no approval or content hash is invalidated).
 4. **If the user declines:** reply with this reassurance verbatim — "No problem — the bare filenames work exactly as well; both forms are accepted everywhere, so the prefix is purely cosmetic ordering." Do **not** re-offer for that same directory again this session.
 
 ## Phase 1: Scope

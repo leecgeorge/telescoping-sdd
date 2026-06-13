@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 import sys
 import unicodedata
+from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -82,8 +83,11 @@ _TITLE_MAX = 4096  # cap before NFKD to avoid pathological normalization
 
 # Canonical user-facing CLI hint for generating a slug. Single source so every
 # FAIL/WARN message in both validators points at the same invocation (avoids the
-# string drifting across copies).
-SLUGIFY_CLI_HINT = 'python telescoping-sdd/scripts/spec_dirname.py slugify "<title>"'
+# string drifting across copies). Derived from this module's own location at
+# runtime so the printed command is actually runnable from the user's
+# environment (the script lives in the plugin install root, NOT under the
+# project's cwd — a literal `telescoping-sdd/scripts/...` would not exist there).
+SLUGIFY_CLI_HINT = f'python {Path(__file__).resolve()} slugify "<title>"'
 
 
 def is_valid_slug(s: str) -> bool:
@@ -304,10 +308,12 @@ def main() -> None:
     """CLI entry point.
 
     Usage:
-        python telescoping-sdd/scripts/spec_dirname.py slugify "Feature Title"
+        python <this-script>/spec_dirname.py slugify "Feature Title"
 
     Invoked by file path, NOT ``python -m spec_dirname`` — the shared scripts
-    directory is not on ``sys.path`` by default.
+    directory is not on ``sys.path`` by default. The user-facing hint
+    (``SLUGIFY_CLI_HINT``) resolves ``<this-script>`` to this file's real
+    absolute location at runtime.
 
     Exit codes:
         0  success
@@ -315,7 +321,7 @@ def main() -> None:
         2  wrong number of arguments or unknown subcommand
     """
     argv = sys.argv[1:]
-    usage = 'usage: python telescoping-sdd/scripts/spec_dirname.py slugify "<title>"'
+    usage = f"usage: {SLUGIFY_CLI_HINT}"
     if len(argv) < 1 or argv[0] != "slugify":
         print(usage, file=sys.stderr)
         sys.exit(2)

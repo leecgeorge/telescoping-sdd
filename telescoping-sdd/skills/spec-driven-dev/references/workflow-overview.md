@@ -43,10 +43,12 @@ Phases 1–3 delegate document drafting to the corresponding subagent via the Ag
 project-root/
 └── specs/
     └── F<n>-<slug>/
-        ├── spec.md      # Phase 1 output
-        ├── design.md    # Phase 2 output
-        └── tasks.md     # Phase 3 output
+        ├── 01_spec.md      # Phase 1 output
+        ├── 02_design.md    # Phase 2 output
+        └── 03_tasks.md     # Phase 3 output
 ```
+
+Artifacts emit with a two-digit `NN_` ordinal prefix by default (so a directory listing sorts in phase order). The bare form (`spec.md`, `design.md`, `tasks.md`) also resolves everywhere on read — the prose below uses the bare names as shorthand.
 
 ## Review Gates
 
@@ -55,7 +57,8 @@ Between each phase, stop and ask the user:
 1. After Specify: "Here's the spec. Does this capture what you want to build?"
 2. After Design: "Here's the design. Does this architecture make sense?"
 3. After Tasks: "Here are the tasks. Is this the right breakdown and order?"
-4. After each task in Implement: "Task T[n] is complete. Ready for the next one?"
+
+Implement (Phase 4) has **no per-task approval gate** — tasks run sequentially through the Phase-4 cycle (`SKILL.md` § Phase 4: Implement), reporting each task's completion inline and continuing to the next. Interactive TDD visibility is the course-correction surface; loop continuation is not a user decision (see `panel-review.md` § Autonomy Boundary).
 
 ## Validation Before Approval
 

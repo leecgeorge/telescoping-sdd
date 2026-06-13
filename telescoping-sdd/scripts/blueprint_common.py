@@ -541,9 +541,16 @@ def all_tasks_ticked(tasks_content: str) -> bool:
 
 
 def read_file(path: Path) -> Optional[str]:
-    """Read file contents (UTF-8) or return None if the path is not a file."""
+    """Read file contents (UTF-8, BOM-tolerant) or return None if not a file.
+
+    Uses utf-8-sig so a leading byte-order mark (common from Windows editors) is
+    stripped rather than surviving as U+FEFF. The hash producer and consumer must
+    read identical text — render_business_brief already strips the BOM, so a plain
+    'utf-8' read here would wedge a BOM'd artifact permanently at 'stale hash'
+    (audit R2.5). Safe for non-BOM files (utf-8-sig only strips a BOM if present).
+    """
     if path.is_file():
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     return None
 
 
@@ -748,9 +755,14 @@ def mixed_state_warning(dir_arg: str, directory: Path) -> Optional[str]:
         return None
     if _has_artifact_ambiguity(directory):
         return None
+    # artifact_prefix.py is a sibling of this module in the shared scripts dir;
+    # derive its real absolute path so the printed command is runnable from the
+    # user's environment (a literal `telescoping-sdd/scripts/...` would not exist
+    # under the project cwd — audit I1.3).
+    renamer = Path(__file__).resolve().parent / "artifact_prefix.py"
     return (
         f"WARN: {dir_arg} has a mixed artifact-prefix state (some files prefixed, "
-        f"some bare). Run `python telescoping-sdd/scripts/artifact_prefix.py "
+        f"some bare). Run `python {renamer} "
         f"{dir_arg}` to complete the rename (hash-safe)."
     )
 
@@ -1617,7 +1629,7 @@ def _read_contained_doc(project_root: Path, key: str) -> "Optional[str]":
     if not _key_is_contained(root, key):
         return None
     try:
-        return (root / key).read_text(encoding="utf-8")
+        return (root / key).read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
     except OSError:
         return None
 
@@ -1658,7 +1670,7 @@ def reconcile_pending_review(
             still_pending.append((key, expected_tag))
             continue
         try:
-            doc_content = (root / key).read_text(encoding="utf-8")
+            doc_content = (root / key).read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
         except OSError:
             still_pending.append((key, expected_tag))
             continue

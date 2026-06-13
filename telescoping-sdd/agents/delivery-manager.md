@@ -52,7 +52,7 @@ Structure your response as:
 - **Hidden Sequencing Assumptions** -- orderings the artifact takes for granted that would derail delivery if wrong
 - **Top Recommendations** -- ranked by impact on reaching a shippable state
 
-Ground every concern in the actual artifact content (or a specific, cited delivery pattern). Surface concerns and recommendations -- do not produce a full delivery plan, timeline, or industry-pattern survey. (The panel synthesizer assigns the `[HIGH]`/`[MED]`/`[LOW]` severity tags when it records your concerns, per `references/panel-review.md` -- you express severity in prose as above.)
+Ground every concern in the actual artifact content (or a specific, cited delivery pattern). Surface concerns and recommendations -- do not produce a full delivery plan, timeline, or industry-pattern survey. (When invoked as a panel reviewer, lead each concern with a bracketed `[HIGH]`/`[MED]`/`[LOW]` severity tag, as `references/panel-review.md` § The Loop requires; the synthesizer records those tags into `### Latest pass detail`. The prose High/Medium/Low labels in the Output Format above are for standalone, non-panel use.)
 
 ## Constraints
 

@@ -29,7 +29,7 @@ Before drafting, answer one intake question: **does this feature implement a mas
 - **The identifier line is `n/a`.** Pass `n/a` as the PLAN feature identifier so the agent writes `**PLAN feature identifier:** `n/a``. The cue to record alongside it: **`n/a` here means "standalone within THIS repo" — the feature is not native to this repo's PLAN; its provenance lives on the `Derived from` line, not on the identifier line.** (Do not pass the master's `F<n>` as the identifier — `check_dir_identifier` FAILs `derived-provenance-mismatch` if a derived spec's identifier is anything but `n/a`.)
 - **Two provenance fields.** Instruct the agent to add, near the `**PLAN feature identifier:**` line:
   - `**Derived from:** `<project>:F<n>`` — the backtick-wrapped master qualified id (e.g. `` `residents:F7` ``). This is the authoritative join key and must match the directory's `<project>--F<n>` prefix.
-  - `**Master contract hash:** `<hash>`` — the master feature's contract hash at bind time. **Bootstrap:** if the master repo is not yet reachable (different org, not yet cloned), write the literal `` `unbound` `` — it passes structural validation, and the first real 64-hex hash is stamped later from `python telescoping-sdd/scripts/reconcile.py --print-link <project>:F<n>`. The two fields must appear together (one without the other FAILs `derived-fields-incomplete`).
+  - `**Master contract hash:** `<hash>`` — the master feature's contract hash at bind time. **Bootstrap:** if the master repo is not yet reachable (different org, not yet cloned), write the literal `` `unbound` `` — it passes structural validation, and the first real 64-hex hash is stamped later from `python <shared-script-path>/reconcile.py --print-link <project>:F<n>`. The two fields must appear together (one without the other FAILs `derived-fields-incomplete`).
 - **Local CFC.** A derived spec is exempt from this repo's `## Cross-Feature Contracts` coherence (the CFC binding obligation below targets *local* PLAN contracts, which a derived feature does not participate in). If the master feature is wrong, do not silently diverge — record an Upstream Change Request and proceed; see `references/workflow-overview.md § Cross-Project Derivation`.
 
 **CFC binding obligation.** If `blueprint/PLAN.md` exists and contains a `## Cross-Feature Contracts` section, the agent must read it. For every `### CFC-N` whose `**Participating features:**` list includes this feature's identifier (`F<n>`), the spec's acceptance criteria must contain the corresponding `**Per-feature AC:**` line tagged `[CFC-N]` on a THEN line. Specifically, append the bracketed tag to the THEN clause that materially implements the contract: `THEN <assertion> [CFC-N]`. Verbatim copying is preferred; non-substantive editing for tense/voice agreement is permitted, but substantive rewording is not — the panel will surface it as a mismatch.
@@ -116,7 +116,7 @@ After the panel review is complete, run validation:
 python <script-path>/validate_spec.py specs/F<n>-<slug>/
 ```
 
-Where `<script-path>` is the path to the skill's `scripts/` directory (either relative from the project, e.g. `specs/F<n>-<slug>/../../spec-driven-dev/scripts`, or the global install location).
+Where `<script-path>` is the skill's own `scripts/` directory at the plugin install root, resolved as defined in `SKILL.md` (marketplace cache or `--plugin-dir`). It is NOT project-relative — there is no `scripts/` directory under the project itself.
 
 **Stop and ask the user to review spec.md before proceeding.**
 

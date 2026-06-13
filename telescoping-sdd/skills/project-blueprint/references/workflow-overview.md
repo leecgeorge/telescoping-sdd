@@ -41,10 +41,12 @@ Each phase delegates document drafting to the corresponding subagent via the Age
 ```
 project-root/
 └── blueprint/
-    ├── SCOPE.md          # Phase 1 output
-    ├── ARCHITECTURE.md   # Phase 2 output
-    └── PLAN.md           # Phase 3 output
+    ├── 01_SCOPE.md          # Phase 1 output
+    ├── 02_ARCHITECTURE.md   # Phase 2 output
+    └── 03_PLAN.md           # Phase 3 output
 ```
+
+Artifacts emit with a two-digit `NN_` ordinal prefix by default (so a directory listing sorts in phase order). The bare form (`SCOPE.md`, `ARCHITECTURE.md`, `PLAN.md`) also resolves everywhere on read — the prose below uses the bare names as shorthand.
 
 ## Review Gates
 
