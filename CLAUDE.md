@@ -21,7 +21,7 @@ This repo serves two purposes:
 | `telescoping-sdd/.claude-plugin/plugin.json` | Plugin manifest |
 | `telescoping-sdd/skills/<name>/SKILL.md` | Plugin skills (`project-blueprint`, `spec-driven-dev`) — invoked as `/telescoping-sdd:<name>` |
 | `telescoping-sdd/agents/*.md` | Every executor + persona invoked by a skill (auto-discovered by Claude Code at plugin tier 4) |
-| `telescoping-sdd/agent-references/` | Shared discipline files read by the executor agents at runtime (kept OUT of `agents/` so the plugin loader does not mis-discover them as subagents) |
+| `telescoping-sdd/agent-references/` | Canonical source for the shared self-review + memory discipline. The load-bearing content is **inlined into each executor agent body** (agent files are system prompts and cannot resolve a relative `Read` path at runtime); these files are the maintainer-facing source of truth — keep the inlined copies in sync with them. Kept OUT of `agents/` so the plugin loader does not mis-discover them as subagents. |
 | `telescoping-sdd/scripts/` | Shared validators (`archive_pass.py`, `blueprint_common.py`, `cfc_parser.py`, `arch_config.py`) and their tests |
 | `telescoping-sdd/documentation/CFC.md` | Cross-Feature Contracts design spec (shared between the two skills) |
 

@@ -1140,6 +1140,19 @@ def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntr
     else:
         result.add("PLAN.md CFC numbers are unique", True)
 
+    # Referential integrity (R1.6): the set of features actually defined in PLAN
+    # (its `### F<n>:` Feature Breakdown headings). Every feature a CFC names —
+    # in Participating features or Enforcement prose — must be in this set. A
+    # typo (F19 for F9) or a feature later deleted from PLAN otherwise yields a
+    # contract that silently never binds anything: compute_coverage maps the
+    # unknown id to 'not-started', a fully-unbound CFC is suppressed from output,
+    # and the consumer can never catch it (the spec for a nonexistent feature
+    # never exists). The "mechanically bound" guarantee must not fail open on a
+    # one-character mistake.
+    defined_features = {
+        int(n) for n in re.findall(r"^###\s+F(\d+):", content, re.MULTILINE)
+    }
+
     # Per-entry field validation.
     for entry in entries:
         cfc_label = f"CFC-{entry.number}"
@@ -1231,6 +1244,30 @@ def validate_cfc_section(content: str, result: ValidationResult) -> list[CFCEntr
                     "to bind.",
                     warn_only=True,
                 )
+
+        # 6. Referential integrity (R1.6): every named feature must be defined
+        # in PLAN's Feature Breakdown. participating_features() returns [] on a
+        # malformed Participating value (already FAILed at step 4), so this does
+        # not double-report; enforcement_owners() returns every F<n> in the
+        # Enforcement prose.
+        named = set(entry.participating_features()) | set(entry.enforcement_owners())
+        unknown = sorted(n for n in named if n not in defined_features)
+        if unknown:
+            labels = ", ".join(f"F{n}" for n in unknown)
+            result.add(
+                f"PLAN.md {cfc_label} references only defined features",
+                False,
+                f"{cfc_label} names feature(s) with no `### F<n>:` entry in "
+                f"PLAN's Feature Breakdown: {labels}. Fix the number, or "
+                f"add/restore the feature — an unknown feature id silently "
+                f"never binds (the contract cannot be enforced against a "
+                f"feature that does not exist).",
+            )
+        elif named:
+            result.add(
+                f"PLAN.md {cfc_label} references only defined features",
+                True,
+            )
 
     return entries
 
@@ -1366,8 +1403,13 @@ def _resolve_marker_root_and_key(
     return Path(root), rel
 
 
-def approve_document(file_path: Path, *, project_root: Optional[Path] = None) -> None:
+def approve_document(file_path: Path, *, project_root: Optional[Path] = None) -> bool:
     """Mark a document as approved by checking the box and writing the content hash.
+
+    Returns True when the document was actually stamped, False when approval
+    could not be applied (no `## Approval` section, or its checkbox / Content-Hash
+    line is missing so the substitutions would silently no-op). Callers MUST
+    propagate a False return as a non-zero exit (audit R1.5).
 
     For PLAN.md, additionally re-writes the per-CFC content hashes inside the
     `## Approval` section so the next validation pass can detect content drift
@@ -1419,7 +1461,7 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
             f"Error: {file_path} has no `## Approval` section; cannot approve.",
             file=sys.stderr,
         )
-        return
+        return False
     body_start, body_end = approval
     approval_body = content[body_start:body_end]
     approval_body = re.sub(
@@ -1433,6 +1475,26 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
         approval_body,
     )
     approval_body = _upsert_basis_line(approval_body)
+
+    # Verify the substitutions actually landed before writing. A `## Approval`
+    # section whose checkbox or Content-Hash line is missing/mangled makes the
+    # re.subs above silently no-op; without this guard the file would be
+    # rewritten without a real stamp and "Approved:" would print a false success
+    # (audit R1.5). Checkbox check accepts an already-checked box (re-stamp).
+    checkbox_ok = "[x] Approved to proceed" in approval_body
+    hash_ok = f"**Content Hash:** `{content_hash}`" in approval_body
+    if not (checkbox_ok and hash_ok):
+        missing = []
+        if not checkbox_ok:
+            missing.append("a `- [ ] Approved to proceed` checkbox")
+        if not hash_ok:
+            missing.append("a `- **Content Hash:** `...`` line")
+        print(
+            f"Error: {file_path}'s `## Approval` section is missing "
+            f"{' and '.join(missing)}; cannot approve (nothing stamped).",
+            file=sys.stderr,
+        )
+        return False
     content = content[:body_start] + approval_body + content[body_end:]
 
     _atomic_write(file_path, content)
@@ -1452,6 +1514,7 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
         marker_root=root,
         doc_rel=doc_rel,
     )
+    return True
 
 
 def _atomic_write(target: Path, content: str) -> None:
@@ -1807,6 +1870,33 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
         len(features) > 0,
         f"Found {len(features)} feature(s)" if features else "No features found",
     )
+
+    # R1.7: feature numbers must be unique. Two `### F3:` blocks collapse
+    # silently in every set()-based feature-id consumer, and the two CPD
+    # consumers resolve a duplicate OPPOSITELY — master_feature's contract hash
+    # takes the FIRST block while reconcile's `Implemented by` takes the LAST —
+    # so a derived repo can be told it is in sync with a contract the master
+    # author believes they replaced. Detect and block at the source.
+    feature_numbers = [
+        int(n) for n in re.findall(r"^###\s+F(\d+):", content, re.MULTILINE)
+    ]
+    dup_counts: dict[int, int] = {}
+    for n in feature_numbers:
+        dup_counts[n] = dup_counts.get(n, 0) + 1
+    dup_features = sorted(n for n, c in dup_counts.items() if c > 1)
+    if dup_features:
+        labels = ", ".join(f"F{n}" for n in dup_features)
+        result.add(
+            "PLAN.md feature numbers are unique",
+            False,
+            f"Duplicate '### F<n>:' heading(s): {labels}. Each feature number "
+            f"must appear exactly once — duplicate blocks collapse silently in "
+            f"feature-id consumers and the two CPD consumers resolve them "
+            f"oppositely (first-block-wins for the master contract hash, "
+            f"last-block-wins for 'Implemented by'). Renumber the duplicate.",
+        )
+    elif features:
+        result.add("PLAN.md feature numbers are unique", True)
 
     # Check that features have acceptance criteria
     has_ac = bool(FEATURE_ACCEPTANCE_CRITERIA.search(content))
@@ -2244,8 +2334,8 @@ def main():
                 print(f"  [{s}] {n}" + (f" — {d}" if d else ""))
             print()
 
-        approve_document(target, project_root=project_root)
-        sys.exit(0)
+        stamped = approve_document(target, project_root=project_root)
+        sys.exit(0 if stamped else 1)
 
     use_json = args.output == "json"
 

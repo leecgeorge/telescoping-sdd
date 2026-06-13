@@ -326,6 +326,71 @@ def test_validate_cfc_section_near_miss_header_fails():
     assert any("header form" in c[0].lower() for c in failures)
 
 
+def _plan_with_features_and_cfc(feature_headings: str, cfc_body: str) -> str:
+    """A PLAN with a real Feature Breakdown plus a single CFC entry."""
+    return (
+        "# Plan\n\n"
+        "## Feature Breakdown\n\n"
+        f"{feature_headings}\n"
+        "## Cross-Feature Contracts\n\n"
+        "### CFC-1: T\n\n"
+        f"{cfc_body}\n"
+        "## Panel Review\n\nblah\n"
+    )
+
+
+def test_validate_cfc_section_unknown_participating_feature_fails():
+    """R1.6: a CFC naming a feature with no `### F<n>:` entry FAILs referential
+    integrity (the typo / deleted-feature case that otherwise binds nothing)."""
+    plan = _plan_with_features_and_cfc(
+        "### F1: Alpha\n\nx\n\n### F2: Beta\n\nx\n",
+        "- **Participating features:** F1, F9\n"  # F9 is undefined
+        "- **Contract:** prose\n"
+        "- **Per-feature AC:** ac\n"
+        "- **Enforcement:** F1 owns the rule\n",
+    )
+    result = vb.ValidationResult()
+    vb.validate_cfc_section(plan, result)
+    failures = [c for c in result.checks if c[1] == "FAIL"]
+    assert any("references only defined features" in c[0] for c in failures)
+    assert any("F9" in c[2] for c in failures)
+
+
+def test_validate_cfc_section_unknown_enforcement_feature_fails():
+    """R1.6: an Enforcement clause naming a nonexistent owner also FAILs."""
+    plan = _plan_with_features_and_cfc(
+        "### F1: Alpha\n\nx\n\n### F2: Beta\n\nx\n",
+        "- **Participating features:** F1, F2\n"
+        "- **Contract:** prose\n"
+        "- **Per-feature AC:** ac\n"
+        "- **Enforcement:** F7 owns the ArchUnit rule\n",  # F7 undefined
+    )
+    result = vb.ValidationResult()
+    vb.validate_cfc_section(plan, result)
+    failures = [c for c in result.checks if c[1] == "FAIL"]
+    assert any("references only defined features" in c[0] for c in failures)
+    assert any("F7" in c[2] for c in failures)
+
+
+def test_validate_cfc_section_all_defined_features_pass():
+    """R1.6: when every named feature exists, the referential check PASSes."""
+    plan = _plan_with_features_and_cfc(
+        "### F1: Alpha\n\nx\n\n### F2: Beta\n\nx\n",
+        "- **Participating features:** F1, F2\n"
+        "- **Contract:** prose\n"
+        "- **Per-feature AC:** ac\n"
+        "- **Enforcement:** F1 owns the ArchUnit rule\n",
+    )
+    result = vb.ValidationResult()
+    vb.validate_cfc_section(plan, result)
+    failures = [c for c in result.checks if c[1] == "FAIL"]
+    assert not any("references only defined features" in c[0] for c in failures)
+    assert any(
+        c[0] == "PLAN.md CFC-1 references only defined features" and c[1] == "PASS"
+        for c in result.checks
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-CFC content hashing
 # ---------------------------------------------------------------------------

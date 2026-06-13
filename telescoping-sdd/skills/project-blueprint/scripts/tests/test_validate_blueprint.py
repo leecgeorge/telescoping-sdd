@@ -368,6 +368,35 @@ def _make_minimal_plan_dir(tmp_path, plan_extra: str = "") -> Path:
     return blueprint_dir
 
 
+def test_validate_plan_fails_on_duplicate_feature_number(tmp_path):
+    """R1.7: two `### F1:` blocks FAIL the uniqueness check — duplicates resolve
+    oppositely across CPD consumers and collapse in set()-based feature lookups."""
+    vb = _load_validate_blueprint()
+    blueprint_dir = _make_minimal_plan_dir(
+        tmp_path, plan_extra="### F1: duplicate of feature 1\n\nbody\n\n",
+    )
+    result = vb.validate_plan(blueprint_dir)
+    failures = [c for c in result.checks if c[1] == "FAIL"]
+    dup = [c for c in failures if c[0] == "PLAN.md feature numbers are unique"]
+    assert dup, f"expected duplicate-feature FAIL; got: {failures}"
+    assert "F1" in dup[0][2]
+
+
+def test_validate_plan_unique_feature_numbers_pass(tmp_path):
+    """A PLAN with distinct feature numbers PASSes the uniqueness check."""
+    vb = _load_validate_blueprint()
+    blueprint_dir = _make_minimal_plan_dir(tmp_path)  # single ### F1:
+    result = vb.validate_plan(blueprint_dir)
+    assert not any(
+        c[0] == "PLAN.md feature numbers are unique" and c[1] == "FAIL"
+        for c in result.checks
+    )
+    assert any(
+        c[0] == "PLAN.md feature numbers are unique" and c[1] == "PASS"
+        for c in result.checks
+    )
+
+
 def test_validate_plan_fails_on_deferred_dispositions_section(tmp_path):
     """PLAN.md containing `### Deferred dispositions` triggers a FAIL result."""
     vb = _load_validate_blueprint()

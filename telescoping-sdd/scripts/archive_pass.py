@@ -62,6 +62,7 @@ Exit codes:
 
 import argparse
 import difflib
+import os
 import re
 import sys
 from collections import Counter
@@ -669,6 +670,30 @@ def _orphan_guard(path, old_content, new_content, dry_run=False):
         )
 
 
+def _atomic_write(path, content):
+    """Write `content` to `path` atomically (temp-file in the same dir + os.replace).
+
+    archive_pass rewrites approval-bearing artifacts (spec.md / design.md /
+    PLAN.md) in place on every panel pass; a plain write_text truncates the file
+    first, so a crash / disk-full / SIGKILL mid-write would leave the panel audit
+    trail and approved content truncated. The temp file lives beside the target so
+    os.replace is atomic; on failure it is removed and the original is untouched.
+    encoding='utf-8' matches every other writer in the repo — the format archive
+    emits contains non-ASCII (the Deferred arrow, em dash, ellipsis), which the
+    platform-default encoding would mojibake or fail to encode (audit R1.3).
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
 def write_or_diff(path, old_content, new_content, dry_run):
     _orphan_guard(path, old_content, new_content, dry_run=dry_run)
     if dry_run:
@@ -681,7 +706,7 @@ def write_or_diff(path, old_content, new_content, dry_run):
         )
         sys.stdout.writelines(diff)
     else:
-        path.write_text(new_content)
+        _atomic_write(path, new_content)
 
 
 def main():
@@ -745,7 +770,7 @@ def main():
         )
         sys.exit(EXIT_FORMAT_VIOLATION)
 
-    content = art.read_text()
+    content = art.read_text(encoding="utf-8")
     lines = content.splitlines()
 
     panel = find_section(lines, H_PANEL_REVIEW)

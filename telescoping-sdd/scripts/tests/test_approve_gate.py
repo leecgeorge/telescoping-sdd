@@ -1,0 +1,117 @@
+"""Decision-E approval gate for validate_spec.py --approve (audit R1.4).
+
+validate_spec --approve previously stamped any document that passed only the
+directory<->identifier cross-check, with no content validation — so a
+structurally broken spec/design/tasks could be approved, recreating the
+"approved, but next validate FAILs" state the blueprint validator's Decision-E
+gate exists to prevent. These tests pin the ported gate and its --force
+override, plus the --task-tick carve-out that intentionally skips it.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+_SCRIPTS = Path(__file__).resolve().parents[1]
+_VS = _SCRIPTS.parent / "skills" / "spec-driven-dev" / "scripts" / "validate_spec.py"
+
+
+def _run_vs(*args):
+    return subprocess.run(
+        [sys.executable, str(_VS), *args], capture_output=True, text=True
+    )
+
+
+def _broken_spec_dir(root: Path, name: str = "F1-demo") -> Path:
+    """A spec dir that PASSES the directory<->identifier cross-check but FAILS
+    content validation (missing required sections, a [TBD], no Panel Review)."""
+    d = root / "specs" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "spec.md").write_text(
+        "# F1: Demo\n\n"
+        "**PLAN feature identifier:** `F1`\n\n"
+        "## Objective\n\n"
+        "Do a thing. [TBD — needs input]\n\n"
+        "## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    return d
+
+
+def _stored_hash(spec_md: Path) -> str:
+    for line in spec_md.read_text(encoding="utf-8").splitlines():
+        if "**Content Hash:**" in line:
+            return line.split("`")[1]
+    return ""
+
+
+def test_approve_refuses_structurally_broken_spec(tmp_path):
+    d = _broken_spec_dir(tmp_path)
+    before = (d / "spec.md").read_bytes()
+    r = _run_vs(str(d), "--approve", "spec", "--project-root", str(tmp_path))
+    assert r.returncode == 1, r.stdout
+    assert "Refusing to approve spec.md" in r.stdout
+    assert "validation FAILed" in r.stdout
+    # The document is NOT stamped — still the pending sentinel, byte-identical.
+    assert (d / "spec.md").read_bytes() == before
+    assert _stored_hash(d / "spec.md") == "pending"
+
+
+def test_approve_force_overrides_the_gate(tmp_path):
+    d = _broken_spec_dir(tmp_path)
+    r = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
+    assert r.returncode == 0, r.stdout
+    assert "Approved:" in r.stdout
+    # --force stamped a real hash over the broken doc (user takes responsibility).
+    assert _stored_hash(d / "spec.md") not in ("", "pending")
+
+
+def test_approve_no_approval_section_exits_nonzero(tmp_path):
+    """A document with no `## Approval` section is refused with a non-zero exit,
+    not a false 'Approved:' on exit 0 (audit R1.5)."""
+    d = tmp_path / "specs" / "F1-demo"
+    d.mkdir(parents=True)
+    body = "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n"
+    (d / "spec.md").write_text(body, encoding="utf-8")
+    r = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert "Approved:" not in r.stdout
+    assert "no `## Approval` section" in r.stderr
+    # The file is untouched.
+    assert (d / "spec.md").read_text(encoding="utf-8") == body
+
+
+def test_approve_malformed_approval_section_exits_nonzero(tmp_path):
+    """A `## Approval` section missing its Content-Hash line makes the substitution
+    no-op; approval must fail (nothing stamped) rather than print a false success."""
+    d = tmp_path / "specs" / "F1-demo"
+    d.mkdir(parents=True)
+    body = (
+        "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n"  # no Content Hash line
+    )
+    (d / "spec.md").write_text(body, encoding="utf-8")
+    r = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert "Approved:" not in r.stdout
+    assert "nothing stamped" in r.stderr
+    # The checkbox was NOT flipped — nothing was written.
+    assert "- [ ] Approved to proceed" in (d / "spec.md").read_text(encoding="utf-8")
+
+
+def test_approve_design_blocked_when_spec_not_approved(tmp_path):
+    """The design/tasks validators run check_previous_phase_approved, so the
+    gate also enforces Specify -> Design -> Tasks ordering on the approve path."""
+    d = _broken_spec_dir(tmp_path)  # spec.md is unapproved (pending)
+    (d / "design.md").write_text(
+        "# Design\n\n## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    r = _run_vs(str(d), "--approve", "design", "--project-root", str(tmp_path))
+    assert r.returncode == 1, r.stdout
+    assert "Refusing to approve design.md" in r.stdout
+    assert _stored_hash(d / "design.md") == "pending"

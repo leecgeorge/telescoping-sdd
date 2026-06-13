@@ -300,7 +300,21 @@ def safe_read_sibling(
         # O_NONBLOCK keeps the open from blocking on a writer-less FIFO (no-op on
         # a regular file) so a non-regular target is rejected by S_ISREG below
         # instead of hanging the open.
-        open_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        #
+        # O_NOFOLLOW is Unix-only; a bare os.O_NOFOLLOW would raise AttributeError
+        # on Windows, violating this function's never-raises contract (audit R1.8).
+        # getattr it; where it is absent, compensate with a pre-open lstat that
+        # refuses a final-component symlink. That reintroduces a small TOCTOU
+        # window (already documented as Risk 8) but preserves the symlink refusal
+        # rather than silently following links.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            try:
+                if stat.S_ISLNK(os.lstat(str(target)).st_mode):
+                    return None
+            except OSError:
+                return None
+        open_flags = os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0)
         try:
             fd = os.open(str(target), open_flags)
         except OSError:

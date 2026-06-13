@@ -1379,21 +1379,22 @@ def _orphan_spec(tmp_path, sub, orphan_row, passes=(1, 2, 3)):
 
 
 def test_r10_load_bearing_orphan_fails_both_validators(tmp_path):
-    content = _churn_doc(passes=(1, 2, 3), checked=True, hash_val="h" * 16)
-    content = content.replace("\n### Sealed", "\n" + _crow(29) + "\n\n### Sealed") \
-        if "### Sealed" in content else content
-    # build a doc whose Trajectory has a stranded high-Pass row
+    # A doc whose Trajectory has a stranded high-Pass (load-bearing) row.
     rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
     doc = (
         "# F\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows + "\n" + _crow(29) + "\n\n"
         "## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
     )
+    # Drive each validator module's OWN validate_panel_review, not the shared
+    # blueprint_common one — that is the regression this guards against (a
+    # validator that forks a pre-R10 local copy would pass the shared call but
+    # fail here).
     for mod in (_load_validate_spec(), _load_validate_blueprint()):
         r = bc.ValidationResult()
-        bc.validate_panel_review(doc, "spec.md", r)
+        mod.validate_panel_review(doc, "spec.md", r)
         blob = _detail_blob(r)
-        assert "ORPHANED-TRAJECTORY-ROW:" in blob
-        assert not r.passed
+        assert "ORPHANED-TRAJECTORY-ROW:" in blob, f"missing in {mod.__name__}"
+        assert not r.passed, f"should block in {mod.__name__}"
 
 
 def test_r10_non_load_bearing_orphan_warns_not_blocks(tmp_path):
