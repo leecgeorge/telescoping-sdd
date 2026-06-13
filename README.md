@@ -127,7 +127,7 @@ Full design in [`telescoping-sdd/documentation/CFC.md`](telescoping-sdd/document
 
 - [Claude Code](https://claude.com/product/claude-code) installed and authenticated
 - A git repository to run the skills against (they rely on `git` commands)
-- Python 3.10+ (only if you want to run the optional validators bundled with each skill)
+- Python 3.9+ (only if you want to run the optional validators bundled with each skill)
 
 ## Install
 
