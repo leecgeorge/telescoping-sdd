@@ -109,8 +109,44 @@ def _artifact_with_latest(tmp_path, latest_rows: str) -> Path:
     return artifact
 
 
-def test_strict_bar_stamps_trajectory_notes(tmp_path):
-    """--strict-bar stamps the Notes column; a zero-HIGH pass is marked converged."""
+def test_find_section_ignores_fenced_example_heading(tmp_path):
+    """3.5e: a fenced `### Trajectory` example BEFORE the real table must not be
+    mistaken for the real section — archive_pass must append the new pass to the
+    REAL table (and leave the fenced example untouched), matching the hash/anchor
+    reader's fence-aware locator."""
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        "# Doc\n\n"
+        "## Panel Review\n\n"
+        "How the trajectory looks (example, do not edit):\n\n"
+        "```\n"
+        "### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        "| 99   | 2000-01-01 | 0 | 0 | 0 | 0 | 0 | fenced example |\n"
+        "```\n\n"
+        "### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        "\n"
+        "### Sealed dispositions\n\n_None yet._\n\n"
+        "### Deferred dispositions\n\n<!-- empty -->\n\n"
+        "### Latest pass detail\n\n"
+        "| Severity | Source | Concern | Disposition | Notes |\n"
+        "|----------|--------|---------|-------------|-------|\n"
+        "| [MED] | pragmatist | minor | Addressed | fixed |\n"
+        "\n## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    # The fenced example row is untouched...
+    assert "| 99   | 2000-01-01 | 0 | 0 | 0 | 0 | 0 | fenced example |" in text
+    # ...and the new pass (1) was appended to the REAL (empty) table, not derived
+    # from the fenced example's pass 99.
+    assert "| 1 " in text
+    assert "| 100 " not in text  # would be 99+1 if the fenced table had been read
     artifact = _artifact_with_latest(
         tmp_path,
         "| [MED] | pragmatist | minor thing | Deferred → PLAN.md | Routed because: downstream work |\n",
@@ -2067,3 +2103,53 @@ def test_archive_normal_trajectory_unaffected(tmp_path):
     text = artifact.read_text()
     # behaviour preserved: a new Pass 2 row is appended contiguously
     assert "| 2 " in text or "| 2 |" in text
+
+
+def test_sealed_rewrite_preserves_interleaved_lines(tmp_path):
+    """3.5f: promoting a new seal into a Sealed section that has a non-matching
+    line interleaved BETWEEN two existing entries must not delete that line. The
+    old whole-span replace (rebuilt from matched lines only) silently dropped it."""
+    interleaved = "<!-- operator note: SEAL-02 reviewed 2026-06-13, keep -->"
+    sealed_body = (
+        "- `[SEAL-01]` **First seal** (pass 1, user-directed) — Defense: a.\n"
+        f"{interleaved}\n"
+        "- `[SEAL-02]` **Second seal** (pass 1, user-directed) — Defense: b.\n"
+        "\n"
+    )
+    artifact = _artifact_with_seals_and_defs(
+        tmp_path,
+        sealed_body=sealed_body,
+        deferred_body="_None yet._\n\n",
+        latest_rows="| [HIGH] | critic | new concern | Sealed | Defense: user-directed keep |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    # Existing entries + the interleaved comment all survive...
+    assert "[SEAL-01]" in text and "[SEAL-02]" in text
+    assert interleaved in text  # would be DELETED by the old span-replace
+    # ...and the new seal (SEAL-03) was appended.
+    assert "[SEAL-03]" in text
+
+
+def test_deferred_rewrite_preserves_interleaved_lines(tmp_path):
+    """3.5f: same protection for the Deferred section."""
+    interleaved = "<!-- DEF-02 superseded by F12; keep for audit -->"
+    deferred_body = (
+        "- `[DEF-01]` **First** → tasks.md (pass 1) — Routed because: a.\n"
+        f"{interleaved}\n"
+        "- `[DEF-02]` **Second** → tasks.md (pass 1) — Routed because: b.\n"
+        "\n"
+    )
+    artifact = _artifact_with_seals_and_defs(
+        tmp_path,
+        sealed_body="_None yet._\n\n",
+        deferred_body=deferred_body,
+        latest_rows="| [MED] | pragmatist | later | Deferred → tasks.md | Routed because: belongs later |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    assert "[DEF-01]" in text and "[DEF-02]" in text
+    assert interleaved in text  # would be DELETED by the old span-replace
+    assert "[DEF-03]" in text

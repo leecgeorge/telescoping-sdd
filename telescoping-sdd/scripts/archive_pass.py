@@ -166,19 +166,39 @@ class FormatViolation(Exception):
 
 def find_section(lines, heading, start=0, end=None):
     """Locate `heading` between `start` and `end`. Section ends at the next
-    heading of the same or higher level, or at `end`."""
+    heading of the same or higher level, or at `end`.
+
+    Fence-aware (audit 3.5e): a heading-shaped line inside a fenced code block
+    (``` ... ```) is a quoted example, not a real section, so it is never matched
+    as the section header AND never treated as the section terminator. Without
+    this, a self-documenting artifact that quotes `### Trajectory` (or `### Sealed
+    dispositions`, etc.) inside a fence would make this writer disagree with
+    blueprint_common's fence-aware hash/anchor reader about which table is real.
+    """
     if end is None:
         end = len(lines)
     level = len(heading) - len(heading.lstrip("#"))
     s = None
+    in_fence = False
     for i in range(start, end):
+        if lines[i].lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         if lines[i].rstrip() == heading:
             s = i
             break
     if s is None:
         return None
     e = end
+    in_fence = False
     for i in range(s + 1, end):
+        if lines[i].lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         if lines[i].startswith("#"):
             line_level = len(lines[i]) - len(lines[i].lstrip("#"))
             if line_level <= level:
@@ -1085,20 +1105,24 @@ def main():
 
     new_traj_block = render_table(TRAJECTORY_COLS, traj_rows + [new_traj_row])
 
-    new_sealed_lines = [lines[e["line_idx"]] for e in seal_entries]
-    for s in new_seals:
-        new_sealed_lines.append(
-            f"- `[SEAL-{s['id']:02d}]` **{s['title']}** "
-            f"(pass {s['pass']}, {s['disposition']}) — Defense: {s['defense']}."
-        )
-
+    # Format ONLY the NEW entries. When a section already has entries we INSERT
+    # these after the last existing one rather than replacing the whole entry
+    # span — a span replace rebuilt from matched lines silently deleted any
+    # interleaved non-matching line (a hand-wrapped entry's continuation, an HTML
+    # comment, operator prose) the strict single-line patterns don't match (audit
+    # 3.5f). For an empty section the existing-entries list is [] so the two forms
+    # coincide.
+    new_seal_entry_lines = [
+        f"- `[SEAL-{s['id']:02d}]` **{s['title']}** "
+        f"(pass {s['pass']}, {s['disposition']}) — Defense: {s['defense']}."
+        for s in new_seals
+    ]
     # T5 (R2): build Deferred-section entry lines
-    new_def_lines = [lines[e["line_idx"]] for e in def_entries]
-    for dd in new_defs:
-        new_def_lines.append(
-            f"- `[DEF-{dd['id']:02d}]` **{dd['title']}** "
-            f"→ {dd['target']} (pass {dd['pass_n']}) — Routed because: {dd['rationale']}."
-        )
+    new_def_entry_lines = [
+        f"- `[DEF-{dd['id']:02d}]` **{dd['title']}** "
+        f"→ {dd['target']} (pass {dd['pass_n']}) — Routed because: {dd['rationale']}."
+        for dd in new_defs
+    ]
 
     new_latest_block = render_table(LATEST_COLS, [])
 
@@ -1122,20 +1146,20 @@ def main():
 
     if new_seals:
         if seal_entries:
-            first_seal = seal_entries[0]["line_idx"]
+            # Insert AFTER the last existing entry (start == end), preserving the
+            # existing entry span verbatim — no whole-span rewrite (3.5f).
             last_seal = seal_entries[-1]["line_idx"] + 1
-            edits.append((first_seal, last_seal, new_sealed_lines))
+            edits.append((last_seal, last_seal, new_seal_entry_lines))
         else:
-            edits.append((s_start + 1, s_start + 1, [""] + new_sealed_lines))
+            edits.append((s_start + 1, s_start + 1, [""] + new_seal_entry_lines))
 
     # T5 (R2): write Deferred-section promotions
     if new_defs and d_start is not None:
         if def_entries:
-            first_def = def_entries[0]["line_idx"]
             last_def = def_entries[-1]["line_idx"] + 1
-            edits.append((first_def, last_def, new_def_lines))
+            edits.append((last_def, last_def, new_def_entry_lines))
         else:
-            edits.append((d_start + 1, d_start + 1, [""] + new_def_lines))
+            edits.append((d_start + 1, d_start + 1, [""] + new_def_entry_lines))
 
     if traj_table is not None:
         h, _, _, last = traj_table
