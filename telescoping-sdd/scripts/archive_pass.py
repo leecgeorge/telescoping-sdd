@@ -75,6 +75,7 @@ from pathlib import Path
 from blueprint_common import (  # noqa: E402
     ORPHANED_TRAJECTORY_TOKEN,
     find_orphaned_trajectory_rows,
+    _is_ascii_int,
 )
 
 
@@ -875,7 +876,16 @@ def main():
         )
         sys.exit(EXIT_USER_INPUT_NEEDED)
 
-    pass_nums = [int(r["Pass"]) for r in traj_rows if r["Pass"].strip().isdigit()]
+    # Use blueprint_common._is_ascii_int (NOT str.isdigit(), which is True for
+    # non-int-convertible Unicode digits like '²' that then crash int()), and
+    # r.get("Pass", "") (NOT r["Pass"], which KeyErrors on a renamed header) so
+    # the writer's next-pass computation matches the hash/anchor reader exactly
+    # (audit R2.7).
+    pass_nums = [
+        int(cell)
+        for cell in (r.get("Pass", "").strip() for r in traj_rows)
+        if _is_ascii_int(cell)
+    ]
     next_pass = max(pass_nums, default=0) + 1
     seal_ids = [e["id"] for e in seal_entries]
     next_seal = max(seal_ids, default=0) + 1

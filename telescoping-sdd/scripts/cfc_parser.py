@@ -81,6 +81,48 @@ FEATURE_ID_WORD_PATTERN = re.compile(r"\bF(\d+)\b")
 # `[CFC-<M>]`" must parse the captured integer and compare to <M>.
 CFC_TAG_PATTERN = re.compile(r"\[CFC-(\d+)\]")
 
+# --- Cross-skill seam grammars (audit R2.3) --------------------------------
+#
+# The producer (validate_blueprint) and consumer (validate_spec) sit on either
+# side of the PLAN→spec/tasks seam and MUST interpret these formats identically.
+# They previously compiled separate byte-identical copies in each validator with
+# no symmetry test — the exact drift channel cfc_parser exists to close. They now
+# live here, the single format owner, imported by both. test_cfc_parser_contract
+# pins the symmetry.
+
+# The `**PLAN feature identifier:** `F<n>`|`n/a`` line a spec.md carries to bind
+# itself to a PLAN feature (or declare itself non-native, for CPD).
+PLAN_FEATURE_ID_PATTERN = re.compile(
+    r"^\*\*PLAN feature identifier:\*\*\s*`(F\d+|n/a)`", re.MULTILINE
+)
+
+# A tasks.md checkbox line carrying a `[CFC-N]` enforcement-task binding. Leading
+# whitespace is allowed so an indented sub-task checkbox counts (per P2-6).
+TASKS_CHECKBOX_CFC_PATTERN = re.compile(
+    r"^[ \t]*-\s+\[[ xX]\]\s+[^\n]*?\[CFC-(\d+)\]", re.MULTILINE
+)
+
+# A `### F<n>:` feature heading (captures the number).
+FEATURE_HEADING_PATTERN = re.compile(r"^###\s+F(\d+):", re.MULTILINE)
+
+_FEATURE_BREAKDOWN_SECTION = re.compile(
+    r"## Feature Breakdown\s*\n(.*?)(?=\n## |\Z)", re.DOTALL
+)
+
+
+def feature_breakdown_numbers(plan_content: str) -> list[int]:
+    """Feature numbers (`### F<n>:`) declared inside PLAN's ## Feature Breakdown,
+    in document order (duplicates preserved so a caller can detect them).
+
+    The producer and consumer both resolve "which features exist" through this
+    one function, so a `### F<n>:` heading placed outside Feature Breakdown can't
+    validate clean on the producer side while breaking every consuming spec
+    (audit R2.3). Returns [] when the section is absent.
+    """
+    m = _FEATURE_BREAKDOWN_SECTION.search(plan_content)
+    body = m.group(1) if m else ""
+    return [int(g) for g in FEATURE_HEADING_PATTERN.findall(body)]
+
 
 class CFCEntry:
     """Parsed representation of one ### CFC-N entry.

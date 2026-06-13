@@ -149,3 +149,34 @@ def test_approve_design_blocked_when_spec_not_approved(tmp_path):
     assert r.returncode == 1, r.stdout
     assert "Refusing to approve design.md" in r.stdout
     assert _stored_hash(d / "design.md") == "pending"
+
+
+def test_approve_corrupt_marker_on_restamp_exits_nonzero(tmp_path):
+    """R2.6: a re-stamp whose obligation cannot be recorded because
+    .sdd/pending-review.json is corrupt must surface loudly and exit non-zero —
+    not raise an uncaught traceback after the document was already stamped."""
+    d = tmp_path / "specs" / "F1-demo"
+    d.mkdir(parents=True)
+    spec = d / "spec.md"
+    spec.write_text(
+        "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nfirst\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    # 1) Clean first approval (no marker yet).
+    r1 = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
+    assert r1.returncode == 0, (r1.stdout, r1.stderr)
+    # 2) Edit the body so the next approve is a CHANGED re-stamp (creates an
+    #    obligation -> reads the marker).
+    spec.write_text(spec.read_text(encoding="utf-8").replace("first", "second edited"), encoding="utf-8")
+    # 3) Corrupt the marker.
+    sdd = tmp_path / ".sdd"
+    sdd.mkdir(exist_ok=True)
+    (sdd / "pending-review.json").write_text("{ <<<<<<< conflict not json", encoding="utf-8")
+    # 4) Re-approve: stamped, but the obligation can't be recorded.
+    r2 = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
+    assert r2.returncode == 1, (r2.stdout, r2.stderr)
+    assert "was NOT recorded" in r2.stderr
+    # The document IS stamped (atomic) — the hash reflects the edited content.
+    assert _stored_hash(spec) not in ("", "pending")

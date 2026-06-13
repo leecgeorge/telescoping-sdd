@@ -138,6 +138,18 @@ def test_has_section_heading_and_bold():
     assert bc.has_section(plain, "Goals") is False
 
 
+def test_has_section_does_not_match_unrelated_superstring_heading():
+    """R2.4: a `## Non-Goals` heading must NOT satisfy a required `Goals` section
+    (the name is anchored to the start of the heading text)."""
+    non_goals = "## Non-Goals\n\nout of scope\n"
+    assert bc.has_section(non_goals, "Non-Goals") is True
+    assert bc.has_section(non_goals, "Goals") is False
+    # The bold fallback is likewise anchored: `**Non-Goals**` is not `Goals`.
+    assert bc.has_section("**Non-Goals:** x\n", "Goals") is False
+    # A multi-word required section still matches its exact heading.
+    assert bc.has_section("## Acceptance Criteria\n\nx\n", "Acceptance Criteria") is True
+
+
 def test_section_has_content_detects_empty():
     populated = "## Goals\n\nReal content.\n"
     empty = "## Goals\n\n"

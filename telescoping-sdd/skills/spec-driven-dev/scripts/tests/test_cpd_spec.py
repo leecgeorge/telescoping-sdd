@@ -404,4 +404,7 @@ def test_cpd_field_grammar_comes_from_project_link():
 
 def test_approval_hash_grammar_comes_from_blueprint_common():
     import blueprint_common
-    assert vs.APPROVAL_HASH_LINE is blueprint_common.APPROVAL_HASH_LINE_STRICT
+    # The approval-hash grammar (and check_approval itself, post-R2.1) is the
+    # shared blueprint_common object — validate_spec imports it, never forks it.
+    assert vs.APPROVAL_HASH_LINE_STRICT is blueprint_common.APPROVAL_HASH_LINE_STRICT
+    assert vs.check_approval is blueprint_common.check_approval

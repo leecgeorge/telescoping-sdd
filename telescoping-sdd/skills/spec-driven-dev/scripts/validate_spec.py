@@ -41,17 +41,24 @@ from blueprint_common import (  # noqa: E402
     APPROVAL_HASH_LINE_STRICT,
     HASH_BASIS_MIGRATION_MSG,
     REAPPROVAL_REMINDER,
+    TBD_PATTERN,
+    UNCHECKED_QUESTION_PATTERN,
+    UNRESOLVED_MARKERS,
     MarkerCorruptError,
     Severity,
     ValidationResult,
     approval_section_bounds,
     changed_since_stamp,
+    check_approval,
+    check_previous_phase_approved,
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    has_section,
     is_basis_migration_only,
     mixed_state_warning,
     now_iso_utc,
+    read_file,
     read_hash_basis,
     read_stored_hash,
     reconcile_to_result,
@@ -64,14 +71,18 @@ from blueprint_common import (  # noqa: E402
     upsert_pending_entry,
     validate_panel_review,
     verify_content_hash,
+    _resolve_marker_root_and_key,
     _upsert_basis_line,
 )
 from cfc_parser import (  # noqa: E402
     CFC_HEADER_PATTERN as CFC_HEADER_RE,
     CFC_TAG_PATTERN as CFC_TAG_RE,
     FEATURE_ID_WORD_PATTERN as FEATURE_ID_WORD_RE,
+    PLAN_FEATURE_ID_PATTERN as PLAN_FEATURE_ID_LINE_RE,
+    TASKS_CHECKBOX_CFC_PATTERN as TASKS_CHECKBOX_WITH_CFC_RE,
     extract_cfc_section,
     extract_cfc_tags,
+    feature_breakdown_numbers,
     find_misplaced_cfc_tags,
     parse_cfc_entries,
 )
@@ -188,22 +199,18 @@ DESIGN_REQUIRED_SECTIONS = [
     "Panel Review",
 ]
 
-# Regex to match task entries like "### T1:", "### - [ ] T1:", or "### - [x] T1:"
-TASK_ENTRY_PATTERN = re.compile(r"^###\s+(?:- \[[ x]\] )?T\d+:", re.MULTILINE)
+# Regex to match task entries like "### T1:", "### - [ ] T1:", or "### - [x] T1:".
+# Accept [ xX] so a task ticked with an uppercase [X] is still counted (audit
+# R2.4) — consistent with blueprint_common._TASK_CHECKBOX_LINE / APPROVAL_CHECKBOX.
+TASK_ENTRY_PATTERN = re.compile(r"^###\s+(?:- \[[ xX]\] )?T\d+:", re.MULTILINE)
 
 # Regex to match GIVEN/WHEN/THEN patterns
 GWT_PATTERN = re.compile(
     r"GIVEN\s+.+\n\s*(?:[-*]\s+)?WHEN\s+.+\n\s*(?:[-*]\s+)?THEN\s+.+", re.MULTILINE
 )
 
-# Regex to match unchecked open questions (e.g., "- [ ] Q1: ...")
-UNCHECKED_QUESTION_PATTERN = re.compile(r"^-\s*\[ \]\s*Q\d+:", re.MULTILINE)
-
-# Regex to match [TBD] markers, including variants like [TBD — needs input]
-TBD_PATTERN = re.compile(r"\[TBD[^\]]*\]", re.IGNORECASE)
-
-# Regex to match general unresolved markers
-UNRESOLVED_MARKERS = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|\?\?\?", re.IGNORECASE)
+# UNCHECKED_QUESTION_PATTERN, TBD_PATTERN, and UNRESOLVED_MARKERS are imported
+# from blueprint_common (audit R2.1) — they were byte-identical local copies.
 
 # Regex to extract requirement IDs (R1, R2, etc.)
 REQUIREMENT_ID_PATTERN = re.compile(r"^###\s+R(\d+):", re.MULTILINE)
@@ -292,23 +299,10 @@ def get_profile(language: str) -> dict:
 # ---------------------------------------------------------------------------
 # File helpers
 # ---------------------------------------------------------------------------
-
-def read_file(path: Path) -> Optional[str]:
-    """Read file contents (BOM-tolerant) or return None if it doesn't exist.
-
-    utf-8-sig strips a leading BOM so producer and consumer hash identical text
-    (audit R2.5); safe for non-BOM files.
-    """
-    if path.is_file():
-        return path.read_text(encoding="utf-8-sig")
-    return None
-
-
-def has_section(content: str, section_name: str) -> bool:
-    """Check if content contains the section name as a heading or bold label."""
-    heading = re.compile(rf"^#+\s+.*{re.escape(section_name)}", re.MULTILINE | re.IGNORECASE)
-    bold = re.compile(rf"\*\*{re.escape(section_name)}", re.IGNORECASE)
-    return bool(heading.search(content) or bold.search(content))
+#
+# read_file and has_section are imported from blueprint_common (audit R2.1) —
+# they were byte-identical local copies. validate_resolved stays local: it
+# diverges from the blueprint validator's (which uses scan_unresolved_markers).
 
 
 def validate_resolved(content: str, filename: str, result: ValidationResult) -> None:
@@ -348,102 +342,17 @@ def validate_resolved(content: str, filename: str, result: ValidationResult) -> 
 # ---------------------------------------------------------------------------
 # Approval helpers
 # ---------------------------------------------------------------------------
-
-# Canonical approval-detection constants. APPROVAL_HEADER / APPROVAL_CHECKBOX
-# are kept identical to validate_blueprint.py's so the two skills' validators
-# interpret the approval format identically (`- [x]` / `- [X]`, a `## Approval`
-# header with flexible surrounding whitespace). The narrow content-hash line is
-# the SHARED `blueprint_common.APPROVAL_HASH_LINE_STRICT` (imported as
-# APPROVAL_HASH_LINE) — both validators key on ONE object so the approval-hash
-# grammar cannot drift between them. Hash comparison routes through the shared
-# blueprint_common.verify_content_hash (case-insensitive); `content_for_hashing`
-# / `compute_content_hash` are likewise imported from blueprint_common, sharing
-# the producer-side implementation for hash coherence across both validators.
-APPROVAL_HEADER = re.compile(r"^##\s+Approval\s*$", re.MULTILINE)
-APPROVAL_CHECKBOX = re.compile(r"- \[[xX]\] Approved to proceed")
-APPROVAL_HASH_LINE = APPROVAL_HASH_LINE_STRICT
+#
+# The approval-detection constants and check_approval now live in
+# blueprint_common (audit R2.1); approve_document below scopes its rewrites via
+# the shared approval_section_bounds. Hash comparison routes through the shared
+# blueprint_common.verify_content_hash; content_for_hashing / compute_content_hash
+# are likewise imported, so the approval-hash grammar cannot drift between the
+# two validators.
 
 
-def check_approval(content: str, filename: str, result: ValidationResult) -> bool:
-    """Check if a document is approved and the approval is still valid.
-
-    Returns True if the document is approved and hash matches.
-    """
-    if not APPROVAL_HEADER.search(content):
-        result.add(f"{filename} has Approval section", False, "Missing ## Approval section")
-        return False
-
-    result.add(f"{filename} has Approval section", True)
-
-    is_approved = bool(APPROVAL_CHECKBOX.search(content))
-    result.add(f"{filename} is approved", is_approved)
-
-    if not is_approved:
-        return False
-
-    hash_match = APPROVAL_HASH_LINE.search(content)
-    if not hash_match:
-        result.add(f"{filename} approval hash present", False, "No content hash found")
-        return False
-
-    stored_hash = hash_match.group(1)
-    hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
-    if (
-        not hashes_match
-        and stored_hash != "pending"
-        and read_hash_basis(content) == "v1"
-        and is_basis_migration_only(
-            original_content=content,
-            stored_hash=stored_hash,
-            content_trimmed=trim_trajectory_table(content),
-        )
-    ):
-        # R4: a v1-basis artifact whose ONLY change is the basis (no substantive
-        # edit) is a MIGRATION — emit the distinguishable HASH-BASIS-MIGRATION FAIL.
-        # A genuine edit to a v1 artifact falls through to the normal stale FAIL
-        # below (its --approve WILL create a marker, so the migration message —
-        # which promises none — must not fire for it).
-        result.add(f"{filename} hash basis is current", False, HASH_BASIS_MIGRATION_MSG)
-        return False
-    result.add(
-        f"{filename} has not been modified since approval",
-        hashes_match,
-        f"Stored: {stored_hash}, Current: {compute_content_hash(content)}"
-        if not hashes_match
-        else "",
-    )
-    return hashes_match
-
-
-def _resolve_marker_root_and_key(
-    path: Path, project_root: Optional[Path]
-) -> "tuple[Path, str]":
-    """Resolve the `.sdd/` marker root and `path`'s project-root-relative key.
-
-    Uses `project_root` when given, else the aliased `arch_find_project_root`
-    (NOT the local `find_project_root`, which targets blueprint/PLAN.md — AD3).
-    Write-side containment guard: if `path` is NOT under the resolved root (a
-    misconfigured `--project-root` that isn't an ancestor would otherwise yield a
-    `../…` key that reconcile permanently rejects -> stuck-pending deadlock),
-    fall back to walking up from `path` (guaranteed an ancestor) and WARN.
-    """
-    start = path if path.is_dir() else path.parent
-    root = (
-        project_root
-        if project_root is not None
-        else arch_find_project_root(start)
-    )
-    rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
-    if rel.startswith("..") or os.path.isabs(rel):
-        print(
-            f"WARNING: project root {root} is not an ancestor of {path}; "
-            f"resolving the .sdd/ marker root by walking up from the document "
-            f"instead (ignoring the supplied root for the marker).",
-            file=sys.stderr,
-        )
-        root = arch_find_project_root(start)
-        rel = Path(os.path.relpath(path.resolve(), Path(root).resolve())).as_posix()
-    return Path(root), rel
+# check_approval and _resolve_marker_root_and_key are imported from
+# blueprint_common (audit R2.1) — both validators shared byte-identical copies.
 
 
 def approve_document(
@@ -571,6 +480,11 @@ def approve_document(
         )
         return True
     root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
+    # restamp_or_suppress may raise MarkerCorruptError (strict marker read) AFTER
+    # the document is already stamped. approve_document lets it propagate so
+    # in-process callers see the failure; the CLI --approve branch catches it for
+    # a clean "stamped, obligation NOT recorded" exit rather than a traceback
+    # (audit R2.6).
     restamp_or_suppress(
         content_hash,
         stored_hash=stored_hash,
@@ -582,28 +496,9 @@ def approve_document(
     return True
 
 
-def check_previous_phase_approved(
-    spec_dir: Path, current_phase: str, result: ValidationResult,
-) -> None:
-    """Verify the previous phase's document is approved before validating the current one."""
-    phase_order = {"design": "spec.md", "tasks": "design.md"}
-    prev_file = phase_order.get(current_phase)
-    if prev_file is None:
-        return  # spec has no previous phase
-
-    prev_path = resolve_artifact(spec_dir, prev_file)
-    prev_content = read_file(prev_path)
-    if prev_content is None:
-        result.add(f"Previous phase ({prev_file}) exists", False)
-        return
-
-    approved = check_approval(prev_content, f"previous phase ({prev_file})", result)
-    if not approved:
-        result.add(
-            f"Previous phase ({prev_file}) approved before this phase",
-            False,
-            f"{prev_file} must be approved before proceeding",
-        )
+# check_previous_phase_approved is imported from blueprint_common (audit R2.1);
+# the SDD phase ordering is passed in via SDD_PHASE_ORDER.
+SDD_PHASE_ORDER = {"design": "spec.md", "tasks": "design.md"}
 
 
 def _read_plan_identifier(
@@ -1048,8 +943,8 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
         "At least one GIVEN/WHEN/THEN block expected" if not has_gwt else "",
     )
 
-    # Check for success criteria checkboxes
-    has_checkboxes = bool(re.search(r"- \[[ x]\]", content))
+    # Check for success criteria checkboxes ([ xX] — accept uppercase, audit R2.4)
+    has_checkboxes = bool(re.search(r"- \[[ xX]\]", content))
     result.add(
         "spec.md has success criteria checkboxes",
         has_checkboxes,
@@ -1086,7 +981,7 @@ def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validat
     result = ValidationResult()
     profile = get_profile(language)
 
-    check_previous_phase_approved(spec_dir, "design", result)
+    check_previous_phase_approved(spec_dir, "design", result, SDD_PHASE_ORDER)
 
     design_path = resolve_artifact(spec_dir, "design.md")
     content = read_file(design_path)
@@ -1125,7 +1020,7 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
     result = ValidationResult()
     profile = get_profile(language)
 
-    check_previous_phase_approved(spec_dir, "tasks", result)
+    check_previous_phase_approved(spec_dir, "tasks", result, SDD_PHASE_ORDER)
 
     tasks_path = resolve_artifact(spec_dir, "tasks.md")
     content = read_file(tasks_path)
@@ -1273,17 +1168,11 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
 # cascade machinery is preserved (no `cfc_consistency.py` in v1); only the
 # file-format parser is shared.
 
-PLAN_FEATURE_ID_LINE_RE = re.compile(
-    r"^\*\*PLAN feature identifier:\*\*\s*`(F\d+|n/a)`", re.MULTILINE
-)
-# Accept optional leading whitespace so indented sub-task checkboxes count
-# alongside top-level ones (per P2-6 from the post-implementation review).
-TASKS_CHECKBOX_WITH_CFC_RE = re.compile(
-    r"^[ \t]*-\s+\[[ xX]\]\s+[^\n]*?\[CFC-(\d+)\]", re.MULTILINE
-)
-PLAN_FEATURE_BREAKDOWN_RE = re.compile(
-    r"^###\s+F(\d+):", re.MULTILINE
-)
+# PLAN_FEATURE_ID_LINE_RE, TASKS_CHECKBOX_WITH_CFC_RE, and the Feature-Breakdown
+# feature resolution all come from cfc_parser now (the shared format owner), so
+# the producer and consumer can't drift on these cross-skill seam grammars
+# (audit R2.3). They are imported above (the first two under their historical
+# local aliases; feature resolution via feature_breakdown_numbers).
 
 
 def find_project_root(spec_dir: Path) -> Optional[Path]:
@@ -1419,18 +1308,12 @@ def validate_cfc_consumer(
         return
 
     # Check identifier resolves to a feature in PLAN's Feature Breakdown.
-    # Per P1-2 from the post-implementation code review: scope the scan to
-    # the `## Feature Breakdown` section body. Without scoping, a `### F<n>:`
+    # Per P1-2: scope to the `## Feature Breakdown` section body so a `### F<n>:`
     # heading anywhere else in PLAN.md (inside `## Open Questions`, an
-    # illustrative quote, a code block, etc.) would silently satisfy the
-    # resolver and accept a feature ID that's not actually a real feature.
-    fb_match = re.search(
-        r"## Feature Breakdown\s*\n(.*?)(?=\n## |\Z)", plan_content, re.DOTALL
-    )
-    feature_breakdown_body = fb_match.group(1) if fb_match else ""
-    plan_feature_ids = {
-        int(g) for g in PLAN_FEATURE_BREAKDOWN_RE.findall(feature_breakdown_body)
-    }
+    # illustrative quote, a code block, etc.) does not silently satisfy the
+    # resolver. Resolution goes through the shared cfc_parser helper so the
+    # producer's feature operations and this consumer agree byte-for-byte (R2.3).
+    plan_feature_ids = set(feature_breakdown_numbers(plan_content))
     if feature_number not in plan_feature_ids:
         result.add(
             "spec.md PLAN feature identifier resolves",
@@ -1764,9 +1647,22 @@ def main():
                 )
                 sys.exit(1)
 
-        stamped = approve_document(
-            target, task_tick=args.task_tick, project_root=project_root
-        )
+        try:
+            stamped = approve_document(
+                target, task_tick=args.task_tick, project_root=project_root
+            )
+        except MarkerCorruptError as exc:
+            # The document was stamped (atomic) before restamp_or_suppress hit the
+            # corrupt marker — surface it cleanly instead of a traceback, and exit
+            # non-zero so the operator re-records the obligation (audit R2.6).
+            print(
+                f"WARNING: {target} was stamped, but its re-approval obligation "
+                f"was NOT recorded: {exc}. The .sdd/pending-review.json marker is "
+                f"corrupt (e.g. unresolved git conflict markers). Fix it and "
+                f"re-run --approve so the obligation for this edit is recorded.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         sys.exit(0 if stamped else 1)
 
     # Handle --set-language: the single, explicit write path for the declare-once

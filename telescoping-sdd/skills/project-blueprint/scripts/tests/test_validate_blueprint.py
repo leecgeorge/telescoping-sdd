@@ -369,12 +369,19 @@ def _make_minimal_plan_dir(tmp_path, plan_extra: str = "") -> Path:
 
 
 def test_validate_plan_fails_on_duplicate_feature_number(tmp_path):
-    """R1.7: two `### F1:` blocks FAIL the uniqueness check — duplicates resolve
-    oppositely across CPD consumers and collapse in set()-based feature lookups."""
+    """R1.7: two `### F1:` blocks inside Feature Breakdown FAIL the uniqueness
+    check — duplicates resolve oppositely across CPD consumers and collapse in
+    set()-based feature lookups. Feature resolution is scoped to ## Feature
+    Breakdown (R2.3), so the duplicate must live there."""
     vb = _load_validate_blueprint()
-    blueprint_dir = _make_minimal_plan_dir(
-        tmp_path, plan_extra="### F1: duplicate of feature 1\n\nbody\n\n",
+    blueprint_dir = _make_minimal_plan_dir(tmp_path)
+    # Overwrite PLAN.md so ## Feature Breakdown carries two ### F1: blocks.
+    plan = blueprint_dir / "PLAN.md"
+    text = plan.read_text(encoding="utf-8").replace(
+        "## Feature Breakdown\n### F1: feature\n",
+        "## Feature Breakdown\n### F1: feature\n\n### F1: duplicate of feature 1\n\nbody\n",
     )
+    plan.write_text(text, encoding="utf-8")
     result = vb.validate_plan(blueprint_dir)
     failures = [c for c in result.checks if c[1] == "FAIL"]
     dup = [c for c in failures if c[0] == "PLAN.md feature numbers are unique"]

@@ -277,3 +277,69 @@ def test_edge_case_missing_per_feature_ac_field_still_parses_cfc():
         "- **Enforcement:** F3 owns z\n"
     )
     assert _producer_numbers(vb, plan) == _consumer_numbers(vs, plan) == [5]
+
+
+# ---------------------------------------------------------------------------
+# Seam-grammar single-ownership (audit R2.3). The PLAN-feature-identifier line
+# and the tasks-checkbox [CFC-N] grammar used to be compiled separately in each
+# validator with no symmetry test. They now live in cfc_parser; these assert
+# both validators reference the SAME object, so they cannot drift.
+# ---------------------------------------------------------------------------
+
+
+def _cfc_parser():
+    scripts = _REPO_ROOT / "telescoping-sdd" / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    return importlib.import_module("cfc_parser")
+
+
+def test_seam_grammars_are_the_shared_objects():
+    vb = _load_producer()
+    vs = _load_consumer()
+    cp = _cfc_parser()
+    # Identity (is), not just equality — both validators alias the one source.
+    assert vb.PLAN_FEATURE_ID_LINE is cp.PLAN_FEATURE_ID_PATTERN
+    assert vs.PLAN_FEATURE_ID_LINE_RE is cp.PLAN_FEATURE_ID_PATTERN
+    assert vb.TASKS_CHECKBOX_WITH_CFC is cp.TASKS_CHECKBOX_CFC_PATTERN
+    assert vs.TASKS_CHECKBOX_WITH_CFC_RE is cp.TASKS_CHECKBOX_CFC_PATTERN
+
+
+def test_feature_breakdown_resolution_is_scoped_and_shared():
+    cp = _cfc_parser()
+    plan = (
+        "# Plan\n\n## Feature Breakdown\n\n"
+        "### F1: alpha\n\nx\n\n### F2: beta\n\nx\n\n"
+        "## Open Questions\n\n### F9: NOT a feature (outside Feature Breakdown)\n"
+    )
+    # Only the two headings inside ## Feature Breakdown count; F9 is excluded.
+    assert cp.feature_breakdown_numbers(plan) == [1, 2]
+
+
+def test_producer_and_consumer_resolve_features_through_same_helper(monkeypatch):
+    # Both validators import feature_breakdown_numbers from cfc_parser; patching
+    # the source is observed by both, proving neither kept a private copy.
+    vb = _load_producer()
+    vs = _load_consumer()
+    cp = _cfc_parser()
+    assert vb.feature_breakdown_numbers is cp.feature_breakdown_numbers
+    assert vs.feature_breakdown_numbers is cp.feature_breakdown_numbers
+
+
+def test_validator_helpers_are_hoisted_to_blueprint_common():
+    """check_approval, _resolve_marker_root_and_key, and
+    check_previous_phase_approved were byte-identical copies in both validators;
+    post-R2.1 both reference the single blueprint_common implementation."""
+    vb = _load_producer()
+    vs = _load_consumer()
+    scripts = _REPO_ROOT / "telescoping-sdd" / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    bc = importlib.import_module("blueprint_common")
+    for name in (
+        "check_approval",
+        "_resolve_marker_root_and_key",
+        "check_previous_phase_approved",
+    ):
+        assert getattr(vb, name) is getattr(bc, name), name
+        assert getattr(vs, name) is getattr(bc, name), name
