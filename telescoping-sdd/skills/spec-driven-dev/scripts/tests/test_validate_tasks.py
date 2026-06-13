@@ -132,3 +132,31 @@ def test_gwt_pattern_accepts_bulleted_form(tmp_path):
     plain = "GIVEN a precondition\n  WHEN an action occurs\n  THEN a result holds"
     assert vs.GWT_PATTERN.search(bulleted)
     assert vs.GWT_PATTERN.search(plain)
+
+
+def _spec_with_requirements(*rnums: int) -> str:
+    """A spec.md whose ## Requirements has one `### R<n>:` heading per number."""
+    reqs = "\n\n".join(f"### R{n}: requirement {n}" for n in rnums)
+    return f"# Spec\n\n## Requirements\n\n{reqs}\n"
+
+
+def test_requirement_coverage_all_covered_passes(tmp_path):
+    """R3.6: the requirement-coverage cross-check (tasks `**Requirement:**` R-nums
+    vs spec `### R<n>:`) — previously never executed because fixtures wrote no
+    sibling spec.md. Full coverage -> PASS."""
+    (tmp_path / "tasks.md").write_text(_doc(_task("T1")), encoding="utf-8")  # references R1
+    (tmp_path / "spec.md").write_text(_spec_with_requirements(1), encoding="utf-8")
+    res = vs.validate_tasks(tmp_path)
+    sev, detail = _check(res, "covers all requirements")
+    assert sev == "PASS"
+    assert "1 requirement(s) covered" in detail
+
+
+def test_requirement_coverage_uncovered_warns(tmp_path):
+    """An uncovered spec requirement -> WARN naming the missing R-number."""
+    (tmp_path / "tasks.md").write_text(_doc(_task("T1")), encoding="utf-8")  # references R1 only
+    (tmp_path / "spec.md").write_text(_spec_with_requirements(1, 2), encoding="utf-8")
+    res = vs.validate_tasks(tmp_path)
+    sev, detail = _check(res, "covers all requirements")
+    assert sev == "WARN"
+    assert "R2" in detail

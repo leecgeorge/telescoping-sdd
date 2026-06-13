@@ -1175,8 +1175,15 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
 # local aliases; feature resolution via feature_breakdown_numbers).
 
 
-def find_project_root(spec_dir: Path) -> Optional[Path]:
-    """Walk upward from spec_dir looking for a sibling `blueprint/` directory."""
+def find_plan_root(spec_dir: Path) -> Optional[Path]:
+    """Walk upward from spec_dir for the dir holding `blueprint/PLAN.md`.
+
+    This locates the PLAN (the consumer's upstream), NOT the project root — do not
+    confuse it with arch_config.find_project_root (imported as
+    arch_find_project_root), which resolves the `.sdd/` marker root by walking up
+    for .git/.sdd/specs/blueprint markers (AD3). Renamed from find_project_root to
+    remove that name collision (audit R3.3).
+    """
     for candidate in (spec_dir.parent, spec_dir.parent.parent):
         if candidate is None:
             continue
@@ -1249,9 +1256,9 @@ def validate_cfc_consumer(
     id_match = PLAN_FEATURE_ID_LINE_RE.search(spec_content)
     identifier = id_match.group(1) if id_match else None
 
-    project_root = find_project_root(spec_dir)
+    plan_root = find_plan_root(spec_dir)
     plan_content = (
-        read_file(resolve_artifact(project_root / "blueprint", "PLAN.md")) if project_root else None
+        read_file(resolve_artifact(plan_root / "blueprint", "PLAN.md")) if plan_root else None
     )
     has_cfc_section = bool(plan_content and CFC_HEADER_RE.search(plan_content))
 

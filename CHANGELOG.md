@@ -2,6 +2,22 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.8.0 — Audit remediation wave 4 (monolith paydown)
+The monolith-paydown wave: the `blueprint_common` God-module split plus the contained correctness items. Behavior-preserving except where a bug was fixed; the public API is byte-identical (re-exports) and there is no artifact-format or `.sdd/` schema change.
+
+- **`blueprint_common` God-module split (R3.1):** the 2,153-line shared module — which mixed pure parsing/hashing with filesystem I/O and which everything imported — is decomposed into focused modules (`blueprint_common` itself drops to 771 lines, **−64%**):
+  - `trajectory.py` — the `### Trajectory` table machinery (fence-aware location, bounds, trim, pass-number reading, orphaned-row detection). A leaf (imports only `re`).
+  - `content_hash.py` — the versioned content-hash basis (v1 includes Trajectory rows, v2 excludes them), its computation/verification, the `## Approval` section grammar, and the change-detection predicates. A layer over `trajectory`.
+  - `artifact_resolution.py` — `NN_`-prefix-aware artifact resolution, the `ArtifactAmbiguityError` fail-closed rule, and `run_cli_failclosed` (the single CLI fail-closed boundary). A leaf.
+  - `pending_review.py` — the `.sdd/pending-review.json` marker lifecycle: atomic read/write, the cross-process advisory lock, the obligation lifecycle, and `reconcile_to_result` (the extraction the module's own long-standing note had planned).
+
+  Done as a facade extraction: `blueprint_common` imports the leaves/layers at the top and `pending_review` at the bottom, and re-exports all of them, so every `from blueprint_common import resolve_artifact` / `compute_content_hash` / `trim_trajectory_table` / `upsert_pending_entry` keeps working and all six consumers are unchanged. `check_approval` stays in `blueprint_common` (it builds a `ValidationResult`, which keeps the layering acyclic: `{trajectory, artifact_resolution} ← content_hash ← blueprint_common ← pending_review`). The synthetic-marketplace CLI test ships all four new modules.
+- **Unified project-root resolution (R3.3):** `validate_plan` hard-coded `project_root = blueprint_dir.parent` for the specs/ coverage walk, assuming specs/ is a sibling of blueprint/ — a non-sibling layout (e.g. `docs/blueprint/` + repo-root `specs/`) silently produced an empty walk while validation "passed". It now resolves the walk root through the shared `arch_config.find_project_root` (honoring `--project-root`), threaded from both dispatch sites. Also renamed `validate_spec.find_project_root` → `find_plan_root` (it locates `blueprint/PLAN.md`, not the project root — removing the AD3 name collision).
+- **Marker lock against concurrent loss (R3.4):** every `.sdd/pending-review.json` operation was an unlocked read-modify-write, so two concurrent `--approve` runs could both read the same baseline and have the second `os.replace` erase the first's just-added entry — silently dropping a re-approval obligation. A reentrant, best-effort cross-process advisory lock (fcntl / msvcrt / no-op fallback) on a sibling `.sdd/pending-review.lock` now serializes the read→write of `upsert_pending_entry`, `restamp_or_suppress`, `clear_pending_entries_for_prefix`, `reconcile_pending_review`, and `restore_anchor_for_prefix`.
+- **Requirement-coverage cross-check now tested (R3.6):** `validate_tasks`'s tasks↔spec R-number coverage check had never executed under any test (fixtures omitted a sibling spec.md). Added PASS and uncovered-WARN tests.
+
+Deferred to a follow-up: decomposing the CC-30 `main()` dispatch (R3.2) and packaging the flat shared-scripts namespace (R3.5).
+
 ## 2.7.0 — Audit remediation wave 3.5 (regex/approval-read + reconcile)
 The Medium-risk sub-items deferred out of Wave 3, group 1. All behavior-preserving except where a bug was fixed; no artifact-format or `.sdd/` schema change.
 
