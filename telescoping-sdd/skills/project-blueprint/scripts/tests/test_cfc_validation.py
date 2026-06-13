@@ -846,6 +846,7 @@ def test_field_regex_empty_participating_features_does_not_swallow_next_line():
 def test_atomic_write_helper_removes_tempfile_on_failure(tmp_path: Path):
     """P1-12 regression: `_atomic_write` cleans up its tempfile if the
     rename step fails (e.g., target is a directory)."""
+    assert hasattr(vb, "_atomic_write"), "_atomic_write must be reachable via vb"
     target = tmp_path / "subdir"
     target.mkdir()  # target is a directory — os.replace will fail
     try:

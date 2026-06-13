@@ -2,6 +2,9 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.10.0 — Audit remediation wave 3.5a (shared approve_document core)
+The last Wave-3 deferral: the two validators (`validate_spec.py`, `validate_blueprint.py`) carried byte-for-byte duplicate `approve_document` bodies — ~140 lines each of trajectory-trim, content-hash, `## Approval`-scoped rewrite, R1.5 stamp verification, atomic write, and re-stamp/marker handling. Hoisted that core into `blueprint_common.approve_document(file_path, *, task_tick=False, project_root=None, content_transform=None)` with a producer hook for the only divergence — blueprint's PLAN.md per-CFC hash refresh, now passed as `content_transform=_plan_cfc_hash_refresh` — and the SDD-only `task_tick` Phase-4 carve-out as a consumer flag. Each validator keeps its `approve_document` as a thin wrapper with an unchanged signature, so every in-process caller and test is unaffected. `_atomic_write` also moved to `blueprint_common` (re-exported on the blueprint side). Pure internal refactor: no artifact-format, hash-basis, or `.sdd/` schema change.
+
 ## 2.9.0 — Audit remediation wave 3.5 group 2 (artifact-mutation safety)
 The two High-risk artifact-mutation sub-items deferred out of Wave 3 — both bug fixes to the in-place `archive_pass.py` rewriter, where the failure mode is data loss. No artifact-format or `.sdd/` schema change.
 

@@ -40,6 +40,8 @@ from blueprint_common import (  # noqa: E402
     UnresolvedMarker,
     ValidationResult,
     approval_hash,
+    approve_document as _approve_document_core,
+    _atomic_write,
     mixed_state_warning,
     resolve_artifact,
     run_cli_failclosed,
@@ -1330,155 +1332,37 @@ def validate_resolved(content: str, filename: str, result: ValidationResult) -> 
 # blueprint_common (audit R2.1) — both validators shared byte-identical copies.
 
 
+def _plan_cfc_hash_refresh(content: str, file_path: Path) -> str:
+    """PRODUCER hook (audit 3.5a): refresh PLAN.md's per-CFC content-hash sub-block.
+
+    Applied by the shared approve_document core to the post-trim content, BEFORE
+    the document-level hash is computed, so the refreshed sub-block is part of the
+    approved content. For non-PLAN.md documents this is a no-op. Lives on the
+    blueprint side because the CFC machinery (extract/parse/render) is
+    blueprint-only; the SDD validator passes no transform.
+    """
+    if strip_artifact_prefix(file_path.name) != "PLAN.md":
+        return content
+    section = extract_cfc_section(content)
+    cfc_entries = parse_cfc_entries(section[2]) if section else []
+    return _write_cfc_hash_block(content, cfc_entries)
+
+
 def approve_document(file_path: Path, *, project_root: Optional[Path] = None) -> bool:
-    """Mark a document as approved by checking the box and writing the content hash.
+    """Mark a document as approved (thin wrapper over the shared core, audit 3.5a).
 
-    Returns True when the document was actually stamped, False when approval
-    could not be applied (no `## Approval` section, or its checkbox / Content-Hash
-    line is missing so the substitutions would silently no-op). Callers MUST
-    propagate a False return as a non-zero exit (audit R1.5).
-
-    For PLAN.md, additionally re-writes the per-CFC content hashes inside the
-    `## Approval` section so the next validation pass can detect content drift
-    on each CFC independently (orphaned-stale-content subtype of the
-    orphan-tag scan).
-
-    All checkbox and hash rewrites are scoped to the `## Approval` section
-    body to prevent silent corruption of phantom `**Content Hash:**` or
-    `- [ ] Approved` strings elsewhere in the document (e.g., a Feature
-    Breakdown entry that happens to include a literal example).
-
-    On a CHANGED-document re-stamp (R1/R2) this prints the REAPPROVAL_REMINDER
-    and writes a `.sdd/pending-review.json` marker entry. There is no task-tick
-    carve-out here — blueprint has no Phase 4. For PLAN.md the marker hash is the
-    POST-CFC-refresh content_hash (the value written to `**Content Hash:**`), so
-    the change decision and the marker agree (H2).
+    Delegates to ``blueprint_common.approve_document``, passing the blueprint-only
+    PLAN.md per-CFC hash refresh as the producer ``content_transform`` so the
+    sub-block is part of the document-level hash (H2). There is no task-tick
+    carve-out here — blueprint has no Phase 4. Signature is preserved so all
+    in-process callers and tests keep working; see the core for the full contract
+    (R1.5 / R2.6 / re-stamp handling).
     """
-    original_content = file_path.read_text(encoding="utf-8-sig")  # BOM-tolerant (R2.5)
-    # Read the prior stored hash BEFORE trim/CFC-refresh mutates the content (DEF-06).
-    stored_hash = read_stored_hash(original_content)
-
-    # Trim the `### Trajectory` table to the latest 15 data rows BEFORE
-    # computing the document hash — the trimmed table is part of the
-    # approved content. Older rows are replaced with a single elided
-    # summary row at the top of the data section; re-approval merges
-    # the existing elided count with new elisions.
-    content = trim_trajectory_table(original_content)
-    content_trimmed = content  # post-trim, PRE-CFC-refresh (the migration baseline)
-
-    # For PLAN.md, refresh the per-CFC content-hash sub-block BEFORE computing
-    # the document-level hash — the sub-block is part of the approved content.
-    if strip_artifact_prefix(file_path.name) == "PLAN.md":
-        section = extract_cfc_section(content)
-        cfc_entries = parse_cfc_entries(section[2]) if section else []
-        content = _write_cfc_hash_block(content, cfc_entries)
-
-    # Compute hash before modifying approval section
-    content_hash = compute_content_hash(content)
-
-    # Update the checkbox + hash + `- **Hash basis:** v2` bullet, scoped to the
-    # ## Approval section body (via the shared approval_section_bounds). Without
-    # scoping, a phantom `- [ ] Approved` or `**Content Hash:** \`...\`` anywhere
-    # else in the document would be silently rewritten.
-    approval = _approval_section_slice(content)
-    if approval is None:
-        # No `## Approval` section -> nothing to stamp. Fail loudly rather than
-        # writing the file back unchanged and printing a false "Approved:" line.
-        print(
-            f"Error: {file_path} has no `## Approval` section; cannot approve.",
-            file=sys.stderr,
-        )
-        return False
-    body_start, body_end = approval
-    approval_body = content[body_start:body_end]
-    approval_body = re.sub(
-        r"- \[ \] Approved to proceed",
-        "- [x] Approved to proceed",
-        approval_body,
+    return _approve_document_core(
+        file_path,
+        project_root=project_root,
+        content_transform=_plan_cfc_hash_refresh,
     )
-    approval_body = re.sub(
-        r"\*\*Content Hash:\*\*\s*`[^`]*`",
-        f"**Content Hash:** `{content_hash}`",
-        approval_body,
-    )
-    approval_body = _upsert_basis_line(approval_body)
-
-    # Verify the substitutions actually landed before writing. A `## Approval`
-    # section whose checkbox or Content-Hash line is missing/mangled makes the
-    # re.subs above silently no-op; without this guard the file would be
-    # rewritten without a real stamp and "Approved:" would print a false success
-    # (audit R1.5). Checkbox check accepts an already-checked box (re-stamp).
-    checkbox_ok = "[x] Approved to proceed" in approval_body
-    hash_ok = f"**Content Hash:** `{content_hash}`" in approval_body
-    if not (checkbox_ok and hash_ok):
-        missing = []
-        if not checkbox_ok:
-            missing.append("a `- [ ] Approved to proceed` checkbox")
-        if not hash_ok:
-            missing.append("a `- **Content Hash:** `...`` line")
-        print(
-            f"Error: {file_path}'s `## Approval` section is missing "
-            f"{' and '.join(missing)}; cannot approve (nothing stamped).",
-            file=sys.stderr,
-        )
-        return False
-    content = content[:body_start] + approval_body + content[body_end:]
-
-    _atomic_write(file_path, content)
-    print(f"Approved: {file_path} (hash: {content_hash})")
-
-    # R1/R2/R4/R9: changed-document re-stamp handling (printed AFTER the Approved
-    # line). `content_hash` is post-CFC-refresh for PLAN.md, so the comparison and
-    # the stored marker hash agree (H2). No task-tick carve-out (blueprint has no
-    # Phase 4). restamp_or_suppress decides: preserve an open obligation (R9),
-    # create a fresh one (R2), or suppress a pure basis migration (R4).
-    root, doc_rel = _resolve_marker_root_and_key(file_path, project_root)
-    # restamp_or_suppress may raise MarkerCorruptError (strict marker read) AFTER
-    # the document is already stamped. approve_document lets it propagate so
-    # in-process callers see the failure; the CLI --approve branch catches it for
-    # a clean "stamped, obligation NOT recorded" exit rather than a traceback
-    # (audit R2.6).
-    restamp_or_suppress(
-        content_hash,
-        stored_hash=stored_hash,
-        original_content=original_content,
-        content_trimmed=content_trimmed,
-        marker_root=root,
-        doc_rel=doc_rel,
-    )
-    return True
-
-
-def _atomic_write(target: Path, content: str) -> None:
-    """Write `content` to `target` atomically via temp-file + os.replace.
-
-    Guards against partial-write corruption on Ctrl-C, disk-full, or process
-    kill mid-write. The temp file lives in the same directory as the target
-    (required for `os.replace` to be atomic across filesystems). On failure
-    the temp file is removed; the original target is untouched.
-
-    On unrecoverable failure the temp-file path is appended to the re-raised
-    exception's args so cross-mount (EXDEV) or permission errors point at a
-    real artifact rather than disappearing into a bare OSError (per the
-    light-touch verification pass, critic finding #3).
-    """
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp_removed = False
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, target)
-    except Exception as exc:
-        try:
-            tmp.unlink(missing_ok=True)
-            tmp_removed = True
-        except Exception:
-            pass
-        tmp_status = "removed" if tmp_removed else f"left at {tmp}"
-        exc.args = (
-            *exc.args,
-            f"atomic write to {target} failed; temp file {tmp_status}",
-        )
-        raise
 
 
 def _write_cfc_hash_block(plan_content: str, cfc_entries: list[CFCEntry]) -> str:
