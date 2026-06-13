@@ -1270,3 +1270,48 @@ def test_reconcile_no_stranded_warn_when_target_exists(tmp_path):
         tmp_path, "specs/F3-new", decline_cmd="x",
     )
     assert bc.STRANDED_OBLIGATION_TOKEN not in " | ".join(c[2] for c in res.checks)
+
+
+def test_marker_lock_is_reentrant(tmp_path):
+    """R3.4: nested _marker_lock (restamp -> upsert) must not deadlock, and the
+    depth counter returns to 0. The lock + counter live in pending_review (R3.1);
+    bc._marker_lock is the re-export."""
+    import pending_review as pr
+    assert pr._marker_lock_depth == 0
+    with bc._marker_lock(tmp_path):
+        assert pr._marker_lock_depth == 1
+        with bc._marker_lock(tmp_path):
+            assert pr._marker_lock_depth == 2
+        assert pr._marker_lock_depth == 1
+    assert pr._marker_lock_depth == 0
+
+
+def test_marker_lock_excludes_other_process(tmp_path):
+    """R3.4: while this process holds _marker_lock, another process cannot acquire
+    an exclusive lock on the same .sdd/pending-review.lock — proving the lock is a
+    real cross-process advisory lock, not just an in-process counter."""
+    import subprocess
+    import pending_review as pr
+    if pr._fcntl is None:  # pragma: no cover - non-POSIX
+        import pytest
+        pytest.skip("fcntl unavailable")
+    lock_path = (tmp_path / ".sdd" / "pending-review.lock")
+    child = (
+        "import fcntl, sys\n"
+        f"f = open(r'{lock_path}', 'a+')\n"
+        "try:\n"
+        "    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    print('GOT')\n"
+        "except BlockingIOError:\n"
+        "    print('BLOCKED')\n"
+    )
+    with bc._marker_lock(tmp_path):
+        out = subprocess.run(
+            [sys.executable, "-c", child], capture_output=True, text=True
+        ).stdout.strip()
+    assert out == "BLOCKED", out
+    # Released after the context — the child can now acquire it.
+    out2 = subprocess.run(
+        [sys.executable, "-c", child], capture_output=True, text=True
+    ).stdout.strip()
+    assert out2 == "GOT", out2

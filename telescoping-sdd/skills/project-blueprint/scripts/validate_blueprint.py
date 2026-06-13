@@ -1721,7 +1721,9 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
     return result
 
 
-def validate_plan(blueprint_dir: Path) -> ValidationResult:
+def validate_plan(
+    blueprint_dir: Path, project_root: Optional[Path] = None
+) -> ValidationResult:
     """Validate PLAN.md for required sections and resolved questions."""
     result = ValidationResult()
 
@@ -1911,15 +1913,20 @@ def validate_plan(blueprint_dir: Path) -> ValidationResult:
     # ONE walk of specs/ (`_classified_spec_entries`) feeds BOTH the SpecState
     # classification AND the malformed-dirname WARNs, so each entry is listed and
     # classified once (it was iterated/classified twice before).
-    project_root = blueprint_dir.parent
-    spec_entries = _classified_spec_entries(project_root)
+    # Resolve the specs/ walk root through the shared marker-walk (honoring an
+    # explicit --project-root) rather than hard-coding blueprint_dir.parent, which
+    # assumed specs/ is a sibling of blueprint/ and silently produced an empty
+    # walk on a non-sibling layout (e.g. docs/blueprint/ + repo-root specs/) —
+    # audit R3.3. Falls back to blueprint_dir.parent if no marker root is found.
+    walk_root = arch_find_project_root(blueprint_dir, project_root) or blueprint_dir.parent
+    spec_entries = _classified_spec_entries(walk_root)
     _emit_malformed_dirname_warns(spec_entries, result)
     # CPD derived-dir exclusion (I10): read the sibling registry ONCE here and
     # pass it in — never re-read per directory. `_states_from_entries` excludes
     # derived dirs from coverage; this surfaces the sibling-gated informational
     # WARN for any derived dir lacking a matching master sibling.
-    derived_registry = project_registry.read_projects_config(project_root)
-    _emit_derived_dir_warns(spec_entries, derived_registry, project_root, result)
+    derived_registry = project_registry.read_projects_config(walk_root)
+    _emit_derived_dir_warns(spec_entries, derived_registry, walk_root, result)
     spec_states = _states_from_entries(spec_entries)
     has_any_cfc_tags = any(
         s.cfc_tags_in_spec or s.cfc_tags_in_tasks for s in spec_states
@@ -2174,7 +2181,7 @@ def main():
         validators = {
             "scope": validate_scope,
             "architecture": validate_architecture,
-            "plan": validate_plan,
+            "plan": lambda d: validate_plan(d, project_root),
         }
         # Compute the pre-approval result once: it drives both the Decision-E
         # gate and the CFC-drift surfacing below.
@@ -2255,7 +2262,7 @@ def main():
             "Architecture (ARCHITECTURE.md)",
             lambda d: validate_architecture(d),
         ),
-        "plan": ("Plan (PLAN.md)", lambda d: validate_plan(d)),
+        "plan": ("Plan (PLAN.md)", lambda d: validate_plan(d, project_root)),
     }
 
     for phase_key, (label, validator) in validators.items():

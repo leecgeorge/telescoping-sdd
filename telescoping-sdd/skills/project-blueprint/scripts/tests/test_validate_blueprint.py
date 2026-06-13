@@ -240,6 +240,14 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     dst_scripts = synth_root / "scripts"
     dst_scripts.mkdir(exist_ok=True)
     shutil.copy2(src_scripts / "blueprint_common.py", dst_scripts / "blueprint_common.py")
+    # trajectory.py (leaf), content_hash.py (layer over trajectory), and
+    # pending_review.py hold concerns blueprint_common re-exports (audit R3.1);
+    # blueprint_common imports all three at load time, so a published install
+    # ships them in the shared scripts dir and the synthetic layout must too.
+    shutil.copy2(src_scripts / "trajectory.py", dst_scripts / "trajectory.py")
+    shutil.copy2(src_scripts / "content_hash.py", dst_scripts / "content_hash.py")
+    shutil.copy2(src_scripts / "artifact_resolution.py", dst_scripts / "artifact_resolution.py")
+    shutil.copy2(src_scripts / "pending_review.py", dst_scripts / "pending_review.py")
     shutil.copy2(src_scripts / "cfc_parser.py", dst_scripts / "cfc_parser.py")
     # arch_config.py is a runtime import of validate_blueprint (the --write-arch-config
     # seam); a published install ships it in the shared scripts dir, so the synthetic
@@ -387,6 +395,40 @@ def test_validate_plan_fails_on_duplicate_feature_number(tmp_path):
     dup = [c for c in failures if c[0] == "PLAN.md feature numbers are unique"]
     assert dup, f"expected duplicate-feature FAIL; got: {failures}"
     assert "F1" in dup[0][2]
+
+
+def test_validate_plan_specs_walk_honors_project_root_non_sibling(tmp_path):
+    """R3.3: on a non-sibling layout (docs/blueprint/ + repo-root specs/), the
+    specs/ walk must honor --project-root instead of hard-coding
+    blueprint_dir.parent (which would look in docs/specs/ and find nothing)."""
+    vb = _load_validate_blueprint()
+    (tmp_path / ".git").mkdir()
+    bp = tmp_path / "docs" / "blueprint"
+    bp.mkdir(parents=True)
+    # A malformed (`invalid`) spec dirname under the REPO-ROOT specs/.
+    bad = tmp_path / "specs" / "F1_bad"
+    bad.mkdir(parents=True)
+    (bad / "spec.md").write_text("# x\n", encoding="utf-8")
+    # Minimal PLAN.md so validate_plan reaches the specs walk.
+    (bp / "PLAN.md").write_text(
+        "# PLAN\n\n## Feature Breakdown\n### F1: f\n\n## MVP Definition\n\n"
+        "## Feature Dependencies\n\n## Implementation Order\n\n## Milestones\n\n"
+        "## Panel Review\n\n## Approval\n- [ ] Approved\n- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    for name in ("SCOPE.md", "ARCHITECTURE.md"):
+        (bp / name).write_text(
+            f"# {name}\n\n## Approval\n- [x] Approved\n- **Content Hash:** `abc123`\n",
+            encoding="utf-8",
+        )
+
+    def _has_malformed(result):
+        return any("malformed" in c[0].lower() or "F1_bad" in c[2] for c in result.checks)
+
+    # With --project-root the walk finds repo-root specs/ and surfaces the warn;
+    # without it, blueprint_dir.parent == docs/ has an empty specs walk.
+    assert _has_malformed(vb.validate_plan(bp, project_root=tmp_path))
+    assert not _has_malformed(vb.validate_plan(bp))
 
 
 def test_validate_plan_unique_feature_numbers_pass(tmp_path):
