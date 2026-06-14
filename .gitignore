@@ -25,9 +25,11 @@ Thumbs.db
 .claude
 .claude/settings.local.json
 
-# SDD pending-review marker (per-machine runtime state) + its atomic-write temps.
-# Ignore the FILE, not the .sdd/ dir — .sdd/architecture.json stays tracked.
+# SDD pending-review marker (per-machine runtime state) + its atomic-write temps
+# + the advisory-lock backing file (created by pending_review.py's _marker_lock).
+# Ignore the FILES, not the .sdd/ dir — .sdd/architecture.json stays tracked.
 /.sdd/pending-review.json
+/.sdd/pending-review.lock
 /.sdd/*.tmp
 
 # SDD working artifacts — author-side specs/design/tasks, NOT part of the

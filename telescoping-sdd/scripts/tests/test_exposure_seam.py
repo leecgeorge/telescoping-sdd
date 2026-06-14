@@ -4,7 +4,8 @@ Asserts the exposure-triage (1a), doctrine + response-rule (2b), sequencing-chec
 (2a-lite), and security-reviewer cross-check (C9) controls are PRESENT — within their
 named `##` sections, or file-wide for the inline back-links — mirrored across both
 tiers, that the back-links resolve to a real target heading, that the three-panelist
-invariant is intact (no 4th seat), and that the v2.1.0 release metadata is in lockstep.
+invariant is intact (no 4th seat), and that the current release metadata
+(EXPECTED_VERSION, across plugin.json / marketplace.json / CHANGELOG) is in lockstep.
 
 See specs/security-exposure-seam/{spec,design,tasks}.md (R1-R6; anchors A1-A7; DM1-DM4).
 
@@ -57,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.11.0"
-CHANGELOG_FIRST_ENTRY = "## 2.11.0 — Audit remediation final cleanup (R3.2, R3.5, I3.1/I3.4/I3.5/I3.6)"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.12.0"
+CHANGELOG_FIRST_ENTRY = "## 2.12.0 — Panel-input disk-read mandate"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
@@ -215,7 +216,8 @@ def test_version_marketplace_json():
 
 
 def test_changelog_em_dash_entry():
-    # The FIRST '## '-prefixed line must be the 2.1.0 entry with a U+2014 em-dash (ordering matters).
+    # The FIRST '## '-prefixed line must equal CHANGELOG_FIRST_ENTRY (the newest
+    # release entry, with a U+2014 em-dash; ordering matters — newest first).
     first_heading = next(
         line.rstrip("\n\r ") for line in _read(CHANGELOG).splitlines() if line.startswith("## ")
     )
