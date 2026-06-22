@@ -58,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.12.0"
-CHANGELOG_FIRST_ENTRY = "## 2.12.0 — Panel-input disk-read mandate"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.13.0"
+CHANGELOG_FIRST_ENTRY = "## 2.13.0 — Downstream identifier guard (no `F<n>`/`T<n>` in upstream artifacts)"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):

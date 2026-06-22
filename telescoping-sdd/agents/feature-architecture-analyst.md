@@ -104,6 +104,7 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 - Prefer tables and structured formats over prose; code blocks for signatures and examples
 - Flag assumptions with **[ASSUMPTION]** tags for user review
 - Flag gaps with **[TBD — needs input]** markers
+- **DO NOT use downstream identifier references in this artifact.** Task IDs (`T<n>`) are minted downstream in `03_tasks.md`, not in spec/design artifacts — referencing one reaches into a task decomposition that does not exist yet and creates a phantom coupling that goes stale when tasks are renumbered. Allowed: naming the downstream file or phase ("the Tasks phase", `tasks.md`, `03_tasks.md`, `Deferred → tasks.md`); an example token inside a backtick span (`` `T5` ``). Prohibited: a real `T<n>` token in prose, or a `### T<n>:` heading (the heading form blocks `--approve`).
 
 ### Quality & Consistency
 

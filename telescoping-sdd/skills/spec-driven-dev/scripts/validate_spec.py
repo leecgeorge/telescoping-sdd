@@ -101,6 +101,7 @@ from arch_config import (  # noqa: E402
     resolve_language,
     write_arch_config,
 )
+from downstream_ref_guard import PolicyConfig, scan_for_downstream_refs  # noqa: E402
 from spec_dirname import (  # noqa: E402
     SLUGIFY_CLI_HINT,
     classify_dirname,
@@ -213,6 +214,20 @@ DESIGN_REQUIRED_SECTIONS = [
 # Accept [ xX] so a task ticked with an uppercase [X] is still counted (audit
 # R2.4) — consistent with blueprint_common._TASK_CHECKBOX_LINE / APPROVAL_CHECKBOX.
 TASK_ENTRY_PATTERN = re.compile(r"^###\s+(?:- \[[ xX]\] )?T\d+:", re.MULTILINE)
+
+# SDD-tier policy for the shared downstream-identifier guard (T<n>; minted in
+# 03_tasks.md). v1: heading form blocks --approve, bare token is a non-blocking WARN.
+SDD_DOWNSTREAM_POLICY = PolicyConfig(
+    letter="T",
+    heading_warn_only=False,
+    bare_warn_only=True,
+    troubleshooting_ref=(
+        "See spec-driven-dev/references/troubleshooting.md "
+        "'Downstream identifier in upstream artifact'."
+    ),
+    noun="task",
+    downstream_artifact="03_tasks.md",
+)
 
 # Regex to match GIVEN/WHEN/THEN patterns
 GWT_PATTERN = re.compile(
@@ -863,6 +878,9 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     # via this path — only the --approve path (which has no such guard) can.
     result.checks.extend(check_dir_identifier(spec_dir, spec_content=content).checks)
 
+    for finding in scan_for_downstream_refs(content, "spec.md", SDD_DOWNSTREAM_POLICY):
+        result.add(finding.check_name, False, finding.detail, warn_only=finding.warn_only)
+
     return result
 
 
@@ -901,6 +919,9 @@ def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validat
 
     validate_resolved(content, "design.md", result)
     validate_panel_review(content, "design.md", result)
+
+    for finding in scan_for_downstream_refs(content, "design.md", SDD_DOWNSTREAM_POLICY):
+        result.add(finding.check_name, False, finding.detail, warn_only=finding.warn_only)
 
     return result
 

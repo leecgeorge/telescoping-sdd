@@ -109,6 +109,7 @@ from arch_config import (  # noqa: E402
     parse_arch_token,
     write_arch_config,
 )
+from downstream_ref_guard import PolicyConfig, scan_for_downstream_refs  # noqa: E402
 from spec_dirname import (  # noqa: E402
     SLUGIFY_CLI_HINT,
     classify_dirname,
@@ -181,6 +182,20 @@ COMPONENT_ENTRY_PATTERN = re.compile(r"^###\s+\S+", re.MULTILINE)
 
 # Regex to match feature IDs referenced in dependency/order tables
 FEATURE_ID_PATTERN = re.compile(r"\bF(\d+)\b")
+
+# Blueprint-tier policy for the shared downstream-identifier guard (F<n>; minted in
+# 03_PLAN.md). v1: heading form blocks --approve, bare token is a non-blocking WARN.
+BLUEPRINT_DOWNSTREAM_POLICY = PolicyConfig(
+    letter="F",
+    heading_warn_only=False,
+    bare_warn_only=True,
+    troubleshooting_ref=(
+        "See project-blueprint/references/troubleshooting.md "
+        "'Downstream identifier in upstream artifact'."
+    ),
+    noun="feature",
+    downstream_artifact="03_PLAN.md",
+)
 
 # Regex to match component references in feature breakdown
 FEATURE_COMPONENT_REF = re.compile(r"\*\*Component:\*\*\s*(.+)")
@@ -1532,6 +1547,9 @@ def validate_scope(blueprint_dir: Path) -> ValidationResult:
     validate_resolved(content, "SCOPE.md", result)
     validate_panel_review(content, "SCOPE.md", result)
 
+    for finding in scan_for_downstream_refs(content, "SCOPE.md", BLUEPRINT_DOWNSTREAM_POLICY):
+        result.add(finding.check_name, False, finding.detail, warn_only=finding.warn_only)
+
     return result
 
 
@@ -1608,6 +1626,9 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
 
     validate_resolved(content, "ARCHITECTURE.md", result)
     validate_panel_review(content, "ARCHITECTURE.md", result)
+
+    for finding in scan_for_downstream_refs(content, "ARCHITECTURE.md", BLUEPRINT_DOWNSTREAM_POLICY):
+        result.add(finding.check_name, False, finding.detail, warn_only=finding.warn_only)
 
     return result
 
