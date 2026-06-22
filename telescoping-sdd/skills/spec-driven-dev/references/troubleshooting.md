@@ -67,3 +67,16 @@ Otherwise the copies differ only cosmetically (terminology mapping, example word
 
 - **Cause:** Expected — reviewers like `testability-reviewer` or `delivery-manager` sometimes surface concerns that belong downstream.
 - **Solution:** Record the concern in `### Latest pass detail` with disposition `Deferred → <TARGET.md>` and move on. The downstream phase's panelists will see the deferral when they read the upstream artifact. For `tasks.md` (the last artifact phase), deferral is not available — mark the concern as `Addressed` in-phase, `Sealed` (user-directed), or `Accepted as risk` (with `Defense:` in Notes).
+
+## Downstream identifier in upstream artifact
+
+You ran the validator on `spec.md` or `design.md` and saw a finding such as `spec.md must not contain a downstream task-identifier heading (T5 at line 12)` — a **FAIL** that blocks `--approve` — or `design.md has a bare downstream task-identifier reference (T3 at line 47)` — a non-blocking **WARN**.
+
+- **Why it fires:** task numbers (`T<n>`) are assigned *downstream*, in `03_tasks.md` — not in a spec or design document. Numbering a task in an upstream doc points at a breakdown that does not exist yet; when tasks are later renumbered, the upstream doc silently goes stale. The guard catches that early.
+- **Why a heading blocks but a bare token only warns:** a line-start heading like `### T5: Setup` has no innocent reading in an upstream doc — it *is* a task breakdown, so it FAILs. A bare `T5` in running prose is often something else (a label, a local test-ID, an example), so it only WARNs and never blocks approval.
+- **Tier asymmetry:** the SDD tier flags only `T<n>` (task IDs); the blueprint tier (`SCOPE.md` / `ARCHITECTURE.md`) flags only `F<n>` (feature IDs). The SDD tier never flags `F<n>` — your spec's own `**PLAN feature identifier:** F<n>` line is fine — and `03_tasks.md` itself is never scanned, since it legitimately mints `### T<n>:` headings.
+- **What "backtick" means:** wrapping a token in backticks — `` `T5` `` — marks it as an inline code example, and the guard skips it. Use this only when you genuinely need to *show* the token as an example.
+- **How to fix — pair the fix to what you have:**
+  - A **heading** (`### T5: Setup`) → rename it in place and drop the number (`### Setup`); or, if the section really is the task breakdown, move it to `03_tasks.md`. A line-start heading cannot be backticked away.
+  - A **bare reference** to a real downstream task → name the file or phase instead of the number (e.g. "see the Tasks phase" or "tasks.md").
+  - An **example token**, or your document's own local label (e.g. a test-function ID) → backtick it (`` `T5` ``).

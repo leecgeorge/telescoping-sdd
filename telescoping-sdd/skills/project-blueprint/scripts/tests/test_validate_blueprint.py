@@ -249,6 +249,12 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     shutil.copy2(src_scripts / "artifact_resolution.py", dst_scripts / "artifact_resolution.py")
     shutil.copy2(src_scripts / "pending_review.py", dst_scripts / "pending_review.py")
     shutil.copy2(src_scripts / "cfc_parser.py", dst_scripts / "cfc_parser.py")
+    # downstream_ref_guard.py is imported by validate_blueprint (the downstream-identifier
+    # guard wired into validate_scope/validate_architecture); a published install ships it
+    # in the shared scripts dir, so the synthetic layout must include it too.
+    shutil.copy2(
+        src_scripts / "downstream_ref_guard.py", dst_scripts / "downstream_ref_guard.py"
+    )
     # arch_config.py is a runtime import of validate_blueprint (the --write-arch-config
     # seam); a published install ships it in the shared scripts dir, so the synthetic
     # layout must include it too or `parents[3] / "scripts"` import resolution fails.

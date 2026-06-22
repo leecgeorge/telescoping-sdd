@@ -67,6 +67,7 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 - Prefer tables, diagrams, and structured formats over prose
 - Flag assumptions with **[ASSUMPTION]** tags for user review
 - Flag gaps with **[TBD — needs input]** markers
+- **DO NOT use downstream identifier references in this artifact.** Feature IDs (`F<n>`) are minted downstream in `03_PLAN.md`, not in scope/architecture artifacts — referencing one reaches into a feature decomposition that does not exist yet and creates a phantom coupling that goes stale when features are renumbered. Allowed: naming the downstream file or phase ("the Implementation Plan", `PLAN`, `03_PLAN.md`); an example token inside a backtick span (`` `F3` ``). Prohibited: a real `F<n>` token in prose, or a `### F<n>:` heading (the heading form blocks `--approve`).
 
 ### Quality & Consistency
 
