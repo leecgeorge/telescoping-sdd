@@ -131,7 +131,7 @@ This rule constrains PLAN-author behavior at edit time — it is not enforced by
 
 ## Closed-Feature-Row Immutability — PLAN-row analog of bound-spec immutability
 
-Bound-Spec Immutability (above) governs *shipped feature artifacts* downstream of PLAN (`spec.md`, `design.md`, `tasks.md`). Closed-Feature-Row Immutability is the same doctrine one altitude up: the **`### F<n>:` row inside PLAN.md itself** — its title and its bullet content — is byte-frozen once F<n>'s milestone checkbox in `## Milestones` flips to `[x]`. The row is a historical commitment to the feature as it was authored at milestone-close time.
+Bound-Spec Immutability (above) governs *shipped feature artifacts* downstream of PLAN (`spec.md`, `design.md`, `tasks.md`). Closed-Feature-Row Immutability is the same doctrine one altitude up: the **`### F<n>:` row inside PLAN.md itself** — its title and its bullet content — is byte-frozen **while** F<n>'s milestone checkbox in `## Milestones` reads `[x]`. Marking a feature **Done** (flipping `- [ ] F<n>` <-> `- [x] F<n>`) is **hash-neutral in both directions** — a progress marker, not contract content, so it never moves the PLAN `## Approval` hash or requires re-approval — and un-ticking a feature marked Done in error **re-opens** the row for editing (a row is closed only while its box reads `[x]`).
 
 **The two altitudes:**
 

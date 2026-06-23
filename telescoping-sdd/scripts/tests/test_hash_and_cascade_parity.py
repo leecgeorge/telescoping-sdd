@@ -38,6 +38,15 @@ BOTH_FILES = [
     pytest.param(PB_PATH, "pb", id="pb"),
 ]
 
+# Project-blueprint reference files touched by the milestone-Done feature.
+PLAN_TEMPLATE_PATH = _REPO_ROOT / "telescoping-sdd/skills/project-blueprint/references/plan-template.md"
+WORKFLOW_OVERVIEW_PATH = _REPO_ROOT / "telescoping-sdd/skills/project-blueprint/references/workflow-overview.md"
+
+# Make telescoping-sdd/scripts importable for the MILESTONE_FEATURE_ROW parity pin.
+_SCRIPTS_DIR = _REPO_ROOT / "telescoping-sdd" / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 # ============================================================================
 # Verbatim content constants (pinned to design's content contracts).
 # ============================================================================
@@ -308,6 +317,33 @@ def test_c4_regex_not_present_sdd() -> None:
     """C4 closed-feature scope detection is PLAN.md-specific; SDD file should not carry it."""
     content = _read(SDD_PATH)
     assert C4_REGEX_PATTERN not in content
+
+
+def test_milestone_row_constant_matches_c4_regex() -> None:
+    """(g) R2.AC3 / RISK-4: the production MILESTONE_FEATURE_ROW constant is
+    character-identical to the doctrine-check literal C4_REGEX_PATTERN. Non-
+    tautological — C4_REGEX_PATTERN stays an independent literal in this file."""
+    from content_hash import MILESTONE_FEATURE_ROW
+
+    assert MILESTONE_FEATURE_ROW == C4_REGEX_PATTERN
+
+
+def test_plan_template_no_checked_literal() -> None:
+    r"""(k.1) R1.AC2: plan-template.md carries no CHECKED milestone literal
+    `^- \[[xX]\] F\d` — the Done docs use the `F<n>` placeholder, never a checked
+    `- [x] F<digit>` that a document-wide pattern could pick up. (`[xX]` is a
+    checked-only character class; `[ xX]` would false-positive on `- [ ]` rows.)"""
+    content = _read(PLAN_TEMPLATE_PATH)
+    assert re.search(r"^- \[[xX]\] F\d", content, re.MULTILINE) is None
+
+
+def test_workflow_overview_old_permanence_sentence_absent() -> None:
+    """(k.2) R4.AC2: the old permanence framing ("...historical commitment to the
+    feature as it was authored at milestone-close time") is gone from
+    workflow-overview.md after the Done/un-Done reconciliation — milestone ticks are
+    now documented as hash-neutral and reversible."""
+    content = _read(WORKFLOW_OVERVIEW_PATH)
+    assert "as it was authored at milestone-close time" not in content
 
 
 def test_c4_inline_summary_verbatim_present_pb() -> None:

@@ -125,6 +125,125 @@ def test_hash_frozen_fixture_matrix():
 
 
 # ---------------------------------------------------------------------------
+# Milestone-feature checkbox neutralization (content_for_hashing step 5)
+# ---------------------------------------------------------------------------
+
+import content_hash as _ch  # private _MILESTONE_NEUTRALIZE_RE (test (j))
+
+
+def _milestone_plan(milestones: str, hashval: str = "pending") -> str:
+    """Minimal PLAN string: a `## Milestones` block + `## Approval`, column-0 headings."""
+    return (
+        "# PLAN\n\n## Milestones\n\n"
+        + milestones
+        + "\n## Approval\n\n- [x] Approved to proceed\n"
+        + f"- **Content Hash:** `{hashval}`\n- **Hash basis:** v2\n"
+    )
+
+
+# Inline fixtures (T2/T3) with embedded PRE-step-5 frozen hashes captured against
+# the pre-C1 content_for_hashing. The all-`[ ]` fixture's hash is invariant under
+# C1 (no-op on `[ ]`); the `[x]` fixture's drifts (that drift is the point of (h)).
+FIXTURE_ALL_UNCHECKED_PLAN = _milestone_plan(
+    "- [ ] F1: Feature One\n- [ ] F2: Feature Two\n", "f156ca751eddda3f"
+)  # frozen PRE-step-5 — do not regenerate
+FIXTURE_X_STAMPED_PLAN = _milestone_plan(
+    "- [x] F1: Feature One\n- [ ] F2: Feature Two\n", "262b4f23d1d91e03"
+)  # frozen PRE-step-5 — do not regenerate
+
+
+def test_milestone_tick_hash_neutral_lowercase_x():
+    unchecked = _milestone_plan("- [ ] F1: Feature One\n- [ ] F2: Feature Two\n")
+    x_lower = _milestone_plan("- [x] F1: Feature One\n- [ ] F2: Feature Two\n")
+    assert bc.compute_content_hash(unchecked) == bc.compute_content_hash(x_lower)  # R2.AC1
+
+
+def test_milestone_tick_hash_neutral_uppercase_x():
+    unchecked = _milestone_plan("- [ ] F1: Feature One\n")
+    x_upper = _milestone_plan("- [X] F1: Feature One\n")
+    assert bc.compute_content_hash(unchecked) == bc.compute_content_hash(x_upper)  # R2.AC1
+
+
+def test_milestone_untick_hash_neutral():
+    x = _milestone_plan("- [x] F1: Feature One\n- [ ] F2: Feature Two\n")
+    unchecked = _milestone_plan("- [ ] F1: Feature One\n- [ ] F2: Feature Two\n")
+    assert bc.compute_content_hash(x) == bc.compute_content_hash(unchecked)  # R2.AC2
+
+
+def test_milestone_outside_milestones_section_moves_hash():
+    # A `- [x] F2` line under a later `## Other` heading sits OUTSIDE the next_h2-
+    # bounded `## Milestones` slice, so it must still move the hash (R2.AC4 / RISK-1).
+    x = "# PLAN\n\n## Milestones\n\n- [ ] F1: m\n\n## Other\n\n- [x] F2: body\n"
+    un = x.replace("- [x] F2: body", "- [ ] F2: body")
+    assert bc.compute_content_hash(x) != bc.compute_content_hash(un)
+
+
+def test_milestone_feature_rename_moves_hash():
+    foo = _milestone_plan("- [x] F1: Foo\n")
+    bar = _milestone_plan("- [x] F1: Bar\n")
+    assert bc.compute_content_hash(foo) != bc.compute_content_hash(bar)  # R2.AC5
+
+
+def test_milestone_all_unchecked_golden_string():
+    # Golden no-op guarantee (R2.AC6 / R3.AC2): content_for_hashing of an all-`[ ]`
+    # PLAN equals the PRE-step-5 frozen literal. MUST NOT be regenerated — a silent
+    # recompute would pass GREEN while testing nothing.
+    golden_in = (
+        "# PLAN\n\n## Milestones\n\n- [ ] F1: Feature One\n- [ ] F2: Feature Two\n\n"
+        "## Approval\n\n- [x] Approved to proceed\n"
+        "- **Content Hash:** `0123456789abcdef`\n- **Hash basis:** v2\n"
+    )
+    PINNED_LITERAL = (
+        "# PLAN\n\n## Milestones\n\n- [ ] F1: Feature One\n- [ ] F2: Feature Two\n\n"
+        "## Approval\n\n- [ ] Approved to proceed\n- **Content Hash:** `pending`"
+    )  # frozen PRE-step-5 — do not regenerate
+    assert bc.content_for_hashing(golden_in) == PINNED_LITERAL
+
+
+def test_milestone_mixed_state_hash_neutral():
+    mixed = _milestone_plan("- [x] F1: A\n- [ ] F2: B\n- [ ] F3: C\n")
+    allun = _milestone_plan("- [ ] F1: A\n- [ ] F2: B\n- [ ] F3: C\n")
+    assert bc.compute_content_hash(mixed) == bc.compute_content_hash(allun)  # R2.AC1 partial
+
+
+def test_milestone_neutralize_re_derivation():
+    # (j) derivation guard (R2.AC3 / RISK-4): the sub pattern has exactly two
+    # capture groups and normalizes any state to `[ ]`, preserving the F<n> suffix.
+    assert _ch._MILESTONE_NEUTRALIZE_RE.groups == 2
+    assert _ch._MILESTONE_NEUTRALIZE_RE.sub(r"\1 \2", "- [x] F1") == "- [ ] F1"
+
+
+def test_milestone_neutralize_structural_edges():
+    # (l): a decorated `## Milestones (Q3)` heading is SKIPPED (so its row still
+    # moves the hash); multi-digit F12 inside a plain `## Milestones` is neutralized;
+    # a CRLF `[x]` form hashes EQUAL to its CRLF `[ ]` form.
+    deco = "# PLAN\n\n## Milestones (Q3)\n\n- [x] F12: d\n"
+    deco_un = deco.replace("- [x] F12", "- [ ] F12")
+    assert bc.compute_content_hash(deco) != bc.compute_content_hash(deco_un)
+    f12 = _milestone_plan("- [x] F12: m\n")
+    f12u = _milestone_plan("- [ ] F12: m\n")
+    assert bc.compute_content_hash(f12) == bc.compute_content_hash(f12u)
+    crlf_x = _milestone_plan("- [x] F1: m\n").replace("\n", "\r\n")
+    crlf_u = _milestone_plan("- [ ] F1: m\n").replace("\n", "\r\n")
+    assert bc.compute_content_hash(crlf_x) == bc.compute_content_hash(crlf_u)
+
+
+def test_approval_hash_matches_all_unchecked_plan():
+    # (f) R3.AC1 read/classify: the all-`[ ]` fixture's PRE-step-5 hash still
+    # verifies post-C1 (the neutralization is a no-op on `[ ]`).
+    assert bc.approval_hash_matches(FIXTURE_ALL_UNCHECKED_PLAN) is True
+
+
+def test_approval_hash_matches_x_stamped_plan_drifts_and_heals():
+    # (h) R3.AC3 / RISK-5: the `[x]`-era stored hash DRIFTS to False post-C1 (the
+    # neutralization changes the hashed body), then HEALS after a re-stamp.
+    assert bc.approval_hash_matches(FIXTURE_X_STAMPED_PLAN) is False
+    current = bc.compute_content_hash(FIXTURE_X_STAMPED_PLAN)
+    healed = FIXTURE_X_STAMPED_PLAN.replace("`262b4f23d1d91e03`", f"`{current}`")
+    assert bc.approval_hash_matches(healed) is True
+
+
+# ---------------------------------------------------------------------------
 # has_section / section_has_content
 # ---------------------------------------------------------------------------
 

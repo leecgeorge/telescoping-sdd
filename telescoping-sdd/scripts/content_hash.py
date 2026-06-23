@@ -69,6 +69,50 @@ APPROVAL_HASH_LINE = re.compile(
     r"^\s*(?:-\s*)?\*\*Content Hash:\*\*\s*`([^`]*)`", re.MULTILINE
 )
 
+# Canonical milestone-feature row matcher (any checkbox state). CHARACTER-IDENTICAL
+# to test_hash_and_cascade_parity.py's C4_REGEX_PATTERN; test (g) pins the parity so
+# the production constant and the doctrine-check literal cannot drift.
+MILESTONE_FEATURE_ROW = r"^- \[[ xX]\] F\d+\b"
+# State-neutralizing sub pattern DERIVED from MILESTONE_FEATURE_ROW via string
+# interpolation (so the pinned constant and the pattern actually applied cannot
+# diverge): replacing `\[[ xX]\]` with `\[)[ xX](\]` and wrapping yields
+# `(^- \[)[ xX](\] F\d+\b)` — group 1 = `- [`, the state char is matched-not-
+# captured, group 2 = `] F<n>...`; the sub `\1 \2` normalizes ANY state to `[ ]`
+# while preserving the `F<n>` suffix. A derivation-guard test (test (j)) pins
+# `.groups == 2` + the sub output so a silent `.replace()` no-op fails loud here
+# rather than as a generic re.error deep in compute_content_hash.
+_MILESTONE_NEUTRALIZE_RE = re.compile(
+    "(" + MILESTONE_FEATURE_ROW.replace(r"\[[ xX]\]", r"\[)[ xX](\]") + ")",
+    re.MULTILINE,
+)
+# Line-anchored `## Milestones` header (EXACT — a decorated `## Milestones (Q3)`
+# is intentionally skipped, mirroring _APPROVAL_HEADER's strictness).
+_MILESTONES_HEADER = re.compile(r"^##\s+Milestones\s*$", re.MULTILINE)
+
+
+def _neutralize_milestone_state(content: str) -> str:
+    """Normalize milestone-feature checkbox STATE to `[ ]`, scoped to the first
+    `## Milestones` section only — step 5 of content_for_hashing (v2 basis).
+
+    Marking a feature Done (`- [ ] F<n>` <-> `- [x] F<n>`) in `## Milestones` is a
+    progress marker, not contract content, so it must not move the PLAN hash. The
+    neutralization is SECTION-SCOPED (header line -> next `## ` heading or EOF,
+    mirroring approval_section_bounds) so a `- [x] F<n>`-shaped line OUTSIDE
+    `## Milestones` still moves the hash (R2.AC4). Touches only the checkbox state
+    char, never the `F<n>` suffix, so a feature rename still moves the hash
+    (R2.AC5). No-op when no `## Milestones` section exists (every non-PLAN artifact
+    today) or when its heading is decorated.
+    """
+    m = _MILESTONES_HEADER.search(content)
+    if not m:
+        return content
+    body_start = m.end()
+    next_h2 = re.search(r"^## ", content[body_start:], re.MULTILINE)
+    body_end = body_start + next_h2.start() if next_h2 else len(content)
+    section = content[body_start:body_end]
+    neutralized = _MILESTONE_NEUTRALIZE_RE.sub(r"\1 \2", section)
+    return content[:body_start] + neutralized + content[body_end:]
+
 
 def content_for_hashing(content: str) -> str:
     """Document content with dynamic approval values + Trajectory rows neutralised.
@@ -83,10 +127,15 @@ def content_for_hashing(content: str) -> str:
          is computed before the v2 line is stamped).
       4. Strip ### Trajectory data rows (panel bookkeeping is not contract
          content) so recording a panel pass does not move the hash.
+      5. Normalize milestone-feature checkbox STATE to `[ ]`, scoped to the
+         `## Milestones` section, so marking a feature Done (`- [ ] F<n>` <->
+         `- [x] F<n>`) is hash-neutral in both directions (a progress marker, not
+         contract content). Section-scoped, so a `- [x] F<n>` line elsewhere still
+         moves the hash; touches only the state char, so a rename still does.
 
-    So approving a document, recording a converged panel pass, or stamping the
-    basis line doesn't change its hash, but any substantive edit does.
-    Idempotent: applying twice yields the same result.
+    So approving a document, recording a converged panel pass, stamping the basis
+    line, or marking a milestone Done doesn't change its hash, but any substantive
+    edit does. Idempotent: applying twice yields the same result.
     """
     result = re.sub(
         r"- \[[ xX]\] Approved to proceed", "- [ ] Approved to proceed", content
@@ -96,6 +145,7 @@ def content_for_hashing(content: str) -> str:
     )
     result = _HASH_BASIS_REMOVAL_RE.sub("", result)
     result = _strip_trajectory_rows(result)
+    result = _neutralize_milestone_state(result)
     return result.rstrip()
 
 
