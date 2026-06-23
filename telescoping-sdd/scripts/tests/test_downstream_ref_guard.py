@@ -596,18 +596,29 @@ def test_no_inline_downstream_matcher_in_wired_validators():
 _OWN_SPEC = _REPO_ROOT / "specs/no-downstream-identifier-references/01_spec.md"
 _OWN_DESIGN = _REPO_ROOT / "specs/no-downstream-identifier-references/02_design.md"
 
+# The Group-8/10 tests dogfood-scan this feature's OWN author-side artifacts under
+# specs/, which is gitignored (`/specs/` in .gitignore) and therefore ABSENT in a
+# clean CI checkout. Skip (don't fail) when the artifacts aren't present locally.
+_SPECS_ABSENT_REASON = "author-side specs/ artifacts are gitignored, absent in a clean checkout (CI)"
+
 
 def test_own_spec_scans_clean_at_blueprint_tier():
+    if not _OWN_SPEC.exists():
+        pytest.skip(_SPECS_ABSENT_REASON)
     _g, bp, _sdd = _policies()
     assert _scan(_OWN_SPEC.read_text(encoding="utf-8"), bp) == []
 
 
 def test_own_spec_scans_clean_at_sdd_tier():
+    if not _OWN_SPEC.exists():
+        pytest.skip(_SPECS_ABSENT_REASON)
     _g, _bp, sdd = _policies()
     assert _scan(_OWN_SPEC.read_text(encoding="utf-8"), sdd) == []
 
 
 def test_own_design_scans_clean_at_sdd_tier():
+    if not _OWN_DESIGN.exists():
+        pytest.skip(_SPECS_ABSENT_REASON)
     _g, _bp, sdd = _policies()
     assert _scan(_OWN_DESIGN.read_text(encoding="utf-8"), sdd) == []
 
@@ -620,7 +631,8 @@ def test_own_design_scans_clean_at_sdd_tier():
 def test_existing_specs_no_new_heading_fail():
     g, _bp, sdd = _policies()
     scanned = sorted(_REPO_ROOT.glob("specs/*/01_spec.md")) + sorted(_REPO_ROOT.glob("specs/*/02_design.md"))
-    assert scanned, "no in-repo specs/*/ artifacts found to scan"
+    if not scanned:
+        pytest.skip(_SPECS_ABSENT_REASON)
     heading_hits = []
     for path in scanned:
         for f in g.scan_for_downstream_refs(path.read_text(encoding="utf-8"), path.name, sdd):

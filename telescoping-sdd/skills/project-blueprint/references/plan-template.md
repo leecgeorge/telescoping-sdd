@@ -88,6 +88,43 @@ F1 ──> F3 ──> F5
 
 ## Milestones
 
+<!--
+Marking a feature **Done**: (a) flip its milestone checkbox here, `- [ ] F<n>` ->
+`- [x] F<n>` — that flip IS "Done."
+
+(b) Mark Done only once the feature's downstream SDD cycle has **shipped**: its
+`specs/F<n>-*/` spec/design/tasks are all approved AND every task box in tasks.md
+is ticked AND tasks.md's `## Approval` hash matches its content (the
+`is_shipped` / `classify_spec` condition). That classifier is NOT CLI-exposed, so
+**no single command confirms it** — confirm with two channels:
+  - Machine (partial assist): `validate_spec.py specs/F<n>-*/ --phase tasks` —
+    PASSED means design.md is approved/unmodified and tasks.md is structurally
+    valid. It does NOT assert tasks.md's own approval, its hash coherence, or
+    box-completeness. (If the glob matches more than one dir, use the full path
+    `specs/F<n>-<slug>/`.)
+  - Human read: in `specs/F<n>-*/`, confirm spec.md, design.md, AND tasks.md each
+    show `- [x] Approved`, and every task box in tasks.md reads `- [x]` (no command
+    asserts box-completeness). Residual: the machine step re-checks only design.md's
+    hash coherence; spec.md's and tasks.md's own coherence are re-checked by neither
+    channel (tasks.md is terminal). A substantive post-approval edit to any artifact
+    is a re-review (re-run the SDD loop), never something to force by re-stamping.
+
+(c) Flipping to `[x]` makes the `### F<n>:` row and its bullets byte-frozen
+(Closed-Feature-Row Immutability) — route later substantive changes to a new or
+in-flight amending feature, never an in-place edit of the closed row.
+
+(d) A milestone tick requires NO PLAN re-approval — it is hash-neutral.
+
+(e) If a feature was marked Done in error (or its cycle never actually shipped),
+un-tick it (`- [x] F<n>` -> `- [ ] F<n>`); that is hash-neutral too and re-opens
+the row (a row is closed only while its box reads `[x]`). Un-ticking is for the
+marked-in-error case ONLY; a change to a genuinely-shipped Done feature goes through
+an amending feature (the (c) path).
+
+Examples use the `F<n>` placeholder (e.g. `- [x] F<n>: <name>`); never write a
+checked `- [x] F<digit>` literal here.
+-->
+
 ### Milestone 1: [Name] — [Target Date or Relative Timing]
 
 - [ ] F1: [Feature Name]
