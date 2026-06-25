@@ -58,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.14.0"
-CHANGELOG_FIRST_ENTRY = "## 2.14.0 — PLAN milestone \"Done\": hash-neutral ticks + Done documentation"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.15.0"
+CHANGELOG_FIRST_ENTRY = "## 2.15.0 — Delegate substantial post-draft revisions to analyst agents"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):

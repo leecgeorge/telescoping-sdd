@@ -35,7 +35,9 @@ Otherwise the copies differ only cosmetically (phase names, filenames, example f
 | Tasks | Approved design | `tasks.md` | `feature-task-analyst` subagent | **What steps** in what order? |
 | Implement | Approved tasks | Working code + tests | Calling Claude (no delegation) | **Does it work** as specified? |
 
-Phases 1–3 delegate document drafting to the corresponding subagent via the Agent tool. The agent self-reviews its draft before returning. The calling Claude then performs its own review, runs cross-document consistency checks, validation, and approval gates. Phase 4 is executed directly by the calling Claude.
+Phases 1–3 delegate to the corresponding subagent both the initial drafting AND substantial revisions of each artifact, via the Agent tool. The agent self-reviews its draft before returning. The calling Claude then performs its own review, runs cross-document consistency checks, validation, and approval gates. Phase 4 is executed directly by the calling Claude.
+
+**When to delegate vs. act directly.** The delegation rule is a three-way decision: *trivial* edits (typo, rename, formatting, single-sentence reword — no behavior change) stay orchestrator-direct; a *substantive in-loop per-concern fix* during an active panel pass stays orchestrator-direct (the next pass of the same loop re-reviews it); and a *substantial out-of-loop revision* — a cascade downstream fix, a panel-loop re-entry on a substantive gate-change, or an upstream backport — is delegated to the phase-correct analyst (the "Drafted By" analyst for the artifact being edited). See `references/hash-and-cascade.md` § "Revise the downstream" for the delegation brief the orchestrator supplies and the scope-verify check it runs before re-stamping.
 
 ## File Layout
 
