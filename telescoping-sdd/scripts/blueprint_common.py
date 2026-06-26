@@ -893,6 +893,7 @@ from pending_review import (  # noqa: E402
     reconcile_to_result,
     restamp_or_suppress,
     restore_anchor_for_prefix,
+    sweep_sdd_cruft,
     upsert_pending_entry,
     write_pending_review,
     # Private helpers some consumers/tests reach for by name (e.g.

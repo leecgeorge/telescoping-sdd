@@ -156,6 +156,18 @@ def write_pending_review(project_root: Path, data: dict) -> None:
     Uses a UNIQUE temp name (suffix '.tmp'), NOT a fixed `<file>.tmp`, because
     the marker is shared and may be written concurrently. Creates .sdd/ if
     absent.
+
+    INVARIANT (load-bearing for `sweep_sdd_cruft`'s NB-gate correctness): every
+    caller of this function MUST hold `_marker_lock`. The unique `.tmp` staged
+    here lives, under that lock, for the whole write — so `sweep_sdd_cruft` can
+    treat a successful non-blocking lock acquire as proof that no
+    write_pending_review() is in flight and every `*.tmp` is genuinely abandoned.
+    Currently held by all four callers (upsert_pending_entry,
+    clear_pending_entries_for_prefix, reconcile_pending_review,
+    restore_anchor_for_prefix). A future direct caller that omits the lock would
+    silently reopen the concurrent-writer `*.tmp` race. (Enforced by docstring,
+    not a runtime assert: test_write_pending_review_atomic calls this directly,
+    without the lock, to exercise atomicity.)
     """
     path = _marker_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -677,3 +689,100 @@ def reconcile_to_result(
                 f"`archive_pass.py {doc_rel} --phase <N>`), OR decline: `{decline_cmd}`.",
             )
     return result
+
+
+# ----- Best-effort .sdd/ cruft cleanup (WORKING-NOTES Item 2) ---------------
+
+
+def sweep_sdd_cruft(marker_root: Path) -> None:
+    """Best-effort cleanup of orphaned .sdd/ cruft.
+
+    Removes *.tmp files (abandoned atomic-write temps from write_pending_review())
+    and unlinks pending-review.lock when provably uncontested. A single non-blocking
+    LOCK_EX | LOCK_NB acquire on pending-review.lock is the unified gate for BOTH
+    operations: a successful acquire proves no write_pending_review() is in flight
+    (so every *.tmp is genuinely abandoned and both files are safe to remove);
+    BlockingIOError / OSError means a concurrent writer holds the lock, so cleanup
+    skips both and leaves them for a later run.
+
+    On platforms without fcntl or msvcrt, runs both cleanup operations
+    unconditionally (the lock is already a no-op there; nothing to protect).
+
+    INVARIANT (load-bearing for gate correctness): every caller of
+    write_pending_review() MUST hold _marker_lock. Currently verified for all four
+    callers: upsert_pending_entry, clear_pending_entries_for_prefix,
+    reconcile_pending_review, restore_anchor_for_prefix. A future direct caller
+    that violates this invariant reopens the concurrent-writer *.tmp race.
+
+    Never raises. Never changes the caller's process exit code. Never touches
+    architecture.json or pending-review.json. Never calls mkdir; if .sdd/ is absent,
+    returns immediately.
+
+    Args:
+        marker_root: The project root that *contains* .sdd/ — pass the first
+            element of _resolve_marker_root_and_key(spec_dir, project_root), the
+            SAME write-side root the run's marker operations use. NOT the .sdd/
+            directory itself; NOT raw args.project_root (which may be None and,
+            when a non-ancestor --project-root is supplied, differs from the
+            write-side root — using it would sweep the wrong .sdd/).
+    """
+    try:
+        sdd_dir = _marker_path(marker_root).parent          # marker_root/.sdd
+        if not sdd_dir.is_dir():
+            return
+        lock_path = _marker_path(marker_root).with_name("pending-review.lock")
+
+        if _fcntl is None and _msvcrt is None:              # no-lock platform (AD3)
+            # Sweep *.tmp BEFORE unlinking lock — reversing this order reopens
+            # Risk-1b obligation-drop.
+            for tmp in sdd_dir.glob("*.tmp"):
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+            return
+
+        # Locking platform: gate both operations on a single NB exclusive acquire.
+        try:
+            fh = open(lock_path, "a+")                      # creates file if absent
+        except OSError:
+            return
+        try:
+            try:
+                if _fcntl is not None:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                else:                                        # _msvcrt is not None
+                    fh.seek(0)
+                    _msvcrt.locking(fh.fileno(), _msvcrt.LK_NBLCK, 1)
+            except (BlockingIOError, OSError):
+                return                                       # peer holds lock; skip both
+            # Acquire succeeded: no write_pending_review() is in flight, so every
+            # *.tmp is genuinely abandoned. Sweep *.tmp BEFORE unlinking lock —
+            # reversing this order reopens Risk-1b obligation-drop (a peer could
+            # re-rendezvous on the freed path and stage a live temp our sweep
+            # would then delete).
+            for tmp in sdd_dir.glob("*.tmp"):
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            try:
+                lock_path.unlink()                          # accepted race window (AD2)
+            except OSError:
+                pass                                        # Windows: unlink-while-open
+            try:
+                if _fcntl is not None:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+                else:
+                    fh.seek(0)
+                    _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        finally:
+            fh.close()                                      # fd always released
+    except Exception:
+        pass                                                # best-effort (R4)

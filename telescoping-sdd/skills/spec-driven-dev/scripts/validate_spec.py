@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -77,6 +78,7 @@ from blueprint_common import (  # noqa: E402
     restore_anchor_for_prefix,
     run_cli_failclosed,
     stamped_at_pass_from_content,
+    sweep_sdd_cruft,
     trim_trajectory_table,
     upsert_pending_entry,
     validate_panel_review,
@@ -2103,6 +2105,16 @@ def main():
         parser.error("--completion-gate requires --project-root")
     if args.strict_r5 and not args.completion_gate:
         parser.error("--strict-r5 is only valid with --completion-gate")
+
+    # Best-effort .sdd/ cruft cleanup at process exit (WORKING-NOTES Item 2).
+    # Registered AFTER the arg-validation sys.exit(2)/parser.error guards above
+    # (a malformed invocation exits before registering) and before the mode
+    # dispatch. Uses _resolve_marker_root_and_key(...)[0] — the SAME write-side
+    # root the run's marker ops use — NOT raw arch_find_project_root, which would
+    # sweep an unrelated .sdd/ under a non-ancestor --project-root (AD1).
+    atexit.register(
+        sweep_sdd_cruft, _resolve_marker_root_and_key(spec_dir, project_root)[0]
+    )
 
     # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,
     # so at most one of these is set; each handler returns a process exit code.
