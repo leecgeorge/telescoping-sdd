@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -75,6 +76,7 @@ from blueprint_common import (  # noqa: E402
     reconcile_to_result,
     restamp_or_suppress,
     restore_anchor_for_prefix,
+    sweep_sdd_cruft,
     scan_unresolved_markers,
     section_has_content,
     stamped_at_pass_from_content,
@@ -2299,6 +2301,17 @@ def main():
     if project_root is not None and not project_root.is_dir():
         print(f"Error: --project-root {project_root} is not a directory")
         sys.exit(2)
+
+    # Best-effort .sdd/ cruft cleanup at process exit (WORKING-NOTES Item 2).
+    # Registered AFTER the arg-validation sys.exit(2) guards above and before the
+    # mode dispatch. Uses _resolve_marker_root_and_key(...)[0] — the SAME
+    # write-side root the run's marker ops use — NOT raw arch_find_project_root,
+    # which would sweep an unrelated .sdd/ under a non-ancestor --project-root
+    # (AD1). This also keeps cleanup aligned with _handle_write_arch_config's
+    # blueprint_dir.parent write root.
+    atexit.register(
+        sweep_sdd_cruft, _resolve_marker_root_and_key(blueprint_dir, project_root)[0]
+    )
 
     # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,
     # so at most one of these is set; each handler returns a process exit code.
