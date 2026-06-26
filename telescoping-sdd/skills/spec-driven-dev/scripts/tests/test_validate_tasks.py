@@ -112,16 +112,17 @@ def test_per_task_not_document_wide(tmp_path):
         assert "T2" in detail
 
 
-def test_missing_test_names_is_advisory_warn_not_fail(tmp_path):
-    # Pass language="python" explicitly: the test-name advisory only runs for a
-    # language profile with a test_name_pattern. The default profile is now the
-    # neutral "generic" (which deliberately skips this advisory), so this test
-    # states the python intent it is actually exercising.
+def test_code_touching_task_missing_test_fails(tmp_path):
+    # R3 flip (force-tdd-in-phase-4): a code-touching python task (the default
+    # `_task` builder Creates `src/x.py`) that declares no test now FAILs — it
+    # was an advisory WARN before. Pass language="python" explicitly: the check
+    # only runs for a profile with a test_name_pattern (the default profile is
+    # the neutral "generic", which deliberately skips it).
     t1 = _task("T1", fields=[f for f in ALL_FIELDS if f != "Tests"])
     (tmp_path / "tasks.md").write_text(_doc(t1), encoding="utf-8")
     res = vs.validate_tasks(tmp_path, language="python")
     sev, _ = _check(res, "every task names test functions/methods")
-    assert sev == "WARN"
+    assert sev == "FAIL"
 
 
 def test_gwt_pattern_accepts_bulleted_form(tmp_path):

@@ -131,11 +131,17 @@ LANGUAGE_PROFILES: dict[str, dict] = {
         "project_markers": ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
         "dir_markers": [],  # no directory-based detection needed
         "type_pattern": re.compile(r":\s*(str|int|float|bool|list|dict|Optional)"),
-        "test_name_pattern": re.compile(r"`test_\w+\(\)`"),
+        # AD8 (force-tdd-in-phase-4): the trailing `()` is OPTIONAL — the real
+        # authoring convention writes `` `test_foo` `` (no parens), which the
+        # parens-required form false-missed. R3 (now a FAIL) and R5 both reuse
+        # this pattern, so it is broadened once here in the profile.
+        "test_name_pattern": re.compile(r"`test_\w+(?:\(\))?`"),
         "test_framework": "pytest",
         "test_command": "pytest tests/ -v",
         "source_layout": "src/",
         "test_layout": "tests/",
+        # AD7: test-layout globs for the R5 completion-gate existence check.
+        "test_file_globs": ["**/test_*.py", "**/*_test.py"],
     },
     "java": {
         "label": "Java",
@@ -145,13 +151,16 @@ LANGUAGE_PROFILES: dict[str, dict] = {
             r"\b(String|int|Integer|long|Long|boolean|Boolean|double|Double|float|Float"
             r"|List|Map|Set|Optional|void|byte|short|char)\b"
         ),
+        # AD8: parens optional, mirroring the python profile above.
         "test_name_pattern": re.compile(
-            r"`test[a-zA-Z0-9]+\(\)`|`[a-zA-Z0-9]+Test\(\)`"
+            r"`test[a-zA-Z0-9]+(?:\(\))?`|`[a-zA-Z0-9]+Test(?:\(\))?`"
         ),
         "test_framework": "JUnit 5",
         "test_command": "mvn test / gradle test",
         "source_layout": "src/main/java/",
         "test_layout": "src/test/java/",
+        # AD7: test-layout globs for the R5 completion-gate existence check.
+        "test_file_globs": ["**/*Test.java", "**/*Tests.java"],
     },
     # Architecture-neutral fallback for stacks that are neither Python nor Java
     # (infrastructure, static sites, Claude-skill authoring, TypeScript before a
@@ -171,6 +180,7 @@ LANGUAGE_PROFILES: dict[str, dict] = {
         "test_command": None,
         "source_layout": None,
         "test_layout": None,
+        "test_file_globs": [],
     },
 }
 
@@ -246,6 +256,224 @@ TASK_REQUIREMENT_REF_PATTERN = re.compile(r"\*\*Requirement:\*\*\s*((?:R\d+(?:,\
 # Panel-review parsing (regexes + validate_panel_review) lives in
 # blueprint_common so both validators behave identically — including the R10
 # orphaned-Trajectory-row diagnostic (C7), which the prior local copy omitted.
+
+
+# ---------------------------------------------------------------------------
+# Force-TDD-in-Phase-4 (R3/R4/R5) — code-touching classifier + Tests-field grammar
+# ---------------------------------------------------------------------------
+#
+# These power the Phase-3 R3/R4 gate in validate_tasks() and the Phase-4 R5
+# completion gate. The whole cluster is FIELD-SCOPED (it reads a task's
+# `**Tests:**` field value, never the whole task body) and the classifier is
+# VERB-SCOPED (only Create:/Modify: paths make a task code-touching — a Read:
+# reference for context does not — AD2). Both scopings are load-bearing:
+# verb-scope keeps prose tasks that merely read a `.py` from mis-classifying as
+# code (migration safety, RISK-5); field-scope stops an incidental `test_foo`
+# token in Description prose from satisfying the gate.
+
+# Extensions that make a task "code-touching" — the only stacks with an xUnit
+# test_name_pattern. A `.sh`/`.sql`/`Dockerfile`/`.yaml` helper a python task
+# creates is non-code (no test pattern to satisfy).
+_CODE_EXTENSIONS: frozenset = frozenset({".py", ".java"})
+
+# Extract the `**Files:**` field value: from the field BULLET to the next
+# `- **Field:**` bullet (any indentation) or end-of-body. DOTALL so it spans
+# sub-bullets. The field marker is anchored to a line-leading list bullet
+# (`^[ \t]*-[ \t]*`) so an incidental `**Files:**` mention in another field's
+# prose is NOT mistaken for the field itself (field-scoped, Contracts).
+_FILES_SECTION_PATTERN = re.compile(
+    r"^[ \t]*-[ \t]*\*\*Files:\*\*[ \t]*\n?(.*?)(?=\n\s*-\s*\*\*[A-Z]|\Z)",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# Same shape for the `**Tests:**` field value (multi-line capture — the real
+# convention puts test tokens on indented sub-bullets UNDER the Tests line).
+# Bullet-anchored for the same reason: a task whose Description/Acceptance-
+# Criteria prose literally mentions `**Tests:**` (this feature's own tasks.md
+# does) must still extract from the REAL field bullet, not the prose mention.
+_TESTS_SECTION_PATTERN = re.compile(
+    r"^[ \t]*-[ \t]*\*\*Tests:\*\*[ \t]*\n?(.*?)(?=\n\s*-\s*\*\*[A-Z]|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+# A backtick-quoted path with an extension, e.g. `` `src/x.py` ``.
+_BACKTICK_PATH_PATTERN = re.compile(r"`([^`]+\.[a-zA-Z0-9]+)`")
+# Leading verb of a Files sub-bullet. AD2: only Create/Modify count toward
+# code-touching; Read/Delete do not.
+_FILES_VERB_PATTERN = re.compile(
+    r"^\s*-\s*(Create|Modify|Read|Delete)\s*:", re.IGNORECASE
+)
+# R4 override sentinel: `**Tests:** none — <reason>`. The `[ \t]*` (NOT `\s*`)
+# before/around `none`, and the `(?:\n|$)` terminator, keep the match on the
+# Tests field's FIRST line so it cannot span into an adjacent sub-bullet (AD1) —
+# deliberately the OPPOSITE line-scope from the whole-block by-name extraction.
+_R4_OVERRIDE_PATTERN = re.compile(
+    r"^[ \t]*-[ \t]*\*\*Tests:\*\*[ \t]*none[ \t]*[-–—][ \t]*(.*?)(?:\n|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+# A sibling task identifier (AD10 cross-reference), e.g. `T6`.
+_TASK_ID_TOKEN_PATTERN = re.compile(r"\bT\d+\b")
+
+
+def _extract_tests_field(task_body: str) -> str:
+    """Return the `**Tests:**` field value (multi-line block), or '' if absent."""
+    m = _TESTS_SECTION_PATTERN.search(task_body)
+    return m.group(1) if m else ""
+
+
+def _extract_test_names(task_body: str, pattern) -> list:
+    """Extract test identifiers from the task's `**Tests:**` FIELD (not the whole
+    body — Contracts: field-scoped). Strips backticks and an optional trailing
+    `()`. A `none — <reason>` override field yields [] (no by-name token)."""
+    field = _extract_tests_field(task_body)
+    names = []
+    for m in pattern.finditer(field):
+        tok = m.group(0).strip("`")
+        if tok.endswith("()"):
+            tok = tok[:-2]
+        names.append(tok)
+    return names
+
+
+def _is_code_touching(task_body: str) -> bool:
+    """True iff a Create:/Modify: sub-bullet of `**Files:**` references a
+    `.py`/`.java` path. Read: (read-for-context) paths are ignored (AD2)."""
+    m = _FILES_SECTION_PATTERN.search(task_body)
+    if not m:
+        return False
+    for line in m.group(1).splitlines():
+        vm = _FILES_VERB_PATTERN.match(line)
+        if not vm or vm.group(1).lower() not in ("create", "modify"):
+            continue
+        for pm in _BACKTICK_PATH_PATTERN.finditer(line):
+            if os.path.splitext(pm.group(1))[1].lower() in _CODE_EXTENSIONS:
+                return True
+    return False
+
+
+def _r4_override_reason(task_body: str):
+    """Return the R4 override reason, or None.
+
+    None — no `**Tests:** none — …` override present.
+    ''   — override present but the reason is absent/whitespace-only (FAIL).
+    str  — a non-empty reason (valid override).
+    """
+    m = _R4_OVERRIDE_PATTERN.search(task_body)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+def _audit_test_requirements(task_bodies: list, pattern) -> tuple:
+    """Classify code-touching tasks by `**Tests:**`-field compliance (AD10).
+
+    Returns (failing_no_test, failing_bad_override, overrides, crossrefs) — each
+    a list of task IDs. A code-touching task PASSES when its Tests field carries
+    a by-name token (AD8), OR a VALID sibling cross-reference (a `T<n>` that is
+    not its own ID and resolves to a task that is itself code-touching AND names
+    a real test — so R5 genuinely existence-checks the referent), OR a valid R4
+    override. Non-code tasks are never required to name a test.
+    """
+    # Pass 1: by-name + code-touching set (the only valid cross-ref referents).
+    by_name_code: set = set()
+    info: dict = {}
+    for tid, body in task_bodies:
+        code = _is_code_touching(body)
+        names = _extract_test_names(body, pattern)
+        info[tid] = (code, bool(names), body)
+        if code and names:
+            by_name_code.add(tid)
+
+    failing_no_test: list = []
+    failing_bad_override: list = []
+    overrides: list = []
+    crossrefs: list = []
+
+    # Pass 2: classify each code-touching task.
+    for tid, body in task_bodies:
+        code, has_name, _ = info[tid]
+        if not code:
+            continue
+        if has_name:
+            continue  # a real test name satisfies the gate (R4 AC#3: name wins)
+        reason = _r4_override_reason(body)
+        if reason is not None:
+            if reason == "":
+                failing_bad_override.append(tid)
+            else:
+                overrides.append(tid)
+            continue
+        # No name, no override — try a valid sibling cross-reference (AD10).
+        field = _extract_tests_field(body)
+        refs = [t for t in _TASK_ID_TOKEN_PATTERN.findall(field) if t != tid]
+        if any(t in by_name_code for t in refs):
+            crossrefs.append(tid)
+            continue
+        failing_no_test.append(tid)
+
+    return failing_no_test, failing_bad_override, overrides, crossrefs
+
+
+def _collect_task_bodies(content: str) -> list:
+    """Split tasks.md into (task_id, body) pairs.
+
+    Each task body spans its `### T<n>:` heading to the next task heading or the
+    next `## ` section, whichever comes first. Shared by validate_tasks() (R3/R4)
+    and validate_completion_gate() (R5) so the two gates parse identically.
+    """
+    task_matches = list(TASK_ENTRY_PATTERN.finditer(content))
+    section_break = re.compile(r"^## ", re.MULTILINE)
+    bodies: list = []
+    for i, m in enumerate(task_matches):
+        id_match = re.search(r"T\d+", content[m.start() : m.end()])
+        task_id = id_match.group(0) if id_match else f"task#{i + 1}"
+        body_end = (
+            task_matches[i + 1].start() if i + 1 < len(task_matches) else len(content)
+        )
+        sec = section_break.search(content, m.end(), body_end)
+        if sec:
+            body_end = sec.start()
+        bodies.append((task_id, content[m.start() : body_end]))
+    return bodies
+
+
+def _find_test_files(project_root: Path, language: str) -> list:
+    """Return test-layout files under project_root matching the language globs
+    (AD7). Generic / unknown languages have no globs → []."""
+    globs = get_profile(language).get("test_file_globs") or []
+    files: list = []
+    for pat in globs:
+        try:
+            files.extend(project_root.rglob(pat))
+        except OSError:
+            continue
+    return files
+
+
+def _test_name_exists(name: str, language: str, project_root: Path,
+                      preferred_scope: Optional[Path] = None) -> bool:
+    """True if a test function/method named `name` is defined in a test-layout
+    file. Python matches `def <name>`, java matches `<name>(`. Searches
+    `preferred_scope` (the feature's own test dir, if any) first, then repo-wide
+    — a repo-wide-only match is a documented cross-feature-collision boundary
+    (AD9). Returns False (never raises) on OSError. `re.escape` is defence in
+    depth at a self-declared-input boundary."""
+    if language == "java":
+        needle = re.compile(rf"\b{re.escape(name)}\s*\(")
+    else:
+        needle = re.compile(rf"def\s+{re.escape(name)}\b")
+    seen: set = set()
+    scopes = [s for s in (preferred_scope, project_root) if s is not None]
+    for scope in scopes:
+        for f in _find_test_files(scope, language):
+            if f in seen:
+                continue
+            seen.add(f)
+            try:
+                text = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                return False
+            if needle.search(text):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -960,18 +1188,7 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
     # silently masking other tasks that omit it. Each task body spans its
     # `### T<n>:` heading to the next task heading or the next `## ` section,
     # whichever comes first; a failing check names the offending task IDs.
-    section_break = re.compile(r"^## ", re.MULTILINE)
-    task_bodies: list[tuple[str, str]] = []
-    for i, m in enumerate(task_matches):
-        id_match = re.search(r"T\d+", content[m.start() : m.end()])
-        task_id = id_match.group(0) if id_match else f"task#{i + 1}"
-        body_end = (
-            task_matches[i + 1].start() if i + 1 < len(task_matches) else len(content)
-        )
-        sec = section_break.search(content, m.end(), body_end)
-        if sec:
-            body_end = sec.start()
-        task_bodies.append((task_id, content[m.start() : body_end]))
+    task_bodies: list[tuple[str, str]] = _collect_task_bodies(content)
 
     def _tasks_missing(pattern):
         return [tid for tid, body in task_bodies if not pattern.search(body)]
@@ -1011,18 +1228,44 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
         f"Missing GIVEN/WHEN/THEN in: {', '.join(gwt_missing)}" if gwt_missing else "",
     )
 
-    # Test function/method names (language-aware) — advisory (warn), per task.
-    # Skipped for profiles with no test_name_pattern (e.g. "generic"): a static
-    # site, infra, or skill-authoring task is verified by a command/manual check,
-    # not an xUnit-style test function, so this check would only emit noise.
+    # Test function/method names (language-aware) — R3/R4 FAIL for code-touching
+    # tasks (force-tdd-in-phase-4). Skipped entirely for profiles with no
+    # test_name_pattern (e.g. "generic"): a static site, infra, or skill-authoring
+    # task is verified by a command/manual check, not an xUnit-style test function.
+    # A code-touching task (Create/Modify a .py/.java — AD2) must name a test, OR
+    # carry a valid sibling cross-reference (AD10), OR a reason-bearing R4 override;
+    # a task touching only non-code files auto-passes. The override count and any
+    # cross-reference delegations are surfaced as audit PASS checks (R4 AC#4).
     if profile["test_name_pattern"] is not None:
-        test_missing = _tasks_missing(profile["test_name_pattern"]) if task_bodies else []
+        failing_no_test, failing_bad_override, overrides, crossrefs = (
+            _audit_test_requirements(task_bodies, profile["test_name_pattern"])
+            if task_bodies else ([], [], [], [])
+        )
         result.add(
             "tasks.md every task names test functions/methods",
-            not test_missing,
-            f"Missing in: {', '.join(test_missing)}" if test_missing else "",
-            warn_only=True,
+            not failing_no_test,
+            f"Missing in: {', '.join(failing_no_test)}" if failing_no_test else "",
+            warn_only=False,
         )
+        if failing_bad_override:
+            result.add(
+                "tasks.md R4 override requires non-empty reason",
+                False,
+                f"Empty reason in: {', '.join(failing_bad_override)}",
+                warn_only=False,
+            )
+        if overrides:
+            result.add(
+                "tasks.md R4 test-exempt overrides",
+                True,
+                f"Count: {len(overrides)}, tasks: {', '.join(overrides)}",
+            )
+        if crossrefs:
+            result.add(
+                "tasks.md cross-reference test delegations",
+                True,
+                f"Count: {len(crossrefs)}, tasks: {', '.join(crossrefs)}",
+            )
 
     # Requirement coverage — check all spec R-numbers are covered by tasks
     has_req = bool(TASK_REQUIREMENT_REF_PATTERN.search(content))
@@ -1057,6 +1300,91 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
     # as the owning feature in any CFC's Enforcement prose, tasks.md must
     # contain a `[CFC-N]`-tagged task. See documentation/CFC.md.
     validate_cfc_consumer(spec_dir, content, "tasks", result)
+
+    return result
+
+
+def validate_completion_gate(
+    spec_dir: Path,
+    project_root: Path,
+    language: Optional[str] = None,
+    strict_r5: bool = False,
+) -> ValidationResult:
+    """R5: at the Phase-4 completion gate, verify that the test names declared in
+    each code-touching task's `**Tests:**` field actually exist in the codebase.
+
+    Also re-emits the R4 override + AD10 cross-reference audits so both counts
+    surface at the gate (R4 AC#4) — the single `--completion-gate` command is
+    self-contained, no separate plain re-run required.
+
+    `language` is the resolved stack key (passed in by `_handle_completion_gate`,
+    which applies the shared `resolve_language` precedence — NOT bare auto-detect).
+    Generic profiles return a single skip-PASS. Missing tests WARN by default and
+    FAIL under `strict_r5` (AD4). Read-only — no content hash is touched.
+    """
+    result = ValidationResult()
+    profile = get_profile(language)
+    pattern = profile["test_name_pattern"]
+    if pattern is None:
+        result.add(
+            "R5: completion-gate skipped",
+            True,
+            "generic profile — no test_name_pattern",
+        )
+        return result
+
+    tasks_path = resolve_artifact(spec_dir, "tasks.md")
+    content = read_file(tasks_path)
+    result.add("tasks.md exists", content is not None, str(tasks_path))
+    if content is None:
+        return result
+
+    task_bodies = _collect_task_bodies(content)
+
+    # Re-emit the R4 override + AD10 cross-reference audits (both-gates, R4 AC#4).
+    _no_test, _bad_override, overrides, crossrefs = _audit_test_requirements(
+        task_bodies, pattern
+    )
+    if overrides:
+        result.add(
+            "tasks.md R4 test-exempt overrides",
+            True,
+            f"Count: {len(overrides)}, tasks: {', '.join(overrides)}",
+        )
+    if crossrefs:
+        result.add(
+            "tasks.md cross-reference test delegations",
+            True,
+            f"Count: {len(crossrefs)}, tasks: {', '.join(crossrefs)}",
+        )
+
+    # R5 existence check: each by-name token of a code-touching task must resolve
+    # to a test definition in a test-layout file. Override/cross-ref tasks yield
+    # zero by-name tokens → nothing to existence-check (their referent task is
+    # checked on its own row). AD9: preferred_scope is None in this centralized
+    # repo (tests are not per-feature) → search repo-wide.
+    any_r5 = False
+    for tid, body in task_bodies:
+        if not _is_code_touching(body):
+            continue
+        names = _extract_test_names(body, pattern)
+        if not names:
+            continue
+        for name in names:
+            any_r5 = True
+            exists = _test_name_exists(name, language, project_root)
+            result.add(
+                f"R5: test function exists — {tid}/{name}",
+                exists,
+                "" if exists else f"Not found under {project_root}",
+                warn_only=not strict_r5,
+            )
+    if not any_r5:
+        result.add(
+            "R5: completion-gate — no code-touching tasks with declared tests",
+            True,
+            "nothing to existence-check",
+        )
 
     return result
 
@@ -1508,6 +1836,35 @@ def _handle_set_language(args, spec_dir: Path, project_root: Optional[Path]) -> 
     return 0
 
 
+def _handle_completion_gate(args, spec_dir: Path, project_root: Path) -> int:
+    """`--completion-gate` mode (R5). Resolves the stack via the shared
+    `resolve_language` precedence — exactly as `_run_validation` does, so R5
+    cannot drift from R3/R4 on the stack — then runs the test-existence
+    cross-check. Returns a process exit code (1 if anything FAILed, else 0;
+    missing tests are WARN by default and only FAIL under `--strict-r5`)."""
+    language, language_source = resolve_language(
+        spec_dir,
+        explicit=args.language,
+        detector=detect_language,
+        known_languages=list(LANGUAGE_PROFILES.keys()),
+        project_root=project_root,
+    )
+    result = validate_completion_gate(
+        spec_dir, project_root, language, strict_r5=args.strict_r5
+    )
+    print(f"Completion gate: {spec_dir}")
+    print(f"Language:        {language} (from {language_source})\n")
+    print(result.summary())
+    print()
+    if result.passed and not result.has_warnings:
+        print("Completion gate passed.")
+    elif result.passed:
+        print("Completion gate passed with warnings. Review WARN items above.")
+    else:
+        print("Completion gate failed. See FAIL items above.")
+    return 0 if result.passed else 1
+
+
 def _run_validation(args, spec_dir: Path, project_root: Optional[Path]) -> int:
     """Default mode: validate the requested phase(s), reconcile pending-review,
     print the summary (audit R3.2 — extracted from main). Returns a process exit
@@ -1648,6 +2005,19 @@ def main():
         choices=["spec", "design", "tasks"],
         help="Approve a phase document (marks it approved with content hash)",
     )
+    mode_group.add_argument(
+        "--completion-gate",
+        action="store_true",
+        help="Phase-4 R5 mode: verify each code-touching task's declared test "
+        "names actually exist in the codebase. Requires --project-root. Missing "
+        "tests WARN by default; add --strict-r5 to make them FAIL.",
+    )
+    parser.add_argument(
+        "--strict-r5",
+        action="store_true",
+        help="With --completion-gate: a declared-but-absent test FAILs (exit 1) "
+        "instead of the default WARN (only valid with --completion-gate).",
+    )
     parser.add_argument(
         "--task-tick",
         action="store_true",
@@ -1726,6 +2096,14 @@ def main():
         print("Error: --task-tick is only valid with --approve tasks")
         sys.exit(2)
 
+    # R5 completion-gate guards (AD3), mirroring the --task-tick guard's exit-2
+    # behaviour. --completion-gate needs a repo root to scan; --strict-r5 only
+    # modifies --completion-gate.
+    if args.completion_gate and project_root is None:
+        parser.error("--completion-gate requires --project-root")
+    if args.strict_r5 and not args.completion_gate:
+        parser.error("--strict-r5 is only valid with --completion-gate")
+
     # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,
     # so at most one of these is set; each handler returns a process exit code.
     # The default (no mode flag) runs validation.
@@ -1735,6 +2113,8 @@ def main():
         sys.exit(_handle_restore_anchor(spec_dir, project_root))
     if args.approve:
         sys.exit(_handle_approve(args, spec_dir, project_root))
+    if args.completion_gate:
+        sys.exit(_handle_completion_gate(args, spec_dir, project_root))
     if args.set_language:
         sys.exit(_handle_set_language(args, spec_dir, project_root))
 

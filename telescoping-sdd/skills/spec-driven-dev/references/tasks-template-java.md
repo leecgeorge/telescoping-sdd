@@ -108,6 +108,13 @@ Use this template when creating `tasks.md` for a Java project after an approved 
 | Date | Task | What spec/design said | What was actually done | Why | Classification | Backport status |
 |------|------|-----------------------|------------------------|-----|----------------|-----------------|
 
+## TDD Exceptions
+
+> Phase-4 TDD-cycle-skip log — appended by the calling Claude during Phase 4 when the test-first red→green→refactor cycle is skipped for a code-stack task. Append-only during Phase 4; `Resolution`-column updates (`pending` → `accepted` or `remediate`) are resolved at the Final-Check completion gate. Leave empty until a skip is logged. **Code stacks (python/java) only.** Not applicable for generic-profile tasks. (A code task that genuinely needs *no* test at all is not a skip — use the `**Tests:** none — <reason>` override instead.)
+
+| Date | Task | Skip Reason | Resolution |
+|------|------|-------------|------------|
+
 ## Open Questions
 
 > All questions must be resolved before proceeding to implementation.
