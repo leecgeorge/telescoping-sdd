@@ -483,6 +483,13 @@ C2_EXTENSION_SCOPE_PHRASE = "all changed lines fall entirely within"
 C2_NOT_EXEMPT_STATUS_TRANSITION_PHRASE = "pending → backported"
 C2_NOT_EXEMPT_OUT_OF_SECTION_PHRASE = "still trip the substantive path"
 IMPLEMENTATION_DEVIATIONS_SECTION_TOKEN = "## Implementation Deviations"
+# force-tdd-in-phase-4 (C8): the generalized ledger-append carve-out covers
+# `## TDD Exceptions` too; these three SDD-only tokens pin the generalization —
+# the new section, the generalized "single recognized ledger section" phrasing,
+# and the preserved `Classification`…`minor` major-deviation guard (AD5).
+TDD_EXCEPTIONS_SECTION_TOKEN = "## TDD Exceptions"
+GENERALIZED_LEDGER_PHRASE = "recognized Phase-4 ledger section"
+MINOR_GUARD_ANCHOR = "`Classification` is literally `minor`"
 
 BACKPORT_SDD_ONLY_PRESENT = [
     MECHANICAL_GAP_ANCHOR,
@@ -491,6 +498,9 @@ BACKPORT_SDD_ONLY_PRESENT = [
     C2_NOT_EXEMPT_STATUS_TRANSITION_PHRASE,
     C2_NOT_EXEMPT_OUT_OF_SECTION_PHRASE,
     IMPLEMENTATION_DEVIATIONS_SECTION_TOKEN,
+    TDD_EXCEPTIONS_SECTION_TOKEN,
+    GENERALIZED_LEDGER_PHRASE,
+    MINOR_GUARD_ANCHOR,
 ]
 # Distinctive SDD-only phrases that must never leak into the blueprint copy
 # ("append-only" is omitted — too generic for a meaningful absence assertion).
@@ -500,6 +510,9 @@ BACKPORT_SDD_ONLY_ABSENT_FROM_PB = [
     C2_NOT_EXEMPT_STATUS_TRANSITION_PHRASE,
     C2_NOT_EXEMPT_OUT_OF_SECTION_PHRASE,
     IMPLEMENTATION_DEVIATIONS_SECTION_TOKEN,
+    TDD_EXCEPTIONS_SECTION_TOKEN,
+    GENERALIZED_LEDGER_PHRASE,
+    MINOR_GUARD_ANCHOR,
 ]
 # The two new subsections are mirrored verbatim across copies; the SDD Upstream
 # backport additionally carries an SDD-only "Mechanical gap" paragraph.

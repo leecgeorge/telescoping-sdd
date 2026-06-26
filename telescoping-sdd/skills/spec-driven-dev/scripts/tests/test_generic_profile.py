@@ -173,9 +173,11 @@ def test_tasks_test_name_check_runs_for_python(tmp_path):
     spec_dir = _write_tasks(tmp_path)
     res = vs.validate_tasks(spec_dir, language="python")
     hit = _check(res, "names test functions/methods")
-    assert hit is not None, "python must still run the test-name advisory"
-    # The single task names no `test_*()` function, so it should WARN.
-    assert hit[0] == "WARN"
+    assert hit is not None, "python must still run the test-name check"
+    # The single task Creates only `infra/deploy.sh` — a non-code file under AD2
+    # (force-tdd-in-phase-4) — so the code-touching test-name gate does NOT fire:
+    # it auto-passes rather than WARNing (the old advisory behaviour).
+    assert hit[0] == "PASS"
 
 
 # --- detection / profile fallback ---------------------------------------------

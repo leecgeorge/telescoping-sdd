@@ -99,5 +99,5 @@ Most projects are single-repo: one `blueprint/PLAN.md` drives one `specs/` tree.
 - **Specs are the source of truth.** Code follows specs, not the other way around.
 - **Changes flow forward.** If requirements change, update spec.md first, then cascade to design and tasks.
 - **Tasks are atomic.** Each task should be independently verifiable.
-- **Tests come first.** Write tests before implementation (TDD).
+- **Tests come first.** On a **python/java stack** this is a hard MUST for every code-touching Phase-4 task: write the failing test first, run it red, then implement (green), then refactor — skipping the test-first cycle is permitted only when logged in the `## TDD Exceptions` ledger. On a **`generic`/architecture-neutral stack** (no test harness) the alternative applies: write the task's concrete Verification check first, then do the work. (The validator's R3 gate FAILs a code-touching python/java task that names no test; the R5 completion gate checks the named tests actually exist.)
 - **Human decides.** Claude proposes, the user approves.
