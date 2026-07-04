@@ -11,7 +11,7 @@ Delegate drafting to the `telescoping-sdd:project-architecture-analyst` subagent
 When invoking the agent, provide:
 - The template path: `references/architecture-template.md`
 - The required sections (below) — the agent must produce exactly these
-- The approved `blueprint/01_SCOPE.md` as authoritative upstream context
+- The **path** of the approved `blueprint/01_SCOPE.md` as authoritative upstream context, with an instruction to **read it from disk in full** — do not paste or summarize its body into the prompt (the drafter reads the file(s) from disk, mirroring the panelist read-from-disk discipline)
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `ARCHITECTURE.md`, which addresses every goal and respects every constraint from the scope, to `blueprint/02_ARCHITECTURE.md`, and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 - A clear instruction enforcing the downstream-identifier prohibition: **DO NOT use downstream identifier references in this artifact.** Feature IDs (`F<n>`) are minted downstream in `03_PLAN.md`, not in scope/architecture artifacts — a real `F<n>` token in prose or a `### F<n>:` heading creates a phantom coupling that goes stale when features are renumbered (the heading form blocks `--approve`). Allowed: naming the downstream file/phase (`PLAN`, `03_PLAN.md`, "the Implementation Plan"); an example token inside a backtick span (`` `F3` ``).
@@ -73,7 +73,7 @@ python <script-path>/validate_blueprint.py blueprint/
 
 **Stop and ask the user to review ARCHITECTURE.md before proceeding.**
 
-If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review-modes.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
 
 When the user approves, run:
 

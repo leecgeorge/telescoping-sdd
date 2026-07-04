@@ -6,6 +6,7 @@ archive_pass.py.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1718,10 +1719,15 @@ def test_panel_review_md_amendments_present():
         # Format block: ### Deferred dispositions and [DEF-NN] vocabulary
         assert "### Deferred dispositions" in text, f"{skill}: AD9 section heading missing"
         assert "[DEF-NN]" in text, f"{skill}: AD9 vocabulary missing"
-        # R7 numeric worked example
-        assert "Worked example (R7)" in text, f"{skill}: I6 R7 example missing"
+        # R7 numeric worked example — relocated to the convergence sub-ref by the
+        # progressive-disclosure split (v2.21.0); it lives with `## Strict-Bar
+        # Convergence Mode`, so assert it there rather than in the slim CORE.
+        conv = p.parent / "panel-review-convergence.md"
+        assert conv.is_file(), f"{skill}: panel-review-convergence.md missing"
+        conv_text = conv.read_text(encoding="utf-8")
+        assert "Worked example (R7)" in conv_text, f"{skill}: I6 R7 example missing"
         # Concrete percentages
-        assert "40%" in text or "80%" in text, f"{skill}: I6 numeric values missing"
+        assert "40%" in conv_text or "80%" in conv_text, f"{skill}: I6 numeric values missing"
 
 
 def test_panel_review_md_disposition_vocabulary_preserved():
@@ -2153,3 +2159,366 @@ def test_deferred_rewrite_preserves_interleaved_lines(tmp_path):
     assert "[DEF-01]" in text and "[DEF-02]" in text
     assert interleaved in text  # would be DELETED by the old span-replace
     assert "[DEF-03]" in text
+
+
+# ============================================================================
+# Workflow Context Reduction — R2 mid-loop trajectory trim
+# T1: all-modes / both-write-sites / anti-mis-gate / idempotence / orphan /
+#     detector-window.  RED until _maybe_trim_trajectory is implemented (T3).
+# ============================================================================
+
+_WCR_ELIDED = "earlier passes elided"
+# A converged (0-HIGH) Latest row so a NORMAL pass proceeds past the
+# "nothing to archive" early-exit and reaches the main write site (:1173).
+_WCR_NORMAL_LATEST = "| [LOW] | critic | minor nit | Addressed | fixed |\n"
+
+
+def _wcr_rows(n, start=1, notes="—"):
+    """n NORMAL trajectory-row dicts, passes `start`..`start+n-1`."""
+    return [_traj_row(pass_n=i, highs=0, notes=notes) for i in range(start, start + n)]
+
+
+def _wcr_traj_data_rows(text):
+    """Data-row lines of the `### Trajectory` table (real + elided), order-preserving."""
+    lines = text.split("\n")
+    start = None
+    for i, l in enumerate(lines):
+        if l.strip() == "### Trajectory":
+            start = i
+            break
+    if start is None:
+        return []
+    out = []
+    started = False
+    for l in lines[start + 1:]:
+        s = l.strip()
+        if s.startswith("### ") or s.startswith("## "):
+            break
+        if not s.startswith("|"):
+            if started:
+                break
+            continue
+        if s.startswith("| Pass ") or set(s) <= set("|-: "):
+            started = True
+            continue
+        started = True
+        out.append(l)
+    return out
+
+
+def _wcr_split_traj(text):
+    """(real_rows, elided_rows) — elided rows carry the 'N earlier passes elided' note."""
+    data = _wcr_traj_data_rows(text)
+    real = [r for r in data if _WCR_ELIDED not in r]
+    elided = [r for r in data if _WCR_ELIDED in r]
+    return real, elided
+
+
+def _wcr_elided_count(text):
+    _, elided = _wcr_split_traj(text)
+    if not elided:
+        return 0
+    m = re.search(r"(\d+) earlier passes elided", elided[0])
+    return int(m.group(1)) if m else 0
+
+
+def _wcr_pass_num(row_line):
+    cells = [c.strip() for c in row_line.strip().strip("|").split("|")]
+    try:
+        return int(cells[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _wcr_legacy_artifact(tmp_path, traj_rows, latest_rows=""):
+    """Artifact MISSING `### Deferred dispositions` — reaches the early
+    auto-inserted empty-Latest write site (archive_pass.py:943)."""
+    body = "".join(
+        f"| {r['Pass']} | {r['Date']} | {r['HIGHs']} | {r['Regressions']} | "
+        f"{r['Addressed']} | {r['Deferred']} | {r['Sealed']} | {r['Notes']} |\n"
+        for r in traj_rows
+    )
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        "# Doc\n\n"
+        "## Panel Review\n\n"
+        "### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        f"{body}"
+        "\n"
+        "### Sealed dispositions\n\n"
+        "_None yet._\n\n"
+        # deliberately NO ### Deferred dispositions section
+        "### Latest pass detail\n\n"
+        "| Severity | Source | Concern | Disposition | Notes |\n"
+        "|----------|--------|---------|-------------|-------|\n"
+        f"{latest_rows}"
+        "\n"
+        "## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    return artifact
+
+
+def test_mid_loop_trim_fires_on_normal(tmp_path):
+    """R2: a NORMAL archive of a >15-row `pending` artifact trims to <=15 real
+    rows + one elided row (main write site)."""
+    artifact = _artifact_with_trajectory(
+        tmp_path, _wcr_rows(20), latest_rows=_WCR_NORMAL_LATEST
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15, f"expected trim to <=15 real rows, got {len(real)}"
+    assert len(elided) == 1, f"expected exactly one elided row, got {len(elided)}"
+
+
+def test_mid_loop_trim_fires_on_strict_bar(tmp_path):
+    """R2 all-modes: `--strict-bar` archive trims."""
+    artifact = _artifact_with_trajectory(tmp_path, _wcr_rows(20))
+    proc = _run_archive_pass([str(artifact), "--strict-bar"])
+    assert proc.returncode == 0, proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15 and len(elided) == 1
+
+
+def test_mid_loop_trim_fires_on_cross_check(tmp_path):
+    """R2 all-modes: `--cross-check` archive trims."""
+    artifact = _artifact_with_trajectory(tmp_path, _wcr_rows(20))
+    proc = _run_archive_pass([str(artifact), "--cross-check"])
+    assert proc.returncode == 0, proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15 and len(elided) == 1
+
+
+def test_mid_loop_trim_fires_on_skip(tmp_path):
+    """R2 all-modes: `--skip` archive trims."""
+    artifact = _artifact_with_trajectory(tmp_path, _wcr_rows(20))
+    proc = _run_archive_pass([str(artifact), "--skip", "mechanical rename"])
+    assert proc.returncode == 0, proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15 and len(elided) == 1
+
+
+def test_mid_loop_trim_at_main_write_site(tmp_path):
+    """R2 both-sites: the main write (archive_pass.py:1173) trims. A standard
+    latest-processing archive reaches write_or_diff at the end of main()."""
+    artifact = _artifact_with_trajectory(
+        tmp_path, _wcr_rows(20), latest_rows=_WCR_NORMAL_LATEST
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15 and len(elided) == 1
+
+
+def test_mid_loop_trim_at_early_empty_latest_site(tmp_path):
+    """R2 both-sites: the early auto-inserted empty-Latest write
+    (archive_pass.py:943) trims too. Reached by a legacy artifact missing
+    `### Deferred dispositions`, with an empty Latest and no mode flag."""
+    artifact = _wcr_legacy_artifact(tmp_path, _wcr_rows(20), latest_rows="")
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    # confirm the auto-insert path was taken (this is Site-1, not the main write)
+    assert "### Deferred dispositions" in text, "expected the :943 auto-insert path"
+    real, elided = _wcr_split_traj(text)
+    assert len(real) <= 15, f"Site-1 trim did not fire: {len(real)} real rows"
+    assert len(elided) == 1
+
+
+def test_never_approved_pending_artifact_is_trimmed(tmp_path):
+    """R2 anti-mis-gate: a never-approved `pending` artifact (no `**Hash basis:**`
+    line, so read_hash_basis == 'v1') is TRIMMED — the explicit regression against
+    a bare-`v2` gate that would wrongly hold the trim back for this population."""
+    artifact = _artifact_with_trajectory(
+        tmp_path, _wcr_rows(20), latest_rows=_WCR_NORMAL_LATEST
+    )
+    seed = artifact.read_text(encoding="utf-8")
+    assert "- [ ] Approved" in seed and "**Hash basis:**" not in seed
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15 and len(elided) == 1
+
+
+def test_repeated_archive_merges_elided_count_cumulatively(tmp_path):
+    """R2 idempotence: repeated trimming archives merge into ONE elided row with a
+    cumulative (not double-counted) count, and the orphan-guard is not tripped."""
+    artifact = _artifact_with_trajectory(tmp_path, _wcr_rows(20))
+    proc1 = _run_archive_pass([str(artifact), "--skip", "mechanical one"])
+    assert proc1.returncode == 0, proc1.stderr
+    count1 = _wcr_elided_count(artifact.read_text(encoding="utf-8"))
+    proc2 = _run_archive_pass([str(artifact), "--skip", "mechanical two"])
+    assert proc2.returncode == 0, proc2.stderr
+    text2 = artifact.read_text(encoding="utf-8")
+    _, elided2 = _wcr_split_traj(text2)
+    assert len(elided2) == 1, "elided rows must merge into ONE, not accumulate"
+    assert _wcr_elided_count(text2) > count1, "elided count must grow cumulatively"
+    assert "refusing to write" not in proc2.stderr
+
+
+def test_orphan_guard_not_tripped_by_trim(tmp_path):
+    """R2: the trim inserts a contiguous elided row, so `_orphan_guard` stays
+    clean (exit 0, no refusal)."""
+    artifact = _artifact_with_trajectory(
+        tmp_path, _wcr_rows(20), latest_rows=_WCR_NORMAL_LATEST
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    assert "refusing to write" not in proc.stderr and "would strand" not in proc.stderr
+    real, elided = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15 and len(elided) == 1
+
+
+def test_detector_window_preserves_last_two_normal_rows(tmp_path):
+    """R2 detector-window margin: with keep=15 (>> the strict-bar/halt detector
+    reach), the trim BOTH fires (<=15 real rows — the RED teeth before T3) AND
+    leaves the last 2 rows and last 2 NORMAL rows intact. 19 NORMAL seed rows +
+    a `--strict-bar` archive appends pass 20 (non-NORMAL): last 2 rows = 19,20;
+    last 2 NORMAL = 18,19."""
+    artifact = _artifact_with_trajectory(tmp_path, _wcr_rows(19))
+    proc = _run_archive_pass([str(artifact), "--strict-bar"])
+    assert proc.returncode == 0, proc.stderr
+    real, _ = _wcr_split_traj(artifact.read_text(encoding="utf-8"))
+    assert len(real) <= 15, f"trim did not fire: {len(real)} real rows"
+    passes = [_wcr_pass_num(r) for r in real]
+    for p in (18, 19, 20):
+        assert p in passes, f"pass {p} must survive the trim (detector window); got {passes}"
+
+
+# ============================================================================
+# Workflow Context Reduction — R2 committed-v1 gate semantics
+# T2: v2 hash-neutrality / v1-committed skip / approval byte-identity.
+#     RED until _maybe_trim_trajectory is implemented (T3).
+# ============================================================================
+
+_WCR_APPROVAL_V2 = (
+    "## Approval\n\n"
+    "- [x] Approved to proceed to implementation\n"
+    "- **Content Hash:** `0123456789abcdef`\n"
+    "- **Hash basis:** v2\n"
+)
+_WCR_APPROVAL_V1_COMMITTED = (
+    "## Approval\n\n"
+    "- [x] Approved to proceed to implementation\n"
+    "- **Content Hash:** `0123456789abcdef`\n"
+)
+_WCR_APPROVAL_PENDING = (
+    "## Approval\n\n"
+    "- [ ] Approved to proceed to implementation\n"
+    "- **Content Hash:** `pending`\n"
+)
+_WCR_APPROVAL_V1_MALFORMED_HASH = (
+    "## Approval\n\n"
+    "- [x] Approved to proceed to implementation\n"
+    "- **Content Hash:** `not-a-real-hash`\n"
+)
+
+
+def _wcr_traj_body(n):
+    """`n` NORMAL trajectory data-row lines (passes 1..n)."""
+    return "".join(
+        f"| {i} | 2026-05-15 | 0 | 0 | 0 | 0 | 0 | — |\n" for i in range(1, n + 1)
+    )
+
+
+def _wcr_doc(traj_body, approval):
+    return (
+        "# Doc\n\n"
+        "## Panel Review\n\n"
+        "### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        f"{traj_body}"
+        "\n"
+        "### Sealed dispositions\n\n"
+        "_None yet._\n\n"
+        "### Latest pass detail\n\n"
+        "| Severity | Source | Concern | Disposition | Notes |\n"
+        "|----------|--------|---------|-------------|-------|\n"
+        "\n"
+        f"{approval}"
+    )
+
+
+def _wcr_import_content_hash():
+    # _load_archive_pass() puts telescoping-sdd/scripts on sys.path.
+    _load_archive_pass()
+    import importlib
+
+    return importlib.import_module("content_hash")
+
+
+def test_mid_loop_trim_hash_neutral_for_v2_approved():
+    """R2: trimming a v2-approved artifact mid-loop leaves its content hash
+    unchanged (content_for_hashing strips `### Trajectory` rows before hashing)."""
+    ap = _load_archive_pass()
+    ch = _wcr_import_content_hash()
+    content = _wcr_doc(_wcr_traj_body(25), _WCR_APPROVAL_V2)
+    before = ch.compute_content_hash(content)
+    trimmed = ap._maybe_trim_trajectory(content, content)
+    # the v2 artifact is NOT gated — the trim must actually fire
+    real, elided = _wcr_split_traj(trimmed)
+    assert len(real) <= 15 and len(elided) == 1, "v2 artifact should be trimmed"
+    assert ch.compute_content_hash(trimmed) == before, "v2 trim must be hash-neutral"
+
+
+def test_v1_committed_artifact_not_trimmed_mid_loop():
+    """R2: a genuine v1-committed artifact (approved, basis 'v1', non-'pending'
+    stored hash) is left UNTRIMMED mid-loop — its committed hash cannot drift."""
+    ap = _load_archive_pass()
+    ch = _wcr_import_content_hash()
+    content = _wcr_doc(_wcr_traj_body(25), _WCR_APPROVAL_V1_COMMITTED)
+    # the three-predicate skip case holds
+    assert ch.has_approval(content)
+    assert ch.read_hash_basis(content) == "v1"
+    assert ch.read_stored_hash(content) != "pending"
+    result = ap._maybe_trim_trajectory(content, content)
+    assert result == content, "v1-committed artifact must NOT be trimmed mid-loop"
+    assert len(_wcr_split_traj(result)[0]) == 25, "all 25 rows must be untouched"
+
+
+def test_v1_malformed_hash_is_trimmed_not_treated_as_committed():
+    """R2 fix: a checked-approval, v1-basis artifact whose stored hash is present
+    but NOT well-formed 16-hex (a corrupted/hand-edited stamp) must NOT be read
+    as "a genuine committed v1 hash" — it must be trimmed like any other
+    non-committed artifact, mirroring changed_since_stamp/is_basis_migration_only's
+    fail-closed handling of a malformed stored hash."""
+    ap = _load_archive_pass()
+    ch = _wcr_import_content_hash()
+    content = _wcr_doc(_wcr_traj_body(25), _WCR_APPROVAL_V1_MALFORMED_HASH)
+    assert ch.has_approval(content)
+    assert ch.read_hash_basis(content) == "v1"
+    assert ch.read_stored_hash(content) == "not-a-real-hash"
+    assert not ch._is_valid_16_hex(ch.read_stored_hash(content))
+    result = ap._maybe_trim_trajectory(content, content)
+    assert result != content, "malformed v1 hash must NOT be treated as committed"
+    assert len(_wcr_split_traj(result)[0]) < 25, "trajectory must be trimmed"
+
+
+def test_approval_time_trajectory_byte_identical_to_pre_change():
+    """R2: a run that mid-loop-trims and then reaches the approval trim yields a
+    `### Trajectory` byte-identical to the pre-change approval-only trim.
+
+    Both paths are driven from ONE shared row-set via `trim_trajectory_table`'s
+    idempotent cumulative-elided merge — no external 'before' artifact needed.
+    """
+    ap = _load_archive_pass()
+    from blueprint_common import trim_trajectory_table
+
+    content = _wcr_doc(_wcr_traj_body(25), _WCR_APPROVAL_PENDING)
+    assert len(_wcr_split_traj(content)[0]) > 15, "setup must exercise the trim"
+    # (b) pre-change approval-only behavior: no mid-loop trim, a single approval trim
+    approve_only = trim_trajectory_table(content)
+    # (a) new behavior: several mid-loop trims (the gated helper), then the approval trim
+    mid = content
+    for _ in range(3):
+        mid = ap._maybe_trim_trajectory(mid, mid)
+    mid_then_approve = trim_trajectory_table(mid)
+    assert mid_then_approve == approve_only, (
+        "mid-loop-then-approve must equal approve-only (trim idempotence)"
+    )

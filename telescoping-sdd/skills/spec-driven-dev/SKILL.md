@@ -46,7 +46,7 @@ python <shared-script-path>/spec_dirname.py slugify "My Feature Title"
 
 ### When to use this — and when a lighter path fits
 
-The full four-phase loop is calibrated for **substantial, long-lived features** — code other features build against, specs that will be re-entered and amended. For a **small one-off feature, a throwaway prototype, or an exploratory spike**, that's disproportionate. If the user says the work is small/throwaway and asks for a lighter review, run the panel in **lightweight mode** (one pass, dispose, self-check, archive, exit — no convergence loop, no strict-bar/halt/cross-check). Default stays the full loop; lightweight mode is opt-in only. See `references/panel-review.md` § "Lightweight Mode (single-pass panel)".
+The full four-phase loop is calibrated for **substantial, long-lived features** — code other features build against, specs that will be re-entered and amended. For a **small one-off feature, a throwaway prototype, or an exploratory spike**, that's disproportionate. If the user says the work is small/throwaway and asks for a lighter review, run the panel in **lightweight mode** (one pass, dispose, self-check, archive, exit — no convergence loop, no strict-bar/halt/cross-check). Default stays the full loop; lightweight mode is opt-in only. See `references/panel-review-modes.md` § "Lightweight Mode (single-pass panel)".
 
 ### Path placeholders
 
@@ -63,7 +63,7 @@ Phases 1–3 delegate to a specialist subagent, via the Agent tool, both the ini
 
 Phase 4 (implementation) is executed directly by the calling Claude with no delegation, since the TDD cycle benefits from interactive visibility and mid-task course correction; there is no panel review at Phase 4. That suppression applies only to *fresh-artifact* panels and routine task-tick re-stamps — a **substantive backport** of a mid-implementation discovery into an approved upstream is NOT exempt: editing `spec.md`/`design.md` re-engages the upstream panel re-review and the cascade via *Re-Approval After Edits* (see `### Mid-implementation discovery` below).
 
-**The shared panel-review machinery — the loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract for `## Panel Review`, and when to skip the panel — lives in `references/panel-review.md`. Read that reference before running any phase's panel.**
+**The shared panel-review machinery — the loop, panelists, synthesizer self-check, concern tagging, and the format contract for `## Panel Review` — lives in `references/panel-review.md`; read it before running any phase's panel. The situational modes load on demand from two siblings: strict-bar convergence and halt-and-rescope exit in `references/panel-review-convergence.md`, and lightweight mode, panel skip, and gate change requests in `references/panel-review-modes.md`.**
 
 ## Artifact filenames and the ordering-prefix offer
 
@@ -208,7 +208,9 @@ When an approved document is edited (by Claude at the user's request, by the use
 ## See also
 
 - `references/hash-and-cascade.md` — full hash-handling flow: mid-stream entry, re-approval after edits, the cascade, the halt-on-substantive-divergence rule, the optional panel re-review recommendation, and the Phase 4 (Implement) cadence. Read this whenever an approved document changes.
-- `references/panel-review.md` — the shared panel-review loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract, and panel-skip rules. Read before running any phase's panel. See its `## Autonomy Boundary` for what Claude runs autonomously vs. the real gates (loop continuation is not a user decision).
+- `references/panel-review.md` — the shared panel-review loop, panelists, synthesizer self-check, concern tagging, and the `## Panel Review` format contract. Read before running any phase's panel. See its `## Autonomy Boundary` for what Claude runs autonomously vs. the real gates (loop continuation is not a user decision).
+- `references/panel-review-convergence.md` — situational convergence modes (strict-bar convergence + halt-and-rescope exit), loaded on demand when `archive_pass.py` emits a `STRICT-BAR-SIGNAL:` or an `[upstream]` tag / two consecutive halt votes appear.
+- `references/panel-review-modes.md` — situational panel modes (lightweight single-pass mode, when to skip the panel, and handling change requests at the review gate), loaded on demand.
 - `references/strict-bar-prompts.md` — per-phase prompt additions for strict-bar passes. Loaded only when a strict-bar pass runs.
 - `references/phase-specify.md`, `references/phase-design.md`, `references/phase-tasks.md` — full per-phase workflows.
 - `references/workflow-overview.md` — quick-reference diagram of the full process.
