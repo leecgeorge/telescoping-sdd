@@ -1,7 +1,8 @@
 ---
 name: project-plan-analyst
 description: "Use this agent for project-level implementation planning. Handles feature breakdown, MVP definition, dependency mapping, implementation sequencing, and milestone planning — the output of an Implementation Plan phase in a project-blueprint workflow."
-model: sonnet
+model: opus
+effort: medium
 color: yellow
 memory: user
 ---

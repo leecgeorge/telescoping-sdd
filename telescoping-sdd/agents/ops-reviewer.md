@@ -1,7 +1,8 @@
 ---
 name: ops-reviewer
 description: Reviews from the operations and SRE perspective. Use for evaluating deployability, observability, monitoring, rollback procedures, and on-call burden.
-model: inherit
+model: sonnet
+effort: high
 color: pink
 ---
 

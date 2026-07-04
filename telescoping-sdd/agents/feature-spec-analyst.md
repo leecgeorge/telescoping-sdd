@@ -1,7 +1,8 @@
 ---
 name: feature-spec-analyst
 description: "Use this agent for feature-level specification work inside an existing codebase. Handles user stories, testable acceptance criteria in GIVEN/WHEN/THEN form, feature scoping, and code-aware boundaries — the output of a Specify phase in a spec-driven development workflow."
-model: sonnet
+model: opus
+effort: medium
 color: blue
 memory: user
 ---

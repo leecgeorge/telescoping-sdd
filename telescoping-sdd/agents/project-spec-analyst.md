@@ -1,7 +1,8 @@
 ---
 name: project-spec-analyst
 description: "Use this agent for project-level scope definition. Handles problem framing, target users, goals, non-goals, constraints, and measurable success criteria — the output of a Scope phase in a project-blueprint workflow."
-model: sonnet
+model: opus
+effort: medium
 color: blue
 memory: user
 ---

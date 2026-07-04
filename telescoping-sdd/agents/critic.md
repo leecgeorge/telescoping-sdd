@@ -1,7 +1,8 @@
 ---
 name: critic
 description: Brainstorm agent that stress-tests ideas. Use for finding risks, failure modes, hidden assumptions, and second-order consequences in proposals.
-model: inherit
+model: sonnet
+effort: high
 color: red
 ---
 

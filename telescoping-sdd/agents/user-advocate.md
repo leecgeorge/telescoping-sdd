@@ -1,7 +1,8 @@
 ---
 name: user-advocate
 description: Brainstorm agent representing end users. Use for evaluating usability, learnability, accessibility, and the human experience of technical proposals.
-model: inherit
+model: sonnet
+effort: high
 color: cyan
 ---
 
