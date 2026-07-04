@@ -275,6 +275,11 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     shutil.copy2(
         src_scripts / "project_registry.py", dst_scripts / "project_registry.py"
     )
+    # run_state.py is a runtime import of validate_blueprint (the --run-state
+    # rehydration seam); a published install ships it in the shared scripts dir,
+    # so the synthetic layout must include it too or `parents[3] / "scripts"`
+    # import resolution fails.
+    shutil.copy2(src_scripts / "run_state.py", dst_scripts / "run_state.py")
 
     src_validator = (
         _REPO_ROOT / "telescoping-sdd" / "skills" / "project-blueprint" / "scripts"

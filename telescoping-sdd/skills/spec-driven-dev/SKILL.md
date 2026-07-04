@@ -20,6 +20,8 @@ Every feature follows four phases. **Always get user approval before moving to t
 3. **Tasks** — Break it into atomic steps (`tasks.md`) — drafted by the `telescoping-sdd:feature-task-analyst` agent
 4. **Implement** — Execute tasks with TDD (no delegation — the calling Claude implements directly)
 
+**Each approval gate is a safe context-reset checkpoint.** Once a phase is approved (and, for Phase 4, once the completion checklist is satisfied), its decisions are durable on disk — so you may safely reset the context here (compact, `/clear`, or a fresh session) to cap window growth, then run `validate_spec.py <spec-dir> --run-state` to rehydrate current phase / approval / hash / obligation state in one read-only screen. This is opt-in and advisory — never automatic, never forced. First confirm the phase's `## Approval` box is ticked and your conversational decisions are written into the artifact (a reset drops un-written nuance; not safe mid-panel-loop). Full doctrine: `references/workflow-overview.md` § "Context Management — Resetting at Gates".
+
 All spec documents live in the feature's spec directory at the project root (see **Spec directory naming** below).
 
 Read `references/workflow-overview.md` for a quick-reference diagram of the full process.

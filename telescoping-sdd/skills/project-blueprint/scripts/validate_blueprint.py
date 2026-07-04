@@ -135,6 +135,7 @@ import master_feature  # noqa: E402
 # `find_sibling` decides whether a matching master sibling is configured.
 import project_link  # noqa: E402
 import project_registry  # noqa: E402
+from run_state import derive_run_state, format_run_state, safe_print  # noqa: E402
 
 # Stack vocabulary the blueprint may declare. Mirrors validate_spec.py's
 # LANGUAGE_PROFILES keys; kept as a literal here (project-blueprint does not
@@ -1464,6 +1465,26 @@ BLUEPRINT_PHASE_ORDER = {
     "plan": "ARCHITECTURE.md",
 }
 
+# --run-state phase map (C3): ordered (phase_label, bare_artifact_name) pairs.
+# The blueprint tier has NO Phase-4/Implement altitude, so its terminal label and
+# tick-hint artifact are both None (tick_hint never fires here). A straight mirror
+# of SDD_RUN_STATE_PHASES, passed into the shared derive_run_state (run_state.py).
+BLUEPRINT_RUN_STATE_PHASES = [
+    ("Scope", "SCOPE.md"),
+    ("Architecture", "ARCHITECTURE.md"),
+    ("Plan", "PLAN.md"),
+]
+BLUEPRINT_RUN_STATE_TERMINAL = None
+BLUEPRINT_RUN_STATE_TICK_HINT_ARTIFACT = None
+# Documented CFC-descope boundary (AD5): the blueprint CFC `orphaned-stale-content`
+# obligation needs a whole-repo specs/ walk + CFC parse — disproportionate for a
+# compact rehydration aid, so it is surfaced by the FULL validator instead. The
+# --run-state output names that boundary so a rehydrating reader is never misled.
+CFC_DESCOPE_NOTE = (
+    "note: Cross-Feature Contract drift is not checked here — "
+    "run the full validator to verify CFCs."
+)
+
 
 # ---------------------------------------------------------------------------
 # Phase validators
@@ -2030,6 +2051,49 @@ def _handle_write_arch_config(blueprint_dir: Path) -> int:
     return 0
 
 
+def _handle_run_state(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """`--run-state` mode. Read-only, out-of-band, always returns 0. [C3/I6; AD11-L2]
+
+    A straight mirror of the SDD tier's handler (C2) with NO CFC-orphan
+    computation (descoped, AD5): no `scan_orphan_tags` call and no
+    `extra_obligations`. Resolves the marker root, builds the blueprint phase
+    list (terminal label + tick-hint artifact both None — no Phase-4 altitude),
+    calls the shared `derive_run_state` + `format_run_state`, prints, and appends
+    the CFC-descope note so the documented boundary is legible. When `--output
+    json` was passed, first prints the AD9/Q1 one-line text-only notice.
+
+    Layer 2 of the never-crash contract (AD11): a broad `except Exception`
+    backstop wraps the ENTIRE body — marker-root resolution, phase-list build,
+    derive, format, AND every print — so NOTHING runs outside the guard and no
+    missed exception can break the always-exit-0 contract. It never delegates to
+    `run_cli_failclosed` (which exits non-zero). The backstop line is a HARDCODED,
+    exception-text-free static string (it never interpolates caught-exception
+    text — that would reopen the AD14 spoof channel). Both prints are
+    `BrokenPipeError`-guarded via the shared `safe_print` (AD11-E).
+    """
+    try:
+        marker_root = _resolve_marker_root_and_key(blueprint_dir, project_root)[0]
+        if getattr(args, "output", "text") == "json":
+            safe_print("note: --run-state emits text only this cycle")
+        state = derive_run_state(
+            tier="blueprint",
+            artifact_dir=blueprint_dir,
+            project_root=marker_root,
+            phases=BLUEPRINT_RUN_STATE_PHASES,
+            terminal_phase_label=BLUEPRINT_RUN_STATE_TERMINAL,
+            tick_hint_artifact=BLUEPRINT_RUN_STATE_TICK_HINT_ARTIFACT,
+        )
+        safe_print(format_run_state(state))
+        safe_print(CFC_DESCOPE_NOTE)
+        return 0
+    except Exception:
+        safe_print(
+            "run-state: unable to derive a summary; run the full validator "
+            "(validate_blueprint.py <dir>) for details"
+        )
+        return 0
+
+
 def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
     """`--approve {scope,architecture,plan}` mode (audit R3.2 — extracted from main).
 
@@ -2256,6 +2320,14 @@ def main():
         "the blueprint→SDD seam. Standalone op (does NOT run during --approve and "
         "touches no content hash).",
     )
+    mode_group.add_argument(
+        "--run-state",
+        action="store_true",
+        help="Print a compact, read-only one-screen rehydration summary (current "
+        "phase, per-artifact approved/hash status, open obligations, next step) "
+        "and exit 0. Side-effect-free; the safe way to re-orient after a context "
+        "reset. Emits text only; CFC drift is checked only by the full validator.",
+    )
     parser.add_argument(
         "--output",
         choices=["text", "json"],
@@ -2326,6 +2398,8 @@ def main():
         sys.exit(_handle_restore_anchor(blueprint_dir, project_root))
     if args.write_arch_config:
         sys.exit(_handle_write_arch_config(blueprint_dir))
+    if args.run_state:
+        sys.exit(_handle_run_state(args, blueprint_dir, project_root))
     if args.approve:
         sys.exit(_handle_approve(args, blueprint_dir, project_root))
 

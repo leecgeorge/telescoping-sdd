@@ -58,6 +58,20 @@ Between each phase, stop and ask the user:
 2. After Architecture: "Here's the architecture. Does this structure make sense?"
 3. After Implementation Plan: "Here's the plan. Is this the right set of features and build order?"
 
+## Context Management — Resetting at Gates
+
+Long runs grow the context window until it hits involuntary compaction (the "compaction cliff"). You do not have to ride the window up to that cliff: **each phase-approval gate is a safe point to deliberately reset the context** — compact, `/clear`, or start a fresh session — dropping the window back toward scaffolding size. This is opt-in and advisory: recommended at gates, **never automatic, never forced, and never a validator gate that blocks anything.**
+
+**1 — Gates are safe reset checkpoints.** Once a phase is approved, its decisions are captured in the artifact plus its content hash on disk. That is durable state, so the run can continue in a compacted or fresh session with **no state loss**. The safe checkpoints are the **Scope → Architecture → Plan approvals** — the Plan approval is the terminal gate, and resetting there before handing off to per-feature spec-driven-dev is the highest-value reset (confirm the phase's Approval checkbox is ticked first).
+
+**2 — The validator rehydrates you: `--run-state`.** After any reset (compaction, `/clear`, or a fresh session), run the validator to re-establish current run state: which artifacts exist and are approved vs pending, each approved artifact's content-hash status, the current phase, and any open obligations. `validate_blueprint.py blueprint/ --run-state` is the purpose-built, single-command way to print exactly that as a compact one-screen summary — read-only, it changes nothing. (CFC drift is **not** part of `--run-state`; run the full validator to check Cross-Feature Contracts.) **Honest boundary:** `--run-state` re-derives all *disk-durable* state, but it **cannot** recover conversational nuance that was never written into an artifact. So a reset mitigates the compaction cliff by making a *deliberate* reset safe and a post-compaction *recovery* fast — it does **not** undo the loss an *involuntary* mid-phase compaction has already caused.
+
+**3 — The caveat: a reset drops un-written conversational nuance.** A reset loses any conversational state not yet written into an artifact. Concretely that includes: panel concerns raised in the current pass but **not yet archived** by `archive_pass.py`; a pending strict-bar or halt-vote decision **awaiting the user**; an in-flight cascade or re-approval obligation **not yet acted on**; a **dispatched-but-not-yet-returned** background subagent (e.g. a panelist `Agent` call still running when the reset lands); and any decision **discussed but not yet written** into an artifact. Because of this, the safe reset point is a **phase-approval gate** — a clean boundary with no open loop — and **NOT mid-panel-loop**.
+
+**Pre-reset check (before resetting at a gate):** confirm the phase's `## Approval` checkbox is ticked, and that any decisions made in conversation are actually reflected in the artifact. Don't rely on memory — read the artifact.
+
+This section promotes the `references/hash-and-cascade.md` § "Entering the Workflow Mid-Stream" path into a **proactive, first-class context-management practice** you are told about in advance — not only a crash-recovery procedure.
+
 ## Validation Before Approval
 
 Each document must pass validation before approval:

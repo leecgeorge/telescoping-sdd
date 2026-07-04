@@ -20,6 +20,8 @@ Every project blueprint follows three gated phases (Scope, Architecture, Impleme
 3. **Implementation Plan** — Break it into features and sequence them (`PLAN.md`) — drafted by the `telescoping-sdd:project-plan-analyst` agent
 4. **Business Brief** — Optional. After PLAN approval, offer to render the three approved documents as self-contained HTML for stakeholder consumption.
 
+**Each approval gate is a safe context-reset checkpoint.** Once a phase is approved, its decisions are durable on disk — so you may safely reset the context here (compact, `/clear`, or a fresh session) to cap window growth, then run `validate_blueprint.py blueprint/ --run-state` to rehydrate current phase / approval / hash / obligation state in one read-only screen. This is opt-in and advisory — never automatic, never forced. First confirm the phase's `## Approval` box is ticked and your conversational decisions are written into the artifact (a reset drops un-written nuance; not safe mid-panel-loop). Full doctrine: `references/workflow-overview.md` § "Context Management — Resetting at Gates".
+
 All blueprint documents live in `blueprint/` at the project root.
 
 Read `references/workflow-overview.md` for a quick-reference diagram of the full process.
