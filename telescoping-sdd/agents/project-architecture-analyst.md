@@ -1,7 +1,8 @@
 ---
 name: project-architecture-analyst
 description: "Use this agent for project-level architecture documentation. Handles system overview, component decomposition, technology choices, data architecture, external dependencies, and risks — the output of an Architecture phase in a project-blueprint workflow."
-model: sonnet
+model: opus
+effort: medium
 color: green
 memory: user
 ---

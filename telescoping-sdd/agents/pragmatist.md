@@ -1,7 +1,8 @@
 ---
 name: pragmatist
 description: Brainstorm agent focused on implementation feasibility. Use for converting visions into concrete, sequenced action plans with realistic effort estimates.
-model: inherit
+model: sonnet
+effort: high
 color: cyan
 ---
 

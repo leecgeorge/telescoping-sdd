@@ -1,7 +1,8 @@
 ---
 name: feature-task-analyst
 description: "Use this agent to break a feature-level design into atomic, test-first implementation tasks. Handles task sizing, dependency mapping, parallel-execution analysis, test planning, and verification command construction — the output of a Tasks phase in a spec-driven development workflow."
-model: sonnet
+model: opus
+effort: medium
 color: yellow
 memory: user
 ---

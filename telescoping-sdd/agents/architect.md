@@ -1,7 +1,8 @@
 ---
 name: architect
 description: Reviews system design for architectural quality attributes. Use for evaluating component boundaries, data flow, scalability, maintainability, and technology choices.
-model: inherit
+model: sonnet
+effort: high
 color: green
 ---
 

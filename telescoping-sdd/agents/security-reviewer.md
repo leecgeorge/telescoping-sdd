@@ -1,7 +1,8 @@
 ---
 name: security-reviewer
 description: Reviews designs and code for security vulnerabilities. Use for threat modeling, input validation analysis, authentication/authorization review, and OWASP assessment.
-model: inherit
+model: sonnet
+effort: high
 color: orange
 ---
 

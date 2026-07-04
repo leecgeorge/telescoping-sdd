@@ -1,7 +1,8 @@
 ---
 name: feature-architecture-analyst
 description: "Use this agent for feature-level architecture documentation inside an existing codebase. Handles component design, interfaces, data models, error handling, testing strategy, file structure, and integration points — the output of a Design phase in a spec-driven development workflow."
-model: sonnet
+model: opus
+effort: medium
 color: green
 memory: user
 ---

@@ -1,7 +1,8 @@
 ---
 name: delivery-manager
 description: Senior engineering manager with 30 years of delivery expertise. Use for work sequencing, dependency management, risk identification, milestone planning, and delivery strategy grounded in real-world execution constraints.
-model: inherit
+model: sonnet
+effort: high
 color: yellow
 ---
 

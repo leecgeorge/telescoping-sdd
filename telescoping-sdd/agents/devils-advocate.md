@@ -1,7 +1,8 @@
 ---
 name: devils-advocate
 description: Systematic contrarian that stress-tests specifications and designs. Use for adversarial review that finds flaws through structured opposition, not just criticism.
-model: inherit
+model: sonnet
+effort: high
 color: red
 ---
 

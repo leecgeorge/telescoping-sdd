@@ -1,7 +1,8 @@
 ---
 name: testability-reviewer
 description: Reviews designs for testability and test strategy gaps. Use for identifying untestable designs, missing test scenarios, boundary conditions, and verification approaches.
-model: inherit
+model: sonnet
+effort: high
 color: purple
 ---
 

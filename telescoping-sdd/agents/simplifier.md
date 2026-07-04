@@ -1,7 +1,8 @@
 ---
 name: simplifier
 description: Identifies over-engineering and unnecessary complexity. Use for enforcing YAGNI, finding premature abstractions, and reducing scope to the minimal viable version.
-model: inherit
+model: sonnet
+effort: high
 color: purple
 ---
 

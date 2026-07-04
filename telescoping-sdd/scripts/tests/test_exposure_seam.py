@@ -58,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.17.0"
-CHANGELOG_FIRST_ENTRY = "## 2.17.0 — Best-effort .sdd/ cruft cleanup"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.18.0"
+CHANGELOG_FIRST_ENTRY = "## 2.18.0 — Explicit model/effort tiers for drafters and panelists"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
