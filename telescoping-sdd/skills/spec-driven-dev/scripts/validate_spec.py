@@ -123,6 +123,7 @@ from project_link import (  # noqa: E402
     parse_qualified_id,
 )
 from ucr import parse_ucr_stanza  # noqa: E402
+from run_state import derive_run_state, format_run_state, safe_print  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +637,14 @@ def approve_document(
 # check_previous_phase_approved is imported from blueprint_common (audit R2.1);
 # the SDD phase ordering is passed in via SDD_PHASE_ORDER.
 SDD_PHASE_ORDER = {"design": "spec.md", "tasks": "design.md"}
+
+# --run-state phase map (C2): ordered (phase_label, bare_artifact_name) pairs +
+# the terminal phase label (SDD has a Phase-4/Implement altitude) + the artifact
+# eligible for the AD6 Phase-4 task-tick hint. A static map alongside
+# SDD_PHASE_ORDER, passed into the shared derive_run_state (run_state.py).
+SDD_RUN_STATE_PHASES = [("Specify", "spec.md"), ("Design", "design.md"), ("Tasks", "tasks.md")]
+SDD_RUN_STATE_TERMINAL = "Implement"
+SDD_RUN_STATE_TICK_HINT_ARTIFACT = "tasks.md"
 
 
 def _read_plan_identifier(
@@ -1838,6 +1847,50 @@ def _handle_set_language(args, spec_dir: Path, project_root: Optional[Path]) -> 
     return 0
 
 
+def _handle_run_state(args, spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--run-state` mode. Read-only, out-of-band, always returns 0. [C2/I5; AD11-L2]
+
+    Resolves the marker root, builds the SDD phase list, calls the shared
+    `derive_run_state` + `format_run_state`, prints, returns 0. When `--output
+    json` was passed, first prints a one-line notice that `--run-state` emits text
+    only this cycle (AD9/Q1).
+
+    Layer 2 of the never-crash contract (AD11): a broad `except Exception`
+    backstop wraps the ENTIRE body — marker-root resolution (which can raise from
+    `arch_find_project_root` / `Path.resolve`), the phase-list build,
+    `derive_run_state`, `format_run_state`, AND the print — so NOTHING runs
+    outside the guard and no missed exception can break the always-exit-0
+    contract. It never delegates the exit to `run_cli_failclosed` (which would
+    exit non-zero on `ArtifactAmbiguityError`). The backstop line is a HARDCODED,
+    exception-text-free static string: it does NOT interpolate `str(e)` or any
+    caught-exception text (at the backstop `RunState`/formatted text may not
+    exist and the line is outside `format_run_state`'s per-field `_sanitize`
+    guarantee, so interpolating would reopen the control-char/newline spoof
+    channel AD14 closes). Both prints are `BrokenPipeError`-guarded via
+    the shared `safe_print` (AD11-E).
+    """
+    try:
+        marker_root = _resolve_marker_root_and_key(spec_dir, project_root)[0]
+        if getattr(args, "output", "text") == "json":
+            safe_print("note: --run-state emits text only this cycle")
+        state = derive_run_state(
+            tier="sdd",
+            artifact_dir=spec_dir,
+            project_root=marker_root,
+            phases=SDD_RUN_STATE_PHASES,
+            terminal_phase_label=SDD_RUN_STATE_TERMINAL,
+            tick_hint_artifact=SDD_RUN_STATE_TICK_HINT_ARTIFACT,
+        )
+        safe_print(format_run_state(state))
+        return 0
+    except Exception:
+        safe_print(
+            "run-state: unable to derive a summary; run the full validator "
+            "(validate_spec.py <dir>) for details"
+        )
+        return 0
+
+
 def _handle_completion_gate(args, spec_dir: Path, project_root: Path) -> int:
     """`--completion-gate` mode (R5). Resolves the stack via the shared
     `resolve_language` precedence — exactly as `_run_validation` does, so R5
@@ -2065,6 +2118,14 @@ def main():
         help="Persist the project's stack to .sdd/architecture.json (the "
         "declare-once store) and exit. The single, explicit write path.",
     )
+    mode_group.add_argument(
+        "--run-state",
+        action="store_true",
+        help="Print a compact, read-only one-screen rehydration summary (current "
+        "phase, per-artifact approved/hash status, open obligations, next step) "
+        "and exit 0. Side-effect-free; the safe way to re-orient after a context "
+        "reset. Emits text only.",
+    )
     parser.add_argument(
         "--project-root",
         type=Path,
@@ -2133,6 +2194,8 @@ def main():
         sys.exit(_handle_completion_gate(args, spec_dir, project_root))
     if args.set_language:
         sys.exit(_handle_set_language(args, spec_dir, project_root))
+    if args.run_state:
+        sys.exit(_handle_run_state(args, spec_dir, project_root))
 
     sys.exit(_run_validation(args, spec_dir, project_root))
 

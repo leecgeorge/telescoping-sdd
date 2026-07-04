@@ -21,6 +21,10 @@ Do both without prompting for permission — the user has already authorized the
 
 ## Entering the Workflow Mid-Stream
 
+<!-- CONTEXT-MGMT-REHYDRATE-START -->
+> **This is a first-class, proactive context-management practice — not only a crash-recovery procedure.** `references/workflow-overview.md` § "Context Management — Resetting at Gates" tells you *when* it is safe to reset the context (at any phase-approval gate); this section is *how* you re-orient afterward. For a fast one-screen orientation, run `validate_blueprint.py blueprint/ --run-state` (read-only — it re-derives current phase, per-artifact approved/hash status, and open obligations without changing anything; CFC drift is checked only by the full validator). The full procedure below re-establishes and, where needed, repairs approval state in detail — use it whenever you enter an in-progress workflow, whether after a **deliberate reset at a gate**, an involuntary compaction, a `/clear`, a fresh session, or a `git pull`/`merge`/branch switch.
+<!-- CONTEXT-MGMT-REHYDRATE-END -->
+
 Run `python <script-path>/validate_blueprint.py blueprint/`. Output lines are `  [<SEVERITY>] <name> — <detail>`.
 
 1. **Fix structural FAILs first** (missing sections, `[TBD]`/`TODO`/`FIXME`, unchecked open questions). Self-correct trivial breaks; escalate when content judgment is needed. Re-run the validator to confirm before continuing. Do not re-stamp a structurally broken document.
