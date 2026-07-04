@@ -585,6 +585,15 @@ R10_ORPHAN_TOKEN = "ORPHANED-TRAJECTORY-ROW:"
 HASH_BASIS_V2_LINE = "- **Hash basis:** v2"
 HASH_BASIS_MIGRATION_TOKEN = "HASH-BASIS-MIGRATION:"
 
+# order-independent-anchor (T4 / R3): the M-guard doctrine added to the
+# Close-Path Selection Guidance. Vocab-neutral substrings (identical in both
+# copies); each pins that the new doctrine survived the paragraph rewrite.
+REVERSED_ORDER_ANTIPATTERN_FRAGMENT = "review-then-approve"
+RESTAMP_FIRST_FRAGMENT = "Re-stamp FIRST"
+RESTORE_THEN_DECLINE_FRAGMENT = "restore-then-decline sequencing"
+ORCHESTRATOR_AUTO_RESTORE_FRAGMENT = "Orchestrator auto-restore"
+NOTHING_RESTORABLE_CROSSREF_FRAGMENT = "nothing restorable"   # R3 AC5 cross-ref (CRIT-M3)
+
 CLOSE_PATH_SHARED_ANCHORS = [
     CLOSE_PATH_GUIDANCE_HEADING,
     DECLINE_PENDING_NARROWED_SENTENCE_FRAGMENT,
@@ -595,6 +604,11 @@ CLOSE_PATH_SHARED_ANCHORS = [
     R10_ORPHAN_TOKEN,
     HASH_BASIS_V2_LINE,
     HASH_BASIS_MIGRATION_TOKEN,
+    REVERSED_ORDER_ANTIPATTERN_FRAGMENT,
+    RESTAMP_FIRST_FRAGMENT,
+    RESTORE_THEN_DECLINE_FRAGMENT,
+    ORCHESTRATOR_AUTO_RESTORE_FRAGMENT,
+    NOTHING_RESTORABLE_CROSSREF_FRAGMENT,
 ]
 
 

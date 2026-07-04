@@ -34,11 +34,15 @@ except ImportError:  # pragma: no cover - non-Windows
     _msvcrt = None
 
 from blueprint_common import (  # noqa: E402
+    DECLINE_FLAGGED_ANOMALOUS_MSG,
+    DECLINE_UNSATISFIABLE_HELD_BACK_MSG,
+    EXIT_DECLINE_HELD_BACK,
     HASH_BASIS_MIGRATION_SUPPRESS_MSG,
     MARKER_RELPATH,
     MARKER_SCHEMA_VERSION,
     MarkerCorruptError,
     REAPPROVAL_REMINDER,
+    REVERSED_ORDER_CREATE_WARN,
     STRANDED_OBLIGATION_TOKEN,
     UNSATISFIABLE_OBLIGATION_TOKEN,
     UPSTREAM_PANEL_TAG_RE,
@@ -50,6 +54,7 @@ from blueprint_common import (  # noqa: E402
     _trajectory_row_notes,
     changed_since_stamp,
     content_for_hashing,
+    find_orphaned_trajectory_rows,
     is_basis_migration_only,
     now_iso_utc,
     stamped_at_pass_from_content,
@@ -341,20 +346,36 @@ def _restamp_or_suppress_locked(
         stored_hash=stored_hash,
         content_trimmed=content_trimmed,
     ):
+        anchor = stamped_at_pass_from_content(original_content)
         upsert_pending_entry(
             marker_root,
             doc_rel,
             content_hash,
             now_iso_utc(),
-            stamped_at_pass_from_content(original_content),
+            anchor,
         )
         print(REAPPROVAL_REMINDER)
+        # R4/AD7: reversed-order ("review-then-approve") WARN — additive-only, this
+        # create arm ONLY; a pure print gated on the content-derived signal, no
+        # marker-state change (the R9-preserve and basis-migration arms are
+        # untouched). Fires on Variant A (tag on the anchor row at approve time);
+        # Variant B is an accepted no-fire caught downstream by the reconcile
+        # UNSATISFIABLE-OBLIGATION diagnostic (RK-D2).
+        if _anchor_row_carries_tag(original_content, anchor):
+            print(REVERSED_ORDER_CREATE_WARN.format(doc_rel=doc_rel))
     else:
         print(HASH_BASIS_MIGRATION_SUPPRESS_MSG.format(doc_rel=doc_rel))
 
 
 def clear_pending_entries_for_prefix(project_root: Path, prefix: str) -> list[str]:
     """Remove pending entries whose key == prefix or starts with prefix + '/'. [T1; I6]
+
+    WARNING (order-independent-anchor / ARCH-M2): this is NO LONGER the CLI
+    `--decline-pending` entry point — both validators now route through
+    `partition_decline_clear`, which honors the hard floor (never clears an
+    UNSATISFIABLE-with-tag obligation). This all-or-nothing primitive is retained
+    for its other callers/tests; a NEW caller wiring `--decline-pending` back to it
+    would silently reintroduce the mis-record bug `partition_decline_clear` closes.
 
     Pure string prefix-matching (no path resolution — needs no AD12 guard).
     `startswith(prefix + '/')` avoids prefix-bleed (feat-a vs feat-a-extra).
@@ -375,6 +396,152 @@ def clear_pending_entries_for_prefix(project_root: Path, prefix: str) -> list[st
         elif removed:
             write_pending_review(project_root, data)
         return removed
+
+
+# ----- R2: partitioned --decline-pending (order-independent-anchor, C1) -----
+
+
+def _doc_has_matching_orphaned_tag(content: str, hash_short: str) -> bool:
+    """True iff a load-bearing ORPHANED Trajectory row carries THIS entry's own
+    `upstream-panel <hash_short>` tag (SEC-H1 / SEC2-M1).
+
+    `_obligation_is_unsatisfiable` only scans CONTIGUOUS rows, so a genuine tag
+    stranded on an orphaned row (a stray blank line, or a hand-run archive_pass —
+    the reversed-order operator's profile) is invisible to it and the key would
+    mis-clear a performed panel. Hash-scoping to the entry's own hash[:8] stops a
+    STALE prior-cycle orphaned tag from blocking a later, unrelated conscious-waive
+    (SEC2-M1). RAW content only (never content_for_hashing output — H4-security).
+    Pure read.
+    """
+    for orphan in find_orphaned_trajectory_rows(content):
+        if orphan.get("has_upstream_tag") and _row_has_tag(orphan.get("text", ""), hash_short):
+            return True
+    return False
+
+
+def _anchor_row_carries_tag(content: str, anchor_pass: int) -> bool:
+    """True iff SOME `### Trajectory` row whose Pass == anchor_pass carries a
+    genuine `upstream-panel` tag — the 'tag-before-approve' reversed-order
+    fingerprint (R4/AD2).
+
+    OR across every row matching anchor_pass (a hand-edited table may duplicate a
+    pass), mirroring `_doc_has_qualifying_tag`'s per-row scan. anchor_pass <= 0 ->
+    False (a first-approval anchor has no archived row to tag). RAW content only
+    (never content_for_hashing output — the v2 strip removes every tag;
+    H4-security). Pure read.
+
+    COVERAGE (AD2): fires on Variant A (tag stamped on the anchor row BEFORE the
+    create-approve). It CANNOT fire on Variant B (archive an untagged row ->
+    approve -> tag afterward), which is content-identical at create time to the
+    ordinary converged-untagged row (R4 AC2 no-fire) — Variant B is caught
+    downstream by reconcile's UNSATISFIABLE-OBLIGATION diagnostic + the R2
+    decline-guard (accepted no-fire, RK-D2).
+    """
+    if anchor_pass <= 0:
+        return False
+    for row in _trajectory_data_rows(content):
+        first = _row_first_cell(row)
+        if (
+            _is_ascii_int(first)
+            and int(first) == anchor_pass
+            and UPSTREAM_PANEL_TAG_RE.search(_trajectory_row_notes(row))
+        ):
+            return True
+    return False
+
+
+def partition_decline_clear(
+    project_root: Path, path_prefix: str
+) -> "tuple[list[str], list[str], list[str]]":
+    """Selectively clear declinable pending entries under `path_prefix`. [R2/AD3]
+
+    Partitions each in-scope key into three buckets, then clears only the
+    declinable ones under ONE `_marker_lock` hold:
+      - HELD BACK (the hard floor — never cleared; wins over FLAGGED): a valid
+        16-hex, contained key that is either UNSATISFIABLE by
+        `_obligation_is_unsatisfiable` (genuine contiguous tag on a pass <= anchor)
+        OR carries a load-bearing ORPHANED tag matching its own hash[:8]
+        (`_doc_has_matching_orphaned_tag`, SEC-H1). Declining either would
+        mis-record a genuinely-performed panel as skipped.
+      - FLAGGED (cleared, but surfaced with a distinct WARN): the entry could not
+        be classified — malformed/non-16-hex hash, or a containment-escaping key.
+        Cleared (a valid waive, matching clear_pending_entries_for_prefix's
+        behavior) but never folded silently into the "cleared normally" narrative
+        (SEC-M1).
+      - CLEARED: everything else, incl. a genuinely-owed UNTAGGED obligation (the
+        conscious-waive path — unaffected).
+    Strict read (MarkerCorruptError propagates — never clobbers a corrupt shared
+    marker). ONE `_read_contained_doc` per key threads both the unsatisfiable and
+    orphaned-tag checks (single read — avoids a TOCTOU + redundant I/O). Persists
+    via `_persist_or_unlink_marker` only when something was cleared or flagged.
+    Iterates a `list(pending)` snapshot (delete-inside-loop safe). Returns
+    `(cleared, held_back, flagged)`.
+    """
+    with _marker_lock(project_root):
+        data = read_pending_review(project_root, strict=True)
+        pending = data["pending"]
+        cleared: "list[str]" = []
+        held_back: "list[str]" = []
+        flagged: "list[str]" = []
+        for key in list(pending):
+            if not _prefix_in_scope(key, path_prefix):
+                continue
+            entry = pending[key]
+            h = entry.get("hash")
+            valid = (
+                isinstance(h, str)
+                and _is_valid_16_hex(h)
+                and _key_is_contained(project_root, key)
+            )
+            held = False
+            if valid:
+                content = _read_contained_doc(project_root, key)
+                hash_short = h[:8]
+                if _obligation_is_unsatisfiable(project_root, key, entry) or (
+                    content is not None
+                    and _doc_has_matching_orphaned_tag(content, hash_short)
+                ):
+                    held = True
+            if held:
+                held_back.append(key)              # hard floor: NOT cleared
+            elif not valid:
+                flagged.append(key)                # cleared, but surfaced
+                del pending[key]
+            else:
+                cleared.append(key)                # conscious-waive / declinable
+                del pending[key]
+        if cleared or flagged:
+            _persist_or_unlink_marker(project_root, data)
+        return cleared, held_back, flagged
+
+
+def format_decline_output(
+    cleared: "list[str]", held_back: "list[str]", flagged: "list[str]", *, restore_cmd: str
+) -> "tuple[str, int]":
+    """Build the --decline-pending operator message + exit code. Pure. [R2/AD4/AD5]
+
+    Names every NON-EMPTY set in one output (so a partial result is never misread
+    as total failure by a scripted/CI caller); each held-back line states WHY
+    decline is wrong here + names `restore_cmd` and never the word "legacy"; each
+    flagged line is surfaced with the anomalous-key WARN. Exit code is 0 only when
+    both `held_back` and `flagged` are empty, else EXIT_DECLINE_HELD_BACK (3). The
+    all-three-empty no-op case is handled by the caller before this is invoked.
+    """
+    lines: "list[str]" = []
+    if cleared:
+        noun = "entry" if len(cleared) == 1 else "entries"
+        lines.append(
+            f"Declined upstream panel re-review; cleared {len(cleared)} pending "
+            f"{noun}: {', '.join(cleared)}"
+        )
+    for key in held_back:
+        lines.append(
+            DECLINE_UNSATISFIABLE_HELD_BACK_MSG.format(doc_rel=key, restore_cmd=restore_cmd)
+        )
+    for key in flagged:
+        lines.append(DECLINE_FLAGGED_ANOMALOUS_MSG.format(doc_rel=key))
+    code = 0 if (not held_back and not flagged) else EXIT_DECLINE_HELD_BACK
+    return "\n".join(lines), code
 
 
 # ----- reconcile: clear satisfied entries, return still-pending (R2 clear) --
@@ -558,7 +725,7 @@ def _obligation_is_unsatisfiable(project_root: Path, key: str, entry: dict) -> b
 
 
 def restore_anchor_for_prefix(project_root: Path, path_prefix: str) -> list[str]:
-    """Content-attested remedy for unsatisfiable (legacy re-anchored) obligations. [R9/C3]
+    """Content-attested remedy for unsatisfiable obligations — a fresh reversed-order re-approval OR a legacy re-anchored marker. [R9/C3]
 
     For each pending entry under `path_prefix` whose doc carries a GENUINE
     `upstream-panel <hash[:8]>` tag on ANY archived Trajectory row, clear the
@@ -674,8 +841,10 @@ def reconcile_to_result(
                 f"{UNSATISFIABLE_OBLIGATION_TOKEN} {doc_rel} carries a genuine "
                 f"`{expected_tag}` tag, but only on a Trajectory pass <= the "
                 f"recorded anchor, so the standard reconcile (which clears strictly "
-                f"above the anchor) can never satisfy it — a legacy re-anchored "
-                f"marker.{restore_hint} Content-attested: it clears only because the "
+                f"above the anchor) can never satisfy it. It arose either as a fresh "
+                f"reversed-order re-approval (a panel pass archived before the "
+                f"re-approve) or a legacy re-anchored marker.{restore_hint} "
+                f"Content-attested: it clears only because the "
                 f"genuine tag is present — no marker-cache editing, no "
                 f"`{decline_cmd}` needed.",
             )

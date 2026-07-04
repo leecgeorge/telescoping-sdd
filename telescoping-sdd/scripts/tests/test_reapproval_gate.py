@@ -1599,6 +1599,42 @@ _UNION_TEST_NAMES = (
     # --- Code-review remediations (medium-effort review of 5739d94) ---
     "test_genuine_v1_edit_is_stale_not_migration",
     "test_approve_no_approval_section_errors",
+    # --- order-independent-anchor T1: partition_decline_clear (C1 / R2) ---
+    "test_partition_single_unsatisfiable_held_not_cleared",
+    "test_partition_untagged_owed_obligation_cleared_conscious_waive",
+    "test_partition_mixed_prefix_declinable_cleared_unsat_held",
+    "test_partition_all_unsatisfiable_zero_cleared",
+    "test_partition_malformed_hash_key_flagged_but_cleared",
+    "test_partition_orphaned_tag_key_held_back",
+    "test_partition_stale_orphan_hash_scoped_untagged_clears",
+    "test_partition_held_back_wins_over_flagged",
+    "test_format_decline_output_all_cleared_exit_zero",
+    "test_format_decline_output_held_back_exit_three_names_restore_no_legacy",
+    "test_format_decline_output_flagged_only_exit_three",
+    "test_format_decline_output_held_back_and_flagged_both_surfaced",
+    # --- order-independent-anchor T2: decline-handler re-wire (C2 / R1,R2) ---
+    "test_decline_pending_exit_matrix_both_tiers",
+    "test_decline_pending_stdout_names_cleared_and_held_sets",
+    "test_reversed_order_decline_holds_restore_clears_both_tiers",
+    "test_decline_pending_corrupt_marker_returns_one_both_tiers",
+    # --- order-independent-anchor T3: broadened vocabulary (C4 / R3) ---
+    "test_reconcile_unsatisfiable_prose_names_fresh_reversed_order",
+    "test_restore_anchor_help_broadened_both_tiers",
+    "test_decline_pending_help_broadened_both_tiers",
+    # --- order-independent-anchor T5: reversed-order WARN (C3 / R4) ---
+    "test_anchor_row_carries_tag_true_on_variant_a",
+    "test_anchor_row_carries_tag_false_untagged_and_anchor_le_zero",
+    "test_anchor_row_carries_tag_or_across_duplicate_same_pass_rows",
+    "test_reversed_order_warn_fires_on_variant_a",
+    "test_reversed_order_warn_silent_variant_b_but_reconcile_flags_unsatisfiable",
+    "test_reversed_order_warn_no_fire_doctrine_order",
+    "test_reversed_order_warn_no_fire_hash_neutral_paths",
+    "test_reversed_order_warn_no_fire_ordinary_converged_untagged",
+    "test_reversed_order_warn_no_fire_r9_preserve_substantive_edit",
+    "test_reversed_order_warn_text_omits_legacy",
+    # --- order-independent-anchor T6: AD8 multi-entry + RK-D4 (C6) ---
+    "test_ad8_restore_multi_entry_mixed_tag_clears_only_tagged",
+    "test_rkd4_second_table_skip_accepted_risk_pins_current_behavior",
 )
 
 _AUDIT_TEST_NAME = "test_audit_union_test_names_present"
@@ -1618,3 +1654,409 @@ def test_audit_union_test_names_present():
     extra = sorted(defined - union)  # converse: defined but not registered
     assert not missing, f"audit: registered names with no test function: {missing}"
     assert not extra, f"audit: test functions not registered in _UNION_TEST_NAMES: {extra}"
+
+
+# --- T1: partition_decline_clear + format_decline_output (C1 / R2) ----------
+
+def _seed_unsat_key(root, key, hash16="e" * 16, passes=(1, 2, 3), tag_pass=3, anchor=3):
+    """A doc whose Trajectory row `tag_pass` carries upstream-panel <hash16[:8]>,
+    plus a pending entry anchored at `anchor` -> UNSATISFIABLE when tag_pass <= anchor."""
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_churn_doc(passes=passes, checked=True, hash_val=hash16), encoding="utf-8")
+    _set_row_tag(p, tag_pass, hash16[:8])
+    bc.upsert_pending_entry(root, key, hash16, "t", anchor)
+    return p
+
+
+def _seed_untagged_key(root, key, hash16="a" * 16, passes=(1, 2, 3), anchor=3):
+    """A doc with NO qualifying tag + a pending entry -> genuinely-owed, declinable (conscious-waive)."""
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_churn_doc(passes=passes, checked=True, hash_val=hash16), encoding="utf-8")
+    bc.upsert_pending_entry(root, key, hash16, "t", anchor)
+    return p
+
+
+def test_partition_single_unsatisfiable_held_not_cleared(tmp_path):
+    key = "specs/F1-x/spec.md"
+    _seed_unsat_key(tmp_path, key)
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert held_back == [key] and cleared == [] and flagged == []
+    assert key in _pending(tmp_path)  # hard floor: marker not modified
+
+
+def test_partition_untagged_owed_obligation_cleared_conscious_waive(tmp_path):
+    key = "specs/F1-x/spec.md"
+    _seed_untagged_key(tmp_path, key)
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert cleared == [key] and held_back == [] and flagged == []
+    assert key not in _pending(tmp_path)  # conscious-waive cleared
+
+
+def test_partition_mixed_prefix_declinable_cleared_unsat_held(tmp_path):
+    _seed_unsat_key(tmp_path, "specs/F1-x/spec.md")                       # UNSATISFIABLE -> held
+    _seed_untagged_key(tmp_path, "specs/F1-x/design.md")                  # owed untagged -> cleared
+    bc.upsert_pending_entry(tmp_path, "specs/F1-x/tasks.md", "not-16-hex", "t", 0)  # malformed -> flagged
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert held_back == ["specs/F1-x/spec.md"]
+    assert cleared == ["specs/F1-x/design.md"]
+    assert flagged == ["specs/F1-x/tasks.md"]
+    pend = _pending(tmp_path)
+    assert "specs/F1-x/spec.md" in pend            # held stays
+    assert "specs/F1-x/design.md" not in pend       # cleared
+    assert "specs/F1-x/tasks.md" not in pend        # flagged still cleared
+
+
+def test_partition_all_unsatisfiable_zero_cleared(tmp_path):
+    _seed_unsat_key(tmp_path, "specs/F1-x/spec.md")
+    _seed_unsat_key(tmp_path, "specs/F1-x/design.md")
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert cleared == [] and flagged == []
+    assert sorted(held_back) == ["specs/F1-x/design.md", "specs/F1-x/spec.md"]
+
+
+def test_partition_malformed_hash_key_flagged_but_cleared(tmp_path):
+    key = "specs/F1-x/spec.md"
+    (Path(tmp_path) / key).parent.mkdir(parents=True)
+    (Path(tmp_path) / key).write_text(_churn_doc(passes=(1,), checked=True, hash_val="a" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, key, "zzz", "t", 0)  # non-16-hex
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert flagged == [key] and held_back == [] and cleared == []
+    assert key not in _pending(tmp_path)  # flagged is cleared, just surfaced
+
+
+def test_partition_orphaned_tag_key_held_back(tmp_path):
+    # SEC-H1: a genuine tag on an ORPHANED row matching the entry's hash[:8] -> held back.
+    key = "specs/F1-x/spec.md"
+    orphan = _crow(9, notes="upstream-panel eeeeeeee")   # stranded past the terminator
+    p = _orphan_spec(tmp_path, "specs/F1-x", orphan)
+    bc.upsert_pending_entry(tmp_path, key, "e" * 16, "t", 3)
+    # sanity: the contiguous classifier is blind to it (would otherwise clear)
+    assert bc._obligation_is_unsatisfiable(tmp_path, key, _pending(tmp_path)[key]) is False
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert held_back == [key] and cleared == [] and flagged == []
+    assert key in _pending(tmp_path)
+
+
+def test_partition_stale_orphan_hash_scoped_untagged_clears(tmp_path):
+    # SEC2-M1: a stale prior-cycle orphaned tag (hashA) must NOT block a later
+    # untagged obligation (hashB) -> the untagged one still clears.
+    key = "specs/F1-x/spec.md"
+    orphan = _crow(9, notes="upstream-panel aaaaaaaa")   # stale foreign tag (hash A)
+    _orphan_spec(tmp_path, "specs/F1-x", orphan)
+    bc.upsert_pending_entry(tmp_path, key, "b" * 16, "t", 3)  # entry hash B != A, untagged for B
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert cleared == [key] and held_back == [] and flagged == []
+    assert key not in _pending(tmp_path)
+
+
+def test_partition_held_back_wins_over_flagged(tmp_path):
+    # SEC2-L1: a valid-hash key with a matching orphaned tag is held (never flagged).
+    key = "specs/F1-x/spec.md"
+    orphan = _crow(9, notes="upstream-panel eeeeeeee")
+    _orphan_spec(tmp_path, "specs/F1-x", orphan)
+    bc.upsert_pending_entry(tmp_path, key, "e" * 16, "t", 3)
+    cleared, held_back, flagged = bc.partition_decline_clear(tmp_path, "specs/F1-x")
+    assert held_back == [key] and flagged == []
+
+
+def test_format_decline_output_all_cleared_exit_zero(tmp_path):
+    msg, code = bc.format_decline_output(["specs/F1-x/spec.md"], [], [], restore_cmd="vs --restore-anchor")
+    assert code == 0
+    assert "cleared 1 pending" in msg and "specs/F1-x/spec.md" in msg
+
+
+def test_format_decline_output_held_back_exit_three_names_restore_no_legacy(tmp_path):
+    for cleared in ([], ["specs/F1-x/design.md"]):  # zero-cleared all-held-back AND mixed
+        msg, code = bc.format_decline_output(cleared, ["specs/F1-x/spec.md"], [], restore_cmd="vs --restore-anchor")
+        assert code == 3
+        assert "specs/F1-x/spec.md" in msg
+        assert "--restore-anchor" in msg
+        assert "legacy" not in msg.lower()
+        if cleared:
+            assert cleared[0] in msg
+        else:
+            assert "cleared 0 pending" not in msg  # no empty-cleared line
+
+
+def test_format_decline_output_flagged_only_exit_three(tmp_path):
+    msg, code = bc.format_decline_output([], [], ["specs/F1-x/tasks.md"], restore_cmd="x")
+    assert code == 3 and "specs/F1-x/tasks.md" in msg
+
+
+def test_format_decline_output_held_back_and_flagged_both_surfaced(tmp_path):
+    msg, code = bc.format_decline_output([], ["specs/F1-x/spec.md"], ["specs/F1-x/tasks.md"], restore_cmd="x")
+    assert code == 3
+    assert "specs/F1-x/spec.md" in msg and "specs/F1-x/tasks.md" in msg
+
+
+# --- T2: decline-handler re-wire + exit matrix + reversed-order (C2 / R1,R2) --
+
+_T2_TIERS = [("specs/F1-x", ("specs/F1-x/spec.md", "specs/F1-x/design.md")),
+             ("blueprint", ("blueprint/SCOPE.md", "blueprint/ARCHITECTURE.md"))]
+
+
+def _t2_runner(prefix):
+    return _run_vb if prefix == "blueprint" else _run_vs
+
+
+def _t2_unsat(root, key, h="e" * 16):
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val=h), encoding="utf-8")
+    _set_row_tag(p, 3, h[:8])
+    bc.upsert_pending_entry(root, key, h, "t", 3)          # anchor 3, tag on 3 -> UNSATISFIABLE
+
+
+def _t2_untagged(root, key, h="a" * 16):
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val=h), encoding="utf-8")
+    bc.upsert_pending_entry(root, key, h, "t", 3)          # no tag -> declinable
+
+
+def _t2_orphan(root, key, notes):
+    rows = "".join(_crow(p) + "\n" for p in (1, 2, 3))
+    body = (
+        "# F\n\n## Objective\n\nx\n\n## Panel Review\n\n" + _CHURN_TRAJ_HEADER + rows
+        + "\n" + _crow(9, notes=notes) + "\n\n### Sealed dispositions\n\n_None yet._\n\n"
+        "## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    p = Path(root) / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+
+
+def _t2_cli(root, prefix, flag):
+    d = Path(root) / prefix
+    d.mkdir(parents=True, exist_ok=True)
+    return _t2_runner(prefix)(str(d), flag, "--project-root", str(root))
+
+
+@pytest.mark.parametrize("prefix,keys", _T2_TIERS)
+def test_decline_pending_exit_matrix_both_tiers(tmp_path, prefix, keys):
+    k0, k1 = keys
+
+    def mixed(r): _t2_unsat(r, k0); _t2_untagged(r, k1)
+    def all_unsat(r): _t2_unsat(r, k0); _t2_unsat(r, k1)
+    def orphaned(r): _t2_orphan(r, k0, "upstream-panel eeeeeeee"); bc.upsert_pending_entry(r, k0, "e" * 16, "t", 3)
+    def flagged(r): bc.upsert_pending_entry(r, k0, "zzz", "t", 0)     # malformed hash
+    def declinable(r): _t2_untagged(r, k0)
+    def noop(r): pass
+
+    for i, (setup, exp) in enumerate(
+        [(mixed, 3), (all_unsat, 3), (orphaned, 3), (flagged, 3), (declinable, 0), (noop, 0)]
+    ):
+        sub = tmp_path / f"c{i}"
+        sub.mkdir()
+        setup(sub)
+        res = _t2_cli(sub, prefix, "--decline-pending")
+        assert res.returncode == exp, (prefix, i, res.stdout, res.stderr)
+
+
+@pytest.mark.parametrize("prefix,keys", _T2_TIERS)
+def test_decline_pending_stdout_names_cleared_and_held_sets(tmp_path, prefix, keys):
+    k0, k1 = keys
+    _t2_unsat(tmp_path, k0)          # held back
+    _t2_untagged(tmp_path, k1)       # cleared
+    res = _t2_cli(tmp_path, prefix, "--decline-pending")
+    assert res.returncode == 3
+    assert k0 in res.stdout and k1 in res.stdout          # both sets named in one output
+    assert "--restore-anchor" in res.stdout
+    assert "legacy" not in res.stdout.lower()
+
+
+@pytest.mark.parametrize("prefix,keys", _T2_TIERS)
+def test_reversed_order_decline_holds_restore_clears_both_tiers(tmp_path, prefix, keys):
+    k0, _ = keys
+    _t2_unsat(tmp_path, k0)                                # reversed-order end state: UNSATISFIABLE
+    declined = _t2_cli(tmp_path, prefix, "--decline-pending")
+    assert declined.returncode == 3                        # held, NOT cleared
+    assert k0 in bc.read_pending_review(tmp_path)["pending"]
+    restored = _t2_cli(tmp_path, prefix, "--restore-anchor")
+    assert restored.returncode == 0                        # content-attested clear
+    assert bc.read_pending_review(tmp_path)["pending"] == {}
+
+
+@pytest.mark.parametrize("prefix,keys", _T2_TIERS)
+def test_decline_pending_corrupt_marker_returns_one_both_tiers(tmp_path, prefix, keys):
+    d = Path(tmp_path) / prefix
+    d.mkdir(parents=True, exist_ok=True)
+    _write_corrupt(tmp_path)
+    res = _t2_cli(tmp_path, prefix, "--decline-pending")
+    assert res.returncode == 1
+    assert "corrupt" in res.stdout.lower()
+
+
+# --- T3: broadened operator-facing vocabulary (C4 / R3) ---------------------
+
+def test_reconcile_unsatisfiable_prose_names_fresh_reversed_order(tmp_path):
+    _setup_unsat(tmp_path, anchor=3, tag_pass=3)          # UNSATISFIABLE obligation
+    res = bc.reconcile_to_result(
+        tmp_path, "specs/F1-x",
+        decline_cmd="vs --decline-pending", restore_cmd="vs --restore-anchor",
+    )
+    blob = _detail_blob(res)
+    assert bc.UNSATISFIABLE_OBLIGATION_TOKEN in blob
+    assert "reversed-order" in blob        # broadened beyond legacy-only (R3 slice (a))
+    assert "--restore-anchor" in blob      # still routes to the content-attested remedy
+
+
+@pytest.mark.parametrize("runner", [_run_vs, _run_vb])
+def test_restore_anchor_help_broadened_both_tiers(runner):
+    out = runner("-h").stdout
+    assert "reversed-order" in out         # --restore-anchor help no longer frames it as legacy-only
+
+
+@pytest.mark.parametrize("runner", [_run_vs, _run_vb])
+def test_decline_pending_help_broadened_both_tiers(runner):
+    out = runner("-h").stdout
+    assert "refused and routed" in out     # --decline-pending help reflects refuse-and-route
+
+
+# --- T5: reversed-order creation-time WARN (C3 / R4) ------------------------
+
+def _warn_prefix():
+    return bc.REVERSED_ORDER_CREATE_WARN.split("{")[0]
+
+
+def test_anchor_row_carries_tag_true_on_variant_a():
+    content = _traj_raw([_row(3, notes="upstream-panel abcd1234"), _row(2)])
+    assert bc._anchor_row_carries_tag(content, 3) is True
+
+
+def test_anchor_row_carries_tag_false_untagged_and_anchor_le_zero():
+    content = _traj_raw([_row(3), _row(2)])
+    assert bc._anchor_row_carries_tag(content, 3) is False
+    assert bc._anchor_row_carries_tag(content, 0) is False
+
+
+def test_anchor_row_carries_tag_or_across_duplicate_same_pass_rows():
+    content = _traj_raw([_row(3), _row(3, notes="upstream-panel abcd1234")])
+    assert bc._anchor_row_carries_tag(content, 3) is True
+
+
+def test_reversed_order_warn_fires_on_variant_a(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit")
+    _set_row_tag(p, 3, "abcd1234")            # tag the anchor (max) row BEFORE re-approve = Variant A
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)
+    assert _warn_prefix() in capsys.readouterr().out
+
+
+def test_reversed_order_warn_silent_variant_b_but_reconcile_flags_unsatisfiable(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit")
+    _add_traj_row(p, 4)                        # archive an UNTAGGED pass 4 BEFORE approve
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)   # anchor=4, row untagged -> NO WARN (Variant B)
+    assert _warn_prefix() not in capsys.readouterr().out
+    h = _pending(tmp_path)[key]["hash"]
+    _set_row_tag(p, 4, h[:8])                  # tag AFTER -> now unsatisfiable
+    res = bc.reconcile_to_result(tmp_path, "specs/F1-x", decline_cmd="x", restore_cmd="y")
+    assert bc.UNSATISFIABLE_OBLIGATION_TOKEN in _detail_blob(res)   # safety net holds (RK-D2)
+
+
+def test_reversed_order_warn_no_fire_doctrine_order(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit")
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)   # anchor=3, row 3 untagged -> no WARN
+    assert _warn_prefix() not in capsys.readouterr().out
+    assert key in _pending(tmp_path)                # marker WAS created (just no WARN)
+
+
+def test_reversed_order_warn_no_fire_hash_neutral_paths(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)   # unchanged re-approve -> no marker
+    assert _warn_prefix() not in capsys.readouterr().out
+    assert _pending(tmp_path) == {}
+    _add_traj_row(p, 4, notes="converged")          # convergence-only (hash-neutral, untagged)
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)
+    assert _warn_prefix() not in capsys.readouterr().out
+    assert _pending(tmp_path) == {}
+
+
+def test_reversed_order_warn_no_fire_ordinary_converged_untagged(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3))
+    _substantive_edit(p, "edit")
+    _add_traj_row(p, 4, notes="converged")          # ordinary converged-but-untagged top row
+    capsys.readouterr()
+    vs.approve_document(p, project_root=tmp_path)    # anchor=4 untagged -> no WARN (marker created)
+    assert _warn_prefix() not in capsys.readouterr().out
+
+
+def test_reversed_order_warn_no_fire_r9_preserve_substantive_edit(tmp_path, capsys):
+    vs = _load_validate_spec()
+    key = "specs/F1-x/spec.md"
+    p = _seed_churn_approved(tmp_path, key, passes=(1, 2, 3),
+                             sealed="- `[SEAL-01]` **X** (pass 1, sealed) — Defense: original.")
+    _substantive_edit(p, "edit")
+    vs.approve_document(p, project_root=tmp_path)    # create arm -> obligation open
+    _set_row_tag(p, 3, "abcd1234")                   # tag anchor row (a naive check might fire)
+    capsys.readouterr()
+    p.write_text(p.read_text().replace("Defense: original", "Defense: changed"), encoding="utf-8")
+    vs.approve_document(p, project_root=tmp_path)     # R9-PRESERVE arm (obligation open) -> no create WARN
+    assert _warn_prefix() not in capsys.readouterr().out   # TEST-M1: WARN is in the create arm only
+
+
+def test_reversed_order_warn_text_omits_legacy():
+    assert "legacy" not in bc.REVERSED_ORDER_CREATE_WARN.lower()
+
+
+# --- T6: AD8 multi-entry restore + RK-D4 accepted-risk regression (C6) -------
+
+def test_ad8_restore_multi_entry_mixed_tag_clears_only_tagged(tmp_path):
+    # SEC-AD8-M1: restore_anchor_for_prefix (the fn the orchestrator auto-invokes,
+    # AD8) clears EXACTLY the genuinely-tagged obligations under a prefix, leaving
+    # untagged ones pending — the per-key content-attestation AD8's "auto-invoke
+    # across a prefix is safe" justification rests on.
+    tagged = "specs/F1-x/spec.md"
+    untagged = "specs/F1-x/design.md"
+    _setup_unsat(tmp_path, anchor=3, tag_pass=3)          # tagged spec.md + its marker
+    pu = Path(tmp_path) / untagged
+    pu.write_text(_churn_doc(passes=(1, 2, 3), checked=True, hash_val="a" * 16), encoding="utf-8")
+    bc.upsert_pending_entry(tmp_path, untagged, "a" * 16, "t", 3)   # untagged obligation
+    restored = bc.restore_anchor_for_prefix(tmp_path, "specs/F1-x")
+    assert restored == [tagged]                            # only the tagged one cleared
+    assert untagged in bc.read_pending_review(tmp_path)["pending"]  # untagged stays pending
+
+
+def test_rkd4_second_table_skip_accepted_risk_pins_current_behavior(tmp_path):
+    # RK-D4 (accepted risk, SEC2-M2): a genuine tag stranded inside a SECOND table
+    # (header+separator+rows) within the Trajectory section is hidden from
+    # find_orphaned_trajectory_rows' second-table skip -> both the contiguous
+    # classifier AND the orphaned-row guard miss it. Pin CURRENT behavior so a
+    # future scan-through-second-tables fix has a baseline.
+    tbl = (
+        "| Pass | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------------|-------|-------------|-----------|----------|--------|-------|\n"
+    )
+    content = (
+        "# F\n\n## Panel Review\n\n### Trajectory\n\n"
+        + tbl + _crow(1) + "\n"
+        + "\n" + tbl + _crow(2, notes="upstream-panel eeeeeeee") + "\n"
+        + "\n## Approval\n\n- [x] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    # Intermediate (non-vacuity, CRIT-M2): the stranded tag is NOT surfaced as a
+    # load-bearing orphan -> the fixture genuinely exercises the second-table skip.
+    orphans = bc.find_orphaned_trajectory_rows(content)
+    assert not any(o["has_upstream_tag"] for o in orphans), (
+        "fixture must exercise the second-table skip (no orphan carries the tag)"
+    )
+    # End-to-end accepted-risk pin: the guard does not see the stranded tag.
+    assert bc._doc_has_matching_orphaned_tag(content, "eeeeeeee") is False
