@@ -28,7 +28,7 @@ Read `references/workflow-overview.md` for a quick-reference diagram of the full
 
 ### When to use this — and when a lighter path fits
 
-The full three-phase loop is calibrated for **substantial, long-lived, multi-feature projects** — a blueprint that spawns many features and gets re-entered and amended. For a **small single-component project, a throwaway prototype, or an exploratory spike**, that's disproportionate. If the user says the work is small/throwaway and asks for a lighter review, run the panel in **lightweight mode** (one pass, dispose, self-check, archive, exit — no convergence loop, no strict-bar/halt/cross-check). Default stays the full loop; lightweight mode is opt-in only. See `references/panel-review.md` § "Lightweight Mode (single-pass panel)".
+The full three-phase loop is calibrated for **substantial, long-lived, multi-feature projects** — a blueprint that spawns many features and gets re-entered and amended. For a **small single-component project, a throwaway prototype, or an exploratory spike**, that's disproportionate. If the user says the work is small/throwaway and asks for a lighter review, run the panel in **lightweight mode** (one pass, dispose, self-check, archive, exit — no convergence loop, no strict-bar/halt/cross-check). Default stays the full loop; lightweight mode is opt-in only. See `references/panel-review-modes.md` § "Lightweight Mode (single-pass panel)".
 
 ### Path placeholders
 
@@ -43,7 +43,7 @@ Running `validate_blueprint.py` is **optional for fresh artifacts** (the panel-r
 
 Each phase delegates to a specialist subagent, via the Agent tool, both the initial drafting AND substantial post-draft revisions of each artifact. Trivial edits and in-loop per-concern panel fixes stay orchestrator-direct; a substantial *out-of-loop* revision — a cascade fix, a panel-loop re-entry on a substantive gate-change, or an upstream backport — is delegated to the phase-correct analyst (see `references/workflow-overview.md` § Phase Summary for the decision line and `references/hash-and-cascade.md` § "Revise the downstream" for the delegation brief). For the *initial* draft, the agent writes to the artifact's target path using the `Write` tool and self-reviews it (up to 5 passes — fixing issues it can resolve, flagging others with `[TBD]`), returning a manifest. You (the calling Claude) then `Read` the artifact from disk, confirm it is non-empty, perform your own review, run any cross-document consistency check, then invoke a three-persona **panel review** to stress-test the artifact for blind-spot and quality issues. The panel runs a review loop (auto-fix or ask the user, up to 5 passes). When the panel exits — i.e., a pass returns zero HIGH-severity concerns — run validation and present the document to the user. The agent catches internal issues; the panel catches blind-spot and quality issues; you catch cross-document and conversation-context issues.
 
-**The shared panel-review machinery — the loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract for `## Panel Review`, and when to skip the panel — lives in `references/panel-review.md`. Read that reference before running any phase's panel.**
+**The shared panel-review machinery — the loop, panelists, synthesizer self-check, concern tagging, and the format contract for `## Panel Review` — lives in `references/panel-review.md`; read it before running any phase's panel. The situational modes load on demand from two siblings: strict-bar convergence and halt-and-rescope exit in `references/panel-review-convergence.md`, and lightweight mode, panel skip, and gate change requests in `references/panel-review-modes.md`.**
 
 ## Artifact filenames and the ordering-prefix offer
 
@@ -156,7 +156,9 @@ When an approved document is edited (by Claude at the user's request, by the use
 ## See also
 
 - `references/hash-and-cascade.md` — full hash-handling flow: mid-stream entry, re-approval after edits, the cascade, the halt-on-substantive-divergence rule, and the optional panel re-review recommendation. Read this whenever an approved document changes.
-- `references/panel-review.md` — the shared panel-review loop, synthesizer self-check, halt-and-rescope exit, strict-bar convergence mode, format contract, and panel-skip rules. Read before running any phase's panel. See its `## Autonomy Boundary` for what Claude runs autonomously vs. the real gates (loop continuation is not a user decision).
+- `references/panel-review.md` — the shared panel-review loop, panelists, synthesizer self-check, concern tagging, and the `## Panel Review` format contract. Read before running any phase's panel. See its `## Autonomy Boundary` for what Claude runs autonomously vs. the real gates (loop continuation is not a user decision).
+- `references/panel-review-convergence.md` — situational convergence modes (strict-bar convergence + halt-and-rescope exit), loaded on demand when `archive_pass.py` emits a `STRICT-BAR-SIGNAL:` or an `[upstream]` tag / two consecutive halt votes appear.
+- `references/panel-review-modes.md` — situational panel modes (lightweight single-pass mode, when to skip the panel, and handling change requests at the review gate), loaded on demand.
 - `references/strict-bar-prompts.md` — per-phase prompt additions for strict-bar passes. Loaded only when a strict-bar pass runs.
 - `references/phase-scope.md`, `references/phase-architecture.md`, `references/phase-plan.md` — full per-phase workflows.
 - `references/phase-business-brief.md` — optional Phase 4 workflow: render the three approved blueprint documents as self-contained HTML for stakeholders.

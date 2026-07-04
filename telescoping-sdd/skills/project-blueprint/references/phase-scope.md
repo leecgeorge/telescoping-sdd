@@ -99,7 +99,7 @@ python <script-path>/validate_blueprint.py blueprint/
 
 **Stop and ask the user to review SCOPE.md before proceeding.**
 
-If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review-modes.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade.
 
 When the user approves, run:
 

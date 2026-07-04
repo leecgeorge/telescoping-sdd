@@ -11,7 +11,7 @@ Delegate drafting to the `telescoping-sdd:project-plan-analyst` subagent via the
 When invoking the agent, provide:
 - The template path: `references/plan-template.md`
 - The required sections (below) — the agent must produce exactly these
-- The approved `blueprint/01_SCOPE.md` and `blueprint/02_ARCHITECTURE.md` as authoritative upstream context
+- The **paths** of the approved `blueprint/01_SCOPE.md` and `blueprint/02_ARCHITECTURE.md` as authoritative upstream context, with an instruction to **read them from disk in full** — do not paste or summarize their bodies into the prompt (the drafter reads the file(s) from disk, mirroring the panelist read-from-disk discipline)
 - A clear instruction that each feature (F1, F2, etc.) must be described at enough detail to serve as input to a spec-driven development workflow
 - A clear instruction to self-review the draft before returning (up to 5 passes, but stop immediately after the first pass that finds no issues — do not keep reviewing once clean), and to use the `Write` tool to write the complete `PLAN.md` to `blueprint/03_PLAN.md` and return only the canonical manifest: (1) the path written, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / revision-points list — not the document body
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: feature checklists must use `- [ ] F1:` checkbox format, Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to feature development` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
@@ -95,7 +95,7 @@ python <script-path>/validate_blueprint.py blueprint/
 
 **Stop and ask the user to review PLAN.md before proceeding.**
 
-If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade. (PLAN.md is the terminal artifact — concerns surfaced by a re-run cannot be deferred forward; dispose them Addressed / Sealed / Accepted as risk. A re-run that edits a closed `[x]` feature row is still bound by Self-Check (e) — re-route, do not edit in place.)
+If the user requests a change at this gate (before approving), do not apply it silently — route it through `references/panel-review-modes.md § "Handling change requests at the review gate"` (substantive change re-enters the panel loop; trivial wording is a synthesizer fix + Self-Check, panel-skip-eligible), then re-present. No hash exists yet, so there is no re-stamp or cascade. (PLAN.md is the terminal artifact — concerns surfaced by a re-run cannot be deferred forward; dispose them Addressed / Sealed / Accepted as risk. A re-run that edits a closed `[x]` feature row is still bound by Self-Check (e) — re-route, do not edit in place.)
 
 When the user approves, run:
 

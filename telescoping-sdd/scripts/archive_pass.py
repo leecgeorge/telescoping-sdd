@@ -75,7 +75,12 @@ from pathlib import Path
 from blueprint_common import (  # noqa: E402
     ORPHANED_TRAJECTORY_TOKEN,
     find_orphaned_trajectory_rows,
+    has_approval,
+    read_hash_basis,
+    read_stored_hash,
+    trim_trajectory_table,
     _is_ascii_int,
+    _is_valid_16_hex,
 )
 
 
@@ -715,6 +720,45 @@ def _atomic_write(path, content):
         raise
 
 
+def _maybe_trim_trajectory(original_content, new_content):
+    """Trim the ### Trajectory table in `new_content`, unless the artifact carries
+    a genuine committed v1 hash (a trim would invalidate it).
+
+    Gate (skip the trim) iff ALL hold on the artifact's committed state:
+        has_approval(original_content)                       # approval box is [x]
+        and read_hash_basis(original_content) == "v1"        # no `**Hash basis:** v2`
+        and _is_valid_16_hex(read_stored_hash(original_content))  # a real, well-formed
+                                                                   # committed hash
+
+    Otherwise apply trim_trajectory_table(new_content). This trims:
+      - a never-yet-approved artifact (basis reports "v1" but stored hash is
+        'pending' → not skipped) — R2's dominant population and the explicit
+        anti-mis-gate case (a bare `== "v2"` gate would wrongly hold it back),
+      - a v2-approved artifact (basis "v2" → not skipped; trajectory rows are
+        stripped by content_for_hashing before hashing → provably hash-neutral),
+        and
+      - an approved v1-basis artifact whose stored hash is present but malformed
+        (not 16 lowercase hex chars) — mirrors the fail-closed handling in
+        `changed_since_stamp`/`is_basis_migration_only`, which both treat a
+        malformed stored hash as untrustworthy rather than genuine, so a
+        corrupted stamp is never read as "a real committed hash" here either.
+
+    The predicates and trim_trajectory_table are all fail-soft (never raise);
+    every fail-soft direction is safe — a missing/unchecked approval, an absent
+    Content-Hash line, or a malformed stored hash leans to trim-by-default, only
+    a genuine well-formed committed v1 hash leans to skip. `original_content` is
+    the pre-pass artifact (approval fields are untouched by archive, so gating on
+    it == gating on new_content).
+    """
+    if (
+        has_approval(original_content)
+        and read_hash_basis(original_content) == "v1"
+        and _is_valid_16_hex(read_stored_hash(original_content))
+    ):
+        return new_content
+    return trim_trajectory_table(new_content)
+
+
 def write_or_diff(path, old_content, new_content, dry_run):
     _orphan_guard(path, old_content, new_content, dry_run=dry_run)
     if dry_run:
@@ -940,6 +984,8 @@ def main():
             if auto_inserted:
                 # T4: write the auto-inserted section even when there's no archive work
                 new_content = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+                # R2: trim the trajectory before writing (gated for committed-v1)
+                new_content = _maybe_trim_trajectory(content, new_content)
                 write_or_diff(art, content, new_content, args.dry_run)
             sys.exit(EXIT_OK)
         highs = sum(1 for r in latest_rows if "[HIGH]" in r["Severity"])
@@ -1170,6 +1216,8 @@ def main():
     new_lines = _apply_edits(lines, edits)
 
     new_content = "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
+    # R2: trim the trajectory before writing (gated for committed-v1 artifacts)
+    new_content = _maybe_trim_trajectory(content, new_content)
     write_or_diff(art, content, new_content, args.dry_run)
 
     # T7 (R7): count rerouted-deferral rows from this pass for trigger refinement

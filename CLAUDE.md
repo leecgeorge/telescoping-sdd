@@ -133,7 +133,7 @@ Auto-detection is live: after every NORMAL archive `archive_pass.py` emits a `ST
 
 The shared `telescoping-sdd/scripts/archive_pass.py` carries `--strict-bar` / `--cross-check` flags that stamp the `### Trajectory` Notes column.
 
-The **authoritative operational spec** is each skill's `references/panel-review.md` (`## Strict-Bar Convergence Mode`, `## Concern tagging (Phase 2 and 3)`) plus `references/strict-bar-prompts.md`.
+The **authoritative operational spec** is each skill's `references/panel-review.md` (`## Concern tagging (Phase 2 and 3)`) and `references/panel-review-convergence.md` (`## Strict-Bar Convergence Mode`) plus `references/strict-bar-prompts.md`.
 
 ## Cross-Feature Contracts (CFC)
 
