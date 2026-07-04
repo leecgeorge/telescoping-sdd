@@ -62,6 +62,8 @@ from blueprint_common import (  # noqa: E402
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    format_decline_output,
+    partition_decline_clear,
     extract_panel_section,
     has_approval,
     has_section,
@@ -1941,23 +1943,21 @@ def _handle_decline_pending(blueprint_dir: Path, project_root: Optional[Path]) -
     (logged to stdout), validator-owned marker lifecycle. Returns an exit code.
     """
     root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
+    restore_cmd = f"validate_blueprint.py {blueprint_dir} --restore-anchor"
     try:
-        removed = clear_pending_entries_for_prefix(root, bp_rel)
+        cleared, held_back, flagged = partition_decline_clear(root, bp_rel)
     except MarkerCorruptError as exc:
         print(
             f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
             f".sdd/pending-review.json manually."
         )
         return 1
-    if removed:
-        noun = "entry" if len(removed) == 1 else "entries"
-        print(
-            f"Declined upstream panel re-review; cleared {len(removed)} pending "
-            f"{noun}: {', '.join(removed)}"
-        )
-    else:
+    if not cleared and not held_back and not flagged:
         print(f"No pending-review entries found for {blueprint_dir}.")
-    return 0
+        return 0
+    msg, code = format_decline_output(cleared, held_back, flagged, restore_cmd=restore_cmd)
+    print(msg)
+    return code
 
 
 def _handle_restore_anchor(blueprint_dir: Path, project_root: Optional[Path]) -> int:
@@ -2272,15 +2272,19 @@ def main():
     mode_group.add_argument(
         "--decline-pending",
         action="store_true",
-        help="Clear this blueprint's pending-review obligations — an explicit, "
-        "auditable decision to skip the upstream panel re-review.",
+        help="Clear this blueprint's genuinely-owed pending-review obligations — an "
+        "explicit, auditable decision to skip the upstream panel re-review. An "
+        "UNSATISFIABLE obligation whose genuine panel tag is present (the panel WAS "
+        "performed) is refused and routed to --restore-anchor, never mis-recorded "
+        "as skipped; exit 3 if any obligation is held back or flagged.",
     )
     mode_group.add_argument(
         "--restore-anchor",
         action="store_true",
-        help="Clear an UNSATISFIABLE (legacy re-anchored) pending-review "
-        "obligation whose genuine `upstream-panel` tag is already present on an "
-        "archived Trajectory row. Content-attested: clears ONLY when the real tag "
+        help="Clear an UNSATISFIABLE pending-review obligation — a fresh "
+        "reversed-order re-approval, or a legacy re-anchored marker — whose "
+        "genuine `upstream-panel` tag is already present on an archived Trajectory "
+        "row. Content-attested: clears ONLY when the real tag "
         "exists (never asserts a panel ran); no marker-cache editing.",
     )
     args = parser.parse_args()

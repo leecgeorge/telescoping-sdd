@@ -817,6 +817,39 @@ REAPPROVAL_REMINDER = (
     + "!" * 70
 )
 
+# ----- AD5: --decline-pending partition + reversed-order WARN constants ------
+# Operator-facing strings for the order-independent-anchor feature (M-guard).
+# Single source of truth so both validators + tests reference one object; none
+# describe a *fresh* reversed-order obligation as "legacy" (R3). Imported into
+# pending_review.py (the three decline-side ones in T1; REVERSED_ORDER_CREATE_WARN
+# in T5 where the WARN print lands) and both validators.
+
+# --decline-pending exit code when one or more keys are held back or flagged
+# (a non-clean partition). Distinct from 1 (corrupt marker) and 2 (arg error).
+EXIT_DECLINE_HELD_BACK = 3
+
+DECLINE_UNSATISFIABLE_HELD_BACK_MSG = (
+    "Held back {doc_rel}: NOT declined. A genuine upstream-panel re-review tag is "
+    "present (the panel WAS performed), so declining it would falsely record that "
+    "panel as skipped. Clear it with `{restore_cmd}` (content-attested), not "
+    "--decline-pending."
+)
+
+DECLINE_FLAGGED_ANOMALOUS_MSG = (
+    "Flagged {doc_rel}: cleared, but its pending-review entry was unclassifiable "
+    "(corrupt/non-16-hex hash, or an out-of-tree key) — surfaced so a corrupt entry "
+    "is never mistaken for a normal decline. Inspect .sdd/pending-review.json if "
+    "this is unexpected."
+)
+
+REVERSED_ORDER_CREATE_WARN = (
+    "reversed-order-create: the `### Trajectory` row at this obligation's anchor "
+    "already carries an upstream-panel tag — the 'review-then-approve' shape (a "
+    "panel pass was archived before this --approve). The obligation for {doc_rel} "
+    "was still created, but it may be unsatisfiable by the normal reconcile; if so, "
+    "clear it with `--restore-anchor` (content-attested), NOT --decline-pending."
+)
+
 
 class MarkerCorruptError(Exception):
     """Raised when .sdd/pending-review.json exists but is unparseable.
@@ -887,6 +920,8 @@ def add_orphaned_trajectory_results(
 # ---------------------------------------------------------------------------
 from pending_review import (  # noqa: E402
     clear_pending_entries_for_prefix,
+    format_decline_output,
+    partition_decline_clear,
     read_open_obligation,
     read_pending_review,
     reconcile_pending_review,
@@ -900,7 +935,9 @@ from pending_review import (  # noqa: E402
     # artifact_prefix.py's boundary-safe prefix check) — re-exported so the move
     # stays transparent. (_marker_lock_depth is deliberately NOT re-exported: a
     # re-exported int would be a stale snapshot — use pending_review's.)
+    _anchor_row_carries_tag,
     _doc_has_any_qualifying_tag,
+    _doc_has_matching_orphaned_tag,
     _doc_has_qualifying_tag,
     _empty_marker,
     _entry_anchor,
