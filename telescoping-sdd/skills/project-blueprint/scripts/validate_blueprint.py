@@ -136,6 +136,7 @@ import master_feature  # noqa: E402
 import project_link  # noqa: E402
 import project_registry  # noqa: E402
 from run_state import derive_run_state, format_run_state, safe_print  # noqa: E402
+from reset_checkpoint import emit_reset_checkpoint  # noqa: E402
 
 # Stack vocabulary the blueprint may declare. Mirrors validate_spec.py's
 # LANGUAGE_PROFILES keys; kept as a literal here (project-blueprint does not
@@ -2169,6 +2170,12 @@ def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
             file=sys.stderr,
         )
         return 1
+    # Reset-at-gate advisory (R2): only on a successful stamp — after the
+    # load-bearing approve_document returns. Best-effort, never raises. No
+    # --task-tick on this tier. Terminal --approve plan carries the highest-
+    # value framing + handoff list via the builder's H02 special case.
+    if stamped:
+        emit_reset_checkpoint("blueprint", args.approve)
     return 0 if stamped else 1
 
 
