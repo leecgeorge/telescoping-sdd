@@ -2,6 +2,13 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.22.0 — Panel-review context-inflow reduction (off-thread condenser + terser panelist contract + delegated consistency reads)
+Cuts what enters the MAIN orchestrator context window during a panel-review loop, so long multi-pass loops stay well clear of the compaction cliff. Behavior-, approval-semantics-, and content-hash-preserving throughout (same disposition vocabulary, same on-disk `## Panel Review` format, same `archive_pass.py` contract; both `panel-review.md` copies change in lockstep). Dogfooded end-to-end through `spec-driven-dev` (Specify → Design → Tasks → Implement, test-first).
+- **Findings-to-disk panelist contract + off-thread `panel-condenser`.** Panelists now **Write** their full findings to `.sdd/panel-findings/<findings_scope>/<artifact-stem>-p<PASS>-<panelist>.md` and **return only a manifest** (path + one identity anchor per `[HIGH]` — id, ≤120-char single-line gist, optional scope-tag hint), so raw panel prose and every MED/LOW body stay on disk instead of entering the main thread. A new thin `telescoping-sdd:panel-condenser` agent (pinned Sonnet/high) reads the findings files off-thread and returns **one 8-column compact disposition-*proposal* table**; the orchestrator reconciles it **by identity, per anchor** (present + HIGH-severity + source-attributed + gist-consistent, merged rows checked per contributing anchor) and falls back to reading the raw findings — disclosing the degraded mode in a new **`## Pass summary surface`** — on any syntactic / structural / fidelity failure. The condenser *proposes*; the orchestrator still disposes, runs the Self-Check, confirms `[upstream]` semantically, and owns every gate.
+- **Interchange-shape validators (`compact_table.py`).** A new pure leaf `telescoping-sdd/scripts/compact_table.py` deterministically validates the *shape* of the two off-thread payloads — `validate_compact_table(text, *, phase)` (the AD8 bucket-A grammar over the 8-column table, with a phase-conditional `SCOPE` rule) and `validate_discrepancy_list(items)` (the consistency-check discrepancy schema). It single-sources the disposition vocabulary **and** the `→ target` base-extraction split by importing one behavior-preservingly-extracted `is_known_disposition` helper from `archive_pass` (one-way — `archive_pass` never imports it, so its CLI/parsing contract is untouched). The `archive_pass.py` touch is exactly that additive helper pair (`disposition_base` / `is_known_disposition`), with all eight in-module base-extraction sites routed through it so there is literally one copy of the split rule.
+- **Delegated consistency/cascade reads (`consistency-reader`).** A second thin agent, `telescoping-sdd:consistency-reader` (Sonnet/high), takes a checklist-definition path + section name plus the artifact chain, reads the criteria and artifacts **from disk**, and returns only located discrepancies (`{checklist_item, file, quoted_span_or_line, description}`) or a `clean` verdict — never the artifact bodies. The SDD `phase-design.md` / `phase-tasks.md` consistency checks and both `hash-and-cascade.md` step-4 cascades now delegate their full-chain reads to it, disclosing a degraded in-main re-read when a discrepancy is too coarse to locate. Halt / classification / trivial-vs-substantial fix routing stay orchestrator-owned and unchanged.
+- **Scoped panel-findings sweep.** `sweep_sdd_cruft` gains a keyword-only `findings_scope` that best-effort-removes only the current run's `.sdd/panel-findings/<findings_scope>/*.md` subtree (built with path-JOIN, two-level tier/slug scoping, path-component-safety and staleness guards; the marker lock is *not* reused for this pass — a findings write never touches it). Both validators pass their tier-qualified scope at exit (`sdd/<spec-dir-basename>` / `blueprint`). Findings files are out of every content-hash basis.
+
 ## 2.21.0 — Panel-review progressive-disclosure split, mid-loop trajectory trim, by-path drafter dispatch
 Three context-reduction levers that shrink what a panel loop must hold in context, all behavior-, approval-semantics-, and content-hash-preserving. Dogfooded end-to-end through `spec-driven-dev` (Specify → Design → Tasks → Implement, test-first).
 - **Progressive-disclosure split of both `panel-review.md` copies.** Each copy is slimmed to a NORMAL-pass CORE, and its situational modes move into two lazy-loaded siblings — `panel-review-convergence.md` (strict-bar convergence + halt-and-rescope exit) and `panel-review-modes.md` (lightweight mode + when to skip the panel + handling change requests at the review gate). A NORMAL pass never loads a sub-ref, and the compound strict-bar-cross-check-that-also-raises-`[upstream]` case resolves within the single convergence sub-ref (both modes are co-located there). CORE size drops **510 → 302 lines** (spec-driven-dev) and **522 → 314 lines** (project-blueprint). The five moved sections relocate verbatim (byte-pinned against a pre-split golden; only the enumerated positional cross-refs are rewritten), and every moved-section citation plugin-wide (both `strict-bar-prompts.md`, six `phase-*.md`, both `SKILL.md` See-also + machinery lines, root `CLAUDE.md`) is repointed to its sub-ref, backstopped by a no-dangling-link test.
@@ -178,42 +185,6 @@ Remediation of an external codebase audit, in two waves. Every fix ships with te
 - New `reconcile.py` binds/refreshes the master↔derived link and flags master-contract drift.
 - Major bump: introduces the cross-repo derived-spec grammar.
 
-## 1.8.0 — Re-approval gate hardening + panel autonomy boundary
-- Hardened the re-approval-after-edits flow: a git-ignored `pending-review.json` marker turns a skipped upstream panel re-review into a later validation FAIL; resolve via the auditable `--decline-pending` or Phase-4 `--task-tick` acts.
-- Added the panel-review **Autonomy Boundary** — what Claude runs without asking vs. the real user gates (phase approval, halt-and-rescope, 5-pass cap, strict-bar entry).
+---
 
-## 1.7.0 — Spec-directory filename grammar
-- Spec dirs follow `specs/F<n>-<slug>/` (PLAN-bound) or `specs/<slug>/` (standalone), and must agree with the in-file `PLAN feature identifier` — a blocking FAIL in `validate_spec.py`.
-- Added `spec_dirname.py slugify`; renaming a spec directory is hash-safe (never invalidates an approval).
-- Fixed `archive_pass.py` corruption when reassembling Sealed + Deferred dispositions.
-
-## 1.6.0 — Architecture-neutral `generic` stack profile
-- New `generic` profile for infrastructure, static sites, config, docs, and Claude-skill authoring (skips the two Python/Java-specific advisory checks).
-- Declare-once stack config `.sdd/architecture.json` with fixed precedence: explicit flag > persisted config > marker auto-detect (never silently defaults to Python).
-
-## 1.5.1 — Skills-review remediation
-- Added `documentation/CFC.md` and fixed assorted doc / script / agent gaps surfaced by a full skills review.
-
-## 1.5.0 — Mid-stream upstream panel re-review
-- Entering a workflow with an approved-but-stale artifact now routes through an upstream panel re-review before the downstream consistency cascade runs.
-
-## 1.4.0 — Business Brief phase + mid-stream upstream panel
-- Added an optional `project-blueprint` **Business Brief** render phase.
-- Introduced the mid-stream upstream-panel machinery.
-
-## 1.3.0 — Deferred dispositions
-- Panel review gained a `### Deferred dispositions` sub-section with `[DEF-NN]` tracking, so panelists don't re-raise concerns already routed to a downstream artifact.
-
-## 1.2.0 — Cross-Feature Contracts + phase-dependent panel triggers
-- PLAN's `## Cross-Feature Contracts` (`CFC-N`) bind invariants that span multiple features, surfaced via `[CFC-N]` tags on spec acceptance criteria and enforcement tasks.
-- Panel-review triggers became phase-dependent (distinct convergence/concern handling for Specify vs. Design vs. Tasks).
-
-## 1.1.1 — Cascade hardening
-- Hardened the downstream consistency-check cascade.
-
-## 1.1.0 — Automatic re-approval cascade
-- Editing an approved blueprint/spec document now auto-runs: structural check → silent re-stamp → downstream consistency cascade that halts only on substantive divergence. Cosmetic edits ripple silently; real decisions still gate the user.
-
-## 1.0.0 — Initial release
-- Two-tier **Telescoping Spec-Driven Development**: `project-blueprint` (Scope → Architecture → Plan) and `spec-driven-dev` (Specify → Design → Tasks → Implement).
-- Three-persona **panel reviews** per phase, content-hash **approval gates** between phases, and Python / Java stack profiles.
+Older releases (`1.0.0`–`1.8.0`) are archived in [CHANGELOG-v1.md](CHANGELOG-v1.md).

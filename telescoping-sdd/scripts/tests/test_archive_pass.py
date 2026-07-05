@@ -2522,3 +2522,111 @@ def test_approval_time_trajectory_byte_identical_to_pre_change():
     assert mid_then_approve == approve_only, (
         "mid-loop-then-approve must equal approve-only (trim idempotence)"
     )
+
+
+# ============================================================================
+# T1 (context-window-inflow-reduction): behavior-preserving disposition_base /
+# is_known_disposition extraction — single-sources the →-split-base rule so
+# compact_table.py (T2) imports ONE copy. See specs/context-window-inflow-
+# reduction/{01_spec.md,02_design.md,03_tasks.md} (design HIGH-1, AD15, I4, DR9).
+# ============================================================================
+
+
+def test_is_known_disposition_accepts_bare_label():
+    """Every member of DISPOSITION_LABELS is a known disposition."""
+    ap = _load_archive_pass()
+    for label in ap.DISPOSITION_LABELS:
+        assert ap.is_known_disposition(label) is True, label
+
+
+def test_is_known_disposition_base_extracts_arrow_target():
+    """A targeted `Deferred → design.md` is known on its `Deferred` base."""
+    ap = _load_archive_pass()
+    assert ap.is_known_disposition("Deferred → design.md") is True
+
+
+def test_is_known_disposition_rejects_out_of_vocab_base():
+    """An out-of-vocab base is rejected even with a valid-looking → target."""
+    ap = _load_archive_pass()
+    assert ap.is_known_disposition("Postponed → design.md") is False
+    assert ap.is_known_disposition("Nonsense") is False
+
+
+def test_disposition_base_strips_arrow_target():
+    """disposition_base strips a `→ target` and trims; a bare label passes through."""
+    ap = _load_archive_pass()
+    assert ap.disposition_base("Deferred → tasks.md") == "Deferred"
+    assert ap.disposition_base("Addressed") == "Addressed"
+    # Reproduces the historic `.split("→")[0].strip()` exactly, including the
+    # no-arrow passthrough and surrounding whitespace trim.
+    assert ap.disposition_base("  Sealed  ") == "Sealed"
+
+
+def test_validate_row_behavior_unchanged(tmp_path):
+    """validate_row still accepts a valid targeted Deferred row and rejects an
+    out-of-vocab disposition — guards behavior preservation of the extraction."""
+    ap = _load_archive_pass()
+    # Accepts a targeted Deferred row.
+    ap.validate_row(
+        {
+            "Severity": "[HIGH]",
+            "Source": "critic",
+            "Concern": "x",
+            "Disposition": "Deferred → design.md",
+            "Notes": "",
+        },
+        1,
+    )
+    # Rejects an out-of-vocab disposition.
+    import pytest
+
+    with pytest.raises(ap.FormatViolation):
+        ap.validate_row(
+            {
+                "Severity": "[HIGH]",
+                "Source": "critic",
+                "Concern": "x",
+                "Disposition": "Postponed → design.md",
+                "Notes": "",
+            },
+            1,
+        )
+
+
+def test_disposition_accounting_and_promotion_unchanged_after_base_refactor(tmp_path):
+    """Drive an archive with mixed `Deferred → target` / `Sealed` / `Addressed`
+    rows through the PUBLIC archive path and assert the disposition-accounting
+    counts + Sealed promotion output are byte-for-byte the historic behavior
+    after the 7 base sites route through disposition_base() (DR9 single-source).
+
+    Does NOT assert tag-count (Concern-text-driven, untouched by this refactor).
+    """
+    latest = (
+        "| [HIGH] | critic | needs upstream fix | Deferred → design.md | Routed because: belongs in design |\n"
+        "| [MED] | architect | risk accepted | Sealed | Defense: low blast radius |\n"
+        "| [LOW] | pragmatist | tidy naming | Addressed | done |\n"
+    )
+    artifact = _artifact_with_latest(tmp_path, latest)
+    proc = _run_archive_pass([str(artifact), "--phase", "1"])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    # The freshly-written trajectory row carries the accounting counts. Find the
+    # single data row under the Trajectory header.
+    traj_rows = [
+        ln for ln in text.splitlines()
+        if ln.startswith("| 1 ") and "2026" not in ln[:4]
+    ]
+    # Locate the pass-1 row (Pass column == "1").
+    pass_row = next(
+        ln for ln in text.splitlines()
+        if re.match(r"\|\s*1\s*\|", ln) and "|" in ln and "Date" not in ln
+    )
+    cells = [c.strip() for c in pass_row.strip().strip("|").split("|")]
+    # Columns: Pass Date HIGHs Regressions Addressed Deferred Sealed Notes
+    assert cells[0] == "1"
+    assert cells[2] == "1", f"HIGHs: {cells}"        # one [HIGH] row
+    assert cells[4] == "1", f"Addressed: {cells}"    # one Addressed
+    assert cells[5] == "1", f"Deferred: {cells}"     # one Deferred (base-extracted)
+    assert cells[6] == "1", f"Sealed: {cells}"       # one Sealed
+    # Sealed promotion produced a Sealed-dispositions entry.
+    assert "[SEAL-01]" in text

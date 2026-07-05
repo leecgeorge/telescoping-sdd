@@ -116,6 +116,8 @@ When an approved document changes, run this flow against it:
    - Spec ↔ Design: `phase-design.md` § "Spec-Design Consistency Check".
    - Spec+Design ↔ Tasks: `phase-tasks.md` § "Spec-Design-Tasks Consistency Check".
 
+   **Delegate the chain read (R3).** Run each named consistency check by dispatching `telescoping-sdd:consistency-reader` `[sonnet/high]`, passing it the checklist-definition path + section name (the `§ "…Consistency Check"` reference above) and the upstream + downstream artifact paths — so it reads the criteria and both artifacts from disk and returns only a per-checklist-item discrepancy list (each `{checklist_item, file, quoted_span_or_line, description}`) or a `clean` verdict, never the artifact bodies. If a returned discrepancy is too coarse to locate to a span, fall back to an in-main full-chain re-read and disclose that heavier read (R3 AC1). The halt/classification and the trivial-vs-substantial fix routing below stay yours — the reader only locates.
+
    For each approved downstream:
    - Skip downstreams that are unapproved-in-progress (the in-progress work absorbs the change naturally).
    - If the check finds nothing, note it ("design.md still consistent with re-approved spec.md") and continue. Do not re-stamp — the downstream's content didn't change.

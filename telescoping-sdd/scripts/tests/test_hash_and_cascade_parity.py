@@ -635,3 +635,76 @@ def test_close_path_guidance_subsection_body_parity() -> None:
     assert _apply_swap(sdd_body, extended).strip() == pb_body.strip(), (
         "Close-Path Selection Guidance bodies diverge beyond the vocabulary swap"
     )
+
+
+# ============================================================================
+# T8 (context-window-inflow-reduction): R3 consistency/cascade READ delegation
+# to `consistency-reader`. Design C5/I2; R3 AC1–AC4. phase-design.md /
+# phase-tasks.md are SDD-only; the hash-and-cascade.md step-4 delegation mirrors
+# across both copies.
+# ============================================================================
+
+_PHASE_DESIGN = _REPO_ROOT / "telescoping-sdd/skills/spec-driven-dev/references/phase-design.md"
+_PHASE_TASKS = _REPO_ROOT / "telescoping-sdd/skills/spec-driven-dev/references/phase-tasks.md"
+_PB_PHASE_ARCH = _REPO_ROOT / "telescoping-sdd/skills/project-blueprint/references/phase-architecture.md"
+_PB_PHASE_PLAN = _REPO_ROOT / "telescoping-sdd/skills/project-blueprint/references/phase-plan.md"
+
+CONSISTENCY_READER = "telescoping-sdd:consistency-reader"
+DISCREPANCY_SHAPE = "{checklist_item, file, quoted_span_or_line, description}"
+DEGRADED_FALLBACK = "in-main full-chain re-read"
+
+
+def test_consistency_reader_delegation_present_phase_design() -> None:
+    section = _extract_section(_read(_PHASE_DESIGN), "## Spec-Design Consistency Check")
+    assert CONSISTENCY_READER in section
+    assert DISCREPANCY_SHAPE in section
+    assert '"Spec-Design Consistency Check"' in section
+
+
+def test_consistency_reader_delegation_present_phase_tasks() -> None:
+    section = _extract_section(_read(_PHASE_TASKS), "## Spec-Design-Tasks Consistency Check")
+    assert CONSISTENCY_READER in section
+    assert DISCREPANCY_SHAPE in section
+    assert '"Spec-Design-Tasks Consistency Check"' in section
+
+
+def test_cascade_delegation_present_both_copies() -> None:
+    for path in (SDD_PATH, PB_PATH):
+        section = _extract_section(_read(path), SECTION_RE_APPROVAL_HEADING)
+        assert CONSISTENCY_READER in section, f"{path}: cascade step-4 delegation absent"
+        assert DISCREPANCY_SHAPE in section, path
+
+
+def test_degraded_reread_fallback_disclosed() -> None:
+    """R3 AC1: the too-coarse-to-locate discrepancy routes to a DISCLOSED in-main
+    full-chain re-read — in the SDD phase files and both cascade copies."""
+    for path in (_PHASE_DESIGN, _PHASE_TASKS, SDD_PATH, PB_PATH):
+        assert DEGRADED_FALLBACK in _read(path), f"{path}: degraded re-read not disclosed"
+
+
+def test_fix_routing_unchanged() -> None:
+    """R3 AC4: § 'Revise the downstream' keeps trivial-direct / substantial-
+    analyst-delegated routing unchanged (the read is delegated; the routing is not)."""
+    for path in (SDD_PATH, PB_PATH):
+        content = _read(path)
+        assert "**Trivial**" in content, path
+        assert "**Substantial**" in content, path
+        assert "delegates the draft to the phase's analyst agent" in content, path
+
+
+def test_hash_and_cascade_r3_asymmetries_allowlisted() -> None:
+    """R5: the cascade R3 delegation is present-and-consistent in BOTH
+    hash-and-cascade copies; the phase-file consistency delegation is SDD-only
+    (the blueprint phase-architecture/phase-plan consistency sections are not
+    part of this change per design C5)."""
+    for path in (SDD_PATH, PB_PATH):
+        assert CONSISTENCY_READER in _read(path)
+    # SDD-only: the consistency-reader delegation is added to the SDD phase files,
+    # NOT to the blueprint phase-architecture/phase-plan consistency sections.
+    assert CONSISTENCY_READER in _read(_PHASE_DESIGN)
+    assert CONSISTENCY_READER in _read(_PHASE_TASKS)
+    assert CONSISTENCY_READER not in _read(_PB_PHASE_ARCH), (
+        "consistency-reader delegation must stay out of the blueprint phase files "
+        "(design C5 scopes the phase-file read-delegation to SDD only)"
+    )
+    assert CONSISTENCY_READER not in _read(_PB_PHASE_PLAN)

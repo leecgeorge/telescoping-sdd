@@ -2178,7 +2178,9 @@ def main():
     # root the run's marker ops use — NOT raw arch_find_project_root, which would
     # sweep an unrelated .sdd/ under a non-ancestor --project-root (AD1).
     atexit.register(
-        sweep_sdd_cruft, _resolve_marker_root_and_key(spec_dir, project_root)[0]
+        sweep_sdd_cruft,
+        _resolve_marker_root_and_key(spec_dir, project_root)[0],
+        findings_scope=f"sdd/{Path(spec_dir).name}",
     )
 
     # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,

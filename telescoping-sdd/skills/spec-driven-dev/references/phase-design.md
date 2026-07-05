@@ -63,6 +63,8 @@ After the design self-review is complete, cross-reference design.md against the 
 4. **Terminology and naming** — Names for modules, classes, and concepts should match between spec and design. Flag any divergences.
 5. **Scope drift** — The design should not introduce capabilities or components that go beyond what the spec requires without justification.
 
+Delegate this five-item cross-reference to `telescoping-sdd:consistency-reader` `[sonnet/high]` rather than reading `spec.md` and `design.md` in full on the main thread: pass it this reference file's path and the section name "Spec-Design Consistency Check" (so it reads the five items above from disk — never inline the criteria) plus the `spec.md` + `design.md` paths. It returns only a per-checklist-item discrepancy list (each `{checklist_item, file, quoted_span_or_line, description}`) or a single `clean` verdict — never the artifact bodies. If a returned discrepancy is too coarse to locate to a span, fall back to an in-main full-chain re-read of `spec.md` + `design.md` and disclose that heavier read (R3 AC1). The classification and any halt below stay yours — the reader only locates.
+
 For each issue found:
 - **Fix it directly** in design.md if the spec is clearly authoritative (e.g., a missing requirement, a naming mismatch, a boundary violation)
 - **Stop and ask the user** if the conflict is ambiguous (e.g., the spec is underspecified and the design made a reasonable but uncertain assumption, or a spec requirement may need revision based on what the design revealed)

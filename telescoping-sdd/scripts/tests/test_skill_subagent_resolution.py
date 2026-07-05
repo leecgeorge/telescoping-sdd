@@ -181,3 +181,29 @@ def test_reference_docs_panelist_names_carry_prefix():
         "(the built-in persona would shadow the plugin's):\n  "
         + "\n  ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# New thin agents (context-window-inflow-reduction) resolve at plugin tier 4:
+# each must map to exactly ONE file under telescoping-sdd/agents/ (no shadow).
+# ---------------------------------------------------------------------------
+
+
+def test_panel_condenser_resolves_at_plugin_tier():
+    """`panel-condenser` resolves to exactly one location under the plugin's
+    agents/ dir (design C1/AD14, T4)."""
+    locations = resolve_locations("panel-condenser", _REPO_ROOT)
+    assert len(locations) == 1, (
+        f"panel-condenser must resolve to exactly one file, got: {locations}"
+    )
+    assert locations[0] == _REPO_ROOT / "telescoping-sdd" / "agents" / "panel-condenser.md"
+
+
+def test_consistency_reader_resolves_at_plugin_tier():
+    """`consistency-reader` resolves to exactly one location under the plugin's
+    agents/ dir (design C2/AD14, T7)."""
+    locations = resolve_locations("consistency-reader", _REPO_ROOT)
+    assert len(locations) == 1, (
+        f"consistency-reader must resolve to exactly one file, got: {locations}"
+    )
+    assert locations[0] == _REPO_ROOT / "telescoping-sdd" / "agents" / "consistency-reader.md"

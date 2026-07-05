@@ -93,6 +93,28 @@ DISPOSITION_LABELS = {
     "Halt and re-scope",
 }
 
+
+def disposition_base(disp: str) -> str:
+    """Return a disposition's base label, stripping any `→ <target>` suffix.
+
+    Reproduces the historic ``disp.split("→")[0].strip()`` exactly — including
+    the no-arrow passthrough and the surrounding-whitespace trim. This is the
+    SINGLE source of the `→`-split-base rule in this module (design DR9); every
+    base-extraction call site routes through it, and ``compact_table.py`` (T2)
+    imports the public ``is_known_disposition`` one-way so the rule is never
+    re-implemented downstream.
+    """
+    return disp.split("→")[0].strip() if "→" in disp else disp.strip()
+
+
+def is_known_disposition(disp: str) -> bool:
+    """True iff a disposition's base label is in the frozen vocabulary.
+
+    Base-extracts first (so `Deferred → design.md` is known on its `Deferred`
+    base) then tests membership — the same order as ``validate_row``.
+    """
+    return disposition_base(disp) in DISPOSITION_LABELS
+
 H_PANEL_REVIEW = "## Panel Review"
 H_TRAJECTORY = "### Trajectory"
 H_SEALED = "### Sealed dispositions"
@@ -337,7 +359,7 @@ def validate_row(row, line_num):
             line_num,
         )
     disp = row.get("Disposition", "").strip()
-    disp_base = disp.split("→")[0].strip() if "→" in disp else disp
+    disp_base = disposition_base(disp)
     if disp_base not in DISPOSITION_LABELS:
         raise FormatViolation(
             f"Disposition '{disp}' not in vocabulary {sorted(DISPOSITION_LABELS)}",
@@ -914,7 +936,7 @@ def main():
     if is_terminal:
         forbidden = [
             r for r in latest_rows
-            if r.get("Disposition", "").split("→")[0].strip() == "Deferred"
+            if disposition_base(r.get("Disposition", "")) == "Deferred"
         ]
         if forbidden:
             r = forbidden[0]
@@ -929,7 +951,7 @@ def main():
 
     unresolved = [
         r for r in latest_rows
-        if r.get("Disposition", "").split("→")[0].strip() == "User input needed"
+        if disposition_base(r.get("Disposition", "")) == "User input needed"
     ]
     if unresolved:
         print(
@@ -992,19 +1014,19 @@ def main():
         regressions = sum(1 for r in latest_rows if "[REGRESSION]" in r["Severity"])
         addressed = sum(
             1 for r in latest_rows
-            if r["Disposition"].split("→")[0].strip() == "Addressed"
+            if disposition_base(r["Disposition"]) == "Addressed"
         )
         deferred = sum(
             1 for r in latest_rows
-            if r["Disposition"].split("→")[0].strip() == "Deferred"
+            if disposition_base(r["Disposition"]) == "Deferred"
         )
         sealed_count = sum(
             1 for r in latest_rows
-            if r["Disposition"].split("→")[0].strip() in ("Sealed", "Accepted as risk")
+            if disposition_base(r["Disposition"]) in ("Sealed", "Accepted as risk")
         )
         halt_rows = [
             r for r in latest_rows
-            if r["Disposition"].split("→")[0].strip() == "Halt and re-scope"
+            if disposition_base(r["Disposition"]) == "Halt and re-scope"
         ]
         # Phases 2 and 3: [upstream]-tagged HIGH panel rows auto-route to
         # halt votes alongside explicit "Halt and re-scope" dispositions.
@@ -1051,7 +1073,7 @@ def main():
         # (for Deferred rows). T6 marker-expansion logic lives in the Sealed branch.
         next_def = next_def_id(def_entries)
         for r in latest_rows:
-            d = r["Disposition"].split("→")[0].strip()
+            d = disposition_base(r["Disposition"])
             if d in ("Sealed", "Accepted as risk"):
                 title = derive_title(r["Concern"])
                 notes_field = r.get("Notes", "")

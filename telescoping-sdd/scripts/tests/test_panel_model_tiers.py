@@ -94,3 +94,78 @@ def test_model_tiers_byte_identical_across_copies() -> None:
             f"'{HEADING}' is not byte-identical across both panel-review.md copies; "
             f"the tier doctrine has drifted:\n{diff}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-agent frontmatter tier pinning (context-window-inflow-reduction Q2/AD14):
+# the two new thin agents are pinned to Sonnet/high in their own frontmatter.
+# ---------------------------------------------------------------------------
+
+_AGENTS_DIR = _REPO_ROOT / "telescoping-sdd" / "agents"
+
+
+def _frontmatter(path: Path) -> dict:
+    """Parse the leading `---`-delimited YAML frontmatter into a flat dict.
+
+    Only the flat `key: value` scalars this repo's agent files use are parsed;
+    values are stripped of surrounding quotes.
+    """
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\n"), f"{path}: no frontmatter fence"
+    end = text.index("\n---", 4)
+    out: dict[str, str] = {}
+    for line in text[4:end].splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+def test_panel_condenser_frontmatter_model_effort() -> None:
+    """AD14: panel-condenser.md pins model: sonnet / effort: high; name matches file."""
+    path = _AGENTS_DIR / "panel-condenser.md"
+    assert path.is_file(), f"missing thin agent file: {path}"
+    fm = _frontmatter(path)
+    assert fm.get("name") == "panel-condenser", fm
+    assert fm.get("model") == "sonnet", fm
+    assert fm.get("effort") == "high", fm
+
+
+def test_panel_condenser_model_tier_bullet_present() -> None:
+    """T5/AD14: '## Model tiers' names panel-condenser at Sonnet/high in BOTH
+    copies (byte-identity is already guarded by
+    test_model_tiers_byte_identical_across_copies)."""
+    for path in (SDD, PB):
+        section = _extract_section(_read(path), HEADING, path)
+        assert "panel-condenser" in section, f"{path}: condenser tier bullet absent"
+        assert PANELIST_TIER in section  # 'Sonnet 5, `effort: high`'
+
+
+def test_consistency_reader_frontmatter_model_effort() -> None:
+    """AD14/T7: consistency-reader.md pins model: sonnet / effort: high; name matches."""
+    path = _AGENTS_DIR / "consistency-reader.md"
+    assert path.is_file(), f"missing thin agent file: {path}"
+    fm = _frontmatter(path)
+    assert fm.get("name") == "consistency-reader", fm
+    assert fm.get("model") == "sonnet", fm
+    assert fm.get("effort") == "high", fm
+
+
+def test_consistency_reader_model_tier_bullet_present_both_copies() -> None:
+    """T9/AD14: '## Model tiers' names consistency-reader at Sonnet/high in BOTH copies."""
+    for path in (SDD, PB):
+        section = _extract_section(_read(path), HEADING, path)
+        assert "consistency-reader" in section, f"{path}: consistency-reader tier bullet absent"
+        assert PANELIST_TIER in section  # 'Sonnet 5, `effort: high`'
+
+
+def test_model_tiers_section_byte_identical_after_consistency_reader() -> None:
+    """R5: the '## Model tiers' section stays byte-identical across copies after
+    both the panel-condenser (T5) and consistency-reader (T9) bullets land."""
+    pb_block = _extract_section(_read(PB), HEADING, PB)
+    sdd_block = _extract_section(_read(SDD), HEADING, SDD)
+    assert "consistency-reader" in pb_block and "consistency-reader" in sdd_block
+    assert pb_block == sdd_block, "Model tiers section drifted across copies"
