@@ -73,6 +73,8 @@ After the tasks self-review is complete, cross-reference tasks.md against both s
 4. **Boundary compliance** — No task should violate spec boundaries ("Never do" items). All "Always do" items should be reflected in relevant tasks.
 5. **Implementation sequence** — The task ordering and dependencies should be consistent with the design's implementation sequence.
 
+Delegate this five-item cross-reference to `telescoping-sdd:consistency-reader` `[sonnet/high]` rather than reading `spec.md`, `design.md`, and `tasks.md` in full on the main thread: pass it this reference file's path and the section name "Spec-Design-Tasks Consistency Check" (so it reads the five items above from disk — never inline the criteria) plus the `spec.md` + `design.md` + `tasks.md` paths. It returns only a per-checklist-item discrepancy list (each `{checklist_item, file, quoted_span_or_line, description}`) or a single `clean` verdict — never the artifact bodies. If a returned discrepancy is too coarse to locate to a span, fall back to an in-main full-chain re-read and disclose that heavier read (R3 AC1). The classification and any halt below stay yours — the reader only locates.
+
 For each issue found:
 - **Fix it directly** in tasks.md if the spec and design are clearly authoritative (e.g., a missing task for an uncovered requirement, a file path mismatch, a dependency ordering that contradicts the design)
 - **Stop and ask the user** if the conflict is ambiguous (e.g., a design component that may not need its own task, or a spec requirement that could be covered by an existing task or may need a new one)

@@ -540,3 +540,163 @@ def test_registration_after_guards_uses_resolver():
         assert m.start() > max(guard_idxs), (
             f"{path.name}: atexit.register must follow the last arg-validation guard"
         )
+
+
+# --------------------------------------------------------------------------
+# T3 (context-window-inflow-reduction): panel-findings cleanup pass —
+# findings_scope-scoped, path-safety-guarded, staleness-guarded. NOT gated by
+# the marker lock. See specs/context-window-inflow-reduction/{01_spec,02_design,
+# 03_tasks}.md (design C6, I3, AD3, DR5, DEF-01, DEF-02; HIGH-2, MED-3).
+# --------------------------------------------------------------------------
+
+
+def _make_findings(sdd_dir: Path, scope: str, name: str, *, age_secs: float = 1000.0,
+                   content: str = "## Machine findings\n- [HIGH] x — y\n") -> Path:
+    """Create .sdd/panel-findings/<scope>/<name> aged `age_secs` in the past."""
+    d = sdd_dir / "panel-findings"
+    for part in scope.split("/"):
+        d = d / part
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / name
+    f.write_text(content, encoding="utf-8")
+    old = time.time() - age_secs
+    os.utime(f, (old, old))
+    return f
+
+
+def test_sweep_removes_only_scoped_findings(sdd_dir, tmp_path):
+    """The run's own subtree *.md are removed and the leaf subdir rmdir'd."""
+    f = _make_findings(sdd_dir, "sdd/feat-a", "spec-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/feat-a")
+    assert not f.exists()
+    assert not (sdd_dir / "panel-findings" / "sdd" / "feat-a").exists()
+    # The intermediate sdd/ parent is rmdir'd only if it too ends empty.
+    assert not (sdd_dir / "panel-findings" / "sdd").exists()
+
+
+def test_sweep_leaves_sibling_feature_findings_untouched(sdd_dir, tmp_path):
+    """DR5: a sibling feature's subtree is never touched."""
+    mine = _make_findings(sdd_dir, "sdd/feat-a", "spec-p1-critic.md")
+    sib = _make_findings(sdd_dir, "sdd/feat-b", "spec-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/feat-a")
+    assert not mine.exists()
+    assert sib.exists()
+    # Sibling non-empty, so the shared sdd/ intermediate must survive.
+    assert (sdd_dir / "panel-findings" / "sdd").is_dir()
+
+
+def test_sweep_cross_tier_disjoint_sdd_blueprint_vs_blueprint(sdd_dir, tmp_path):
+    """HIGH-2: an SDD feature literally slugged `blueprint` (grammar-permitted)
+    lives at sdd/blueprint/ and never collides with the blueprint tier's
+    panel-findings/blueprint/."""
+    sdd_bp = _make_findings(sdd_dir, "sdd/blueprint", "spec-p1-critic.md")
+    tier_bp = _make_findings(sdd_dir, "blueprint", "PLAN-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/blueprint")
+    assert not sdd_bp.exists()
+    assert tier_bp.exists()  # the blueprint TIER subtree is untouched
+
+
+def test_sweep_lexical_prefix_sibling_not_deleted(sdd_dir, tmp_path):
+    """`sdd/foo` must not delete `sdd/foo-bar/` (path-JOIN, not string-prefix)."""
+    mine = _make_findings(sdd_dir, "sdd/foo", "spec-p1-critic.md")
+    prefix_sib = _make_findings(sdd_dir, "sdd/foo-bar", "spec-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/foo")
+    assert not mine.exists()
+    assert prefix_sib.exists()
+
+
+def test_sweep_skips_unsafe_findings_scope(sdd_dir, tmp_path):
+    """MED-3: an absolute path, a `..` segment, or an empty component skips the
+    panel-findings pass entirely (never widens/misdirects)."""
+    f = _make_findings(sdd_dir, "sdd/foo", "spec-p1-critic.md")
+    for unsafe in ("/sdd/foo", "sdd/../foo", "..", "sdd//foo", ""):
+        pending_review.sweep_sdd_cruft(tmp_path, findings_scope=unsafe)
+    assert f.exists(), "no unsafe scope may delete a real findings file"
+
+
+def test_sweep_skips_recently_modified_file(sdd_dir, tmp_path):
+    """Staleness guard: a file modified within the window is skipped (best-effort)."""
+    recent = _make_findings(sdd_dir, "sdd/feat-a", "spec-p1-critic.md", age_secs=1.0)
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/feat-a")
+    assert recent.exists()
+    # Dir not rmdir'd because the recent file kept it non-empty.
+    assert (sdd_dir / "panel-findings" / "sdd" / "feat-a").is_dir()
+
+
+def test_sweep_early_returns_when_panel_findings_absent(sdd_dir, tmp_path):
+    """DEF-02 safety: panel-findings/ absent (pre-feature repo) → clean early
+    return; the *.tmp cleanup still runs."""
+    (sdd_dir / "junkAAAA.tmp").write_text("j", encoding="utf-8")
+    assert not (sdd_dir / "panel-findings").exists()
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/feat-a")  # no raise
+    assert not (sdd_dir / "junkAAAA.tmp").exists()
+
+
+def test_sweep_skips_panel_findings_when_scope_none(sdd_dir, tmp_path):
+    """findings_scope=None (or absent) skips the panel-findings pass entirely."""
+    f = _make_findings(sdd_dir, "sdd/feat-a", "spec-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path)              # default None
+    assert f.exists()
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope=None)
+    assert f.exists()
+
+
+def test_sweep_blueprint_scope_one_level_rmdir(sdd_dir, tmp_path):
+    """DEF-01: the blueprint tier writes directly under panel-findings/blueprint/
+    (no intermediate sdd/ parent); the one-level leaf is rmdir'd when empty."""
+    f = _make_findings(sdd_dir, "blueprint", "PLAN-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="blueprint")
+    assert not f.exists()
+    assert not (sdd_dir / "panel-findings" / "blueprint").exists()
+    # panel-findings/ itself is NEVER removed (may host other tiers/features).
+    # It is empty here, so it may or may not survive — assert only that the
+    # sweep did not raise and the leaf is gone (above).
+
+
+def test_sweep_tmp_and_lock_behavior_unchanged(sdd_dir, tmp_path):
+    """Regression: passing findings_scope does not disturb the marker-lock-gated
+    *.tmp/lock cleanup; both passes run, and neither marker file is touched."""
+    (sdd_dir / "tmpZZZZ.tmp").write_text("z", encoding="utf-8")
+    _lock_path(sdd_dir).write_text("", encoding="utf-8")
+    arch = sdd_dir / "architecture.json"
+    arch.write_text('{"language": "python"}\n', encoding="utf-8")
+    pr = sdd_dir / "pending-review.json"
+    pr.write_text("{}\n", encoding="utf-8")
+    findings = _make_findings(sdd_dir, "sdd/feat-a", "spec-p1-critic.md")
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/feat-a")
+    assert not (sdd_dir / "tmpZZZZ.tmp").exists()   # tmp swept
+    assert not _lock_path(sdd_dir).exists()         # lock reclaimed
+    assert not findings.exists()                    # findings swept
+    assert arch.read_text() == '{"language": "python"}\n'   # untouched
+    assert pr.read_text() == "{}\n"                          # untouched
+
+
+def test_sweep_findings_scope_is_keyword_only():
+    """I3 signature: findings_scope is keyword-only with an Optional[str]=None default."""
+    sig = inspect.signature(pending_review.sweep_sdd_cruft)
+    assert "findings_scope" in sig.parameters
+    p = sig.parameters["findings_scope"]
+    assert p.kind is inspect.Parameter.KEYWORD_ONLY
+    assert p.default is None
+
+
+# --------------------------------------------------------------------------
+# T3 wiring: both validators pass a tier-qualified findings_scope to
+# sweep_sdd_cruft at exit (design C6/I3; DEF-01 blueprint one-level).
+# --------------------------------------------------------------------------
+
+
+def test_validate_spec_wires_sdd_findings_scope():
+    """validate_spec.py registers the sweep with findings_scope=`sdd/<dir-name>`."""
+    src = _VS_PATH.read_text(encoding="utf-8")
+    assert "findings_scope=f\"sdd/{Path(spec_dir).name}\"" in src, (
+        "validate_spec.py must pass a tier-qualified sdd/<spec-dir-basename> scope"
+    )
+
+
+def test_validate_blueprint_wires_blueprint_findings_scope():
+    """validate_blueprint.py registers the sweep with findings_scope='blueprint'."""
+    src = _VB_PATH.read_text(encoding="utf-8")
+    assert 'findings_scope="blueprint"' in src, (
+        "validate_blueprint.py must pass the literal 'blueprint' tier scope (DEF-01)"
+    )

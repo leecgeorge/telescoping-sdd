@@ -21,8 +21,16 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
+
+# Best-effort staleness window (seconds) for the panel-findings sweep: a matched
+# findings file modified within this window is left in place as defense-in-depth
+# against a same-feature concurrent double-validate writer (design C6/DR5). Not a
+# correctness guarantee — a mistaken delete degrades only to a DISCLOSED
+# missing-file → AD7 fallback, never a silent drop.
+STALE_WINDOW_SECS = 300
 
 try:  # POSIX advisory file locking (audit R3.4)
     import fcntl as _fcntl
@@ -863,7 +871,71 @@ def reconcile_to_result(
 # ----- Best-effort .sdd/ cruft cleanup (WORKING-NOTES Item 2) ---------------
 
 
-def sweep_sdd_cruft(marker_root: Path) -> None:
+def _sweep_panel_findings(sdd_dir: Path, findings_scope: Optional[str]) -> None:
+    """Remove this run's own `.sdd/panel-findings/<findings_scope>/*.md` (C6).
+
+    Guarded DIFFERENTLY from the *.tmp/lock pass (NOT by the marker lock — a
+    panelist Write to a findings file never touches _marker_lock or
+    write_pending_review(), so the NB marker-lock acquire proves nothing about a
+    findings writer):
+      (a)  TWO-LEVEL TIER/SLUG SCOPING — `findings_scope` is a tier-qualified
+           RELATIVE subpath (`sdd/<spec-dir-basename>` for the SDD tier, or the
+           literal `blueprint` for the blueprint tier). Built with path-JOIN,
+           never string-prefix, so `sdd/foo` can never reach `sdd/foo-bar/`, a
+           sibling feature, or the other tier.
+      (a2) PATH-COMPONENT SAFETY (MED-3) — skip entirely if the scope is absolute,
+           carries any `..`/`.` segment, or has an empty component.
+      (b)  STALENESS GUARD — skip any matched file modified within
+           STALE_WINDOW_SECS (best-effort defense against a concurrent writer).
+    `findings_scope` None/empty skips the pass. After removing the matched
+    `*.md`, rmdir the leaf subdir if empty, then each ancestor UP TO (but never
+    including) `panel-findings/` if it too ends empty (so the intermediate `sdd/`
+    parent is reclaimed only when the last feature under it is gone; the
+    one-level `blueprint` scope has no such intermediate — DEF-01).
+
+    DEF-02 self-heal note: a panelist's `Write` auto-creates the parent dirs of
+    its findings file, so an absent `panel-findings/` (or scope subtree) is the
+    normal pre-feature state — this pass early-returns cleanly and the next
+    panel pass recreates whatever it needs. Never raises; swallows OSError; never
+    touches pending-review.json or architecture.json.
+    """
+    try:
+        if not findings_scope:
+            return
+        scope = str(findings_scope)
+        # Path-component safety (MED-3): reject absolute / .. / . / empty component.
+        if os.path.isabs(scope):
+            return
+        parts = scope.replace("\\", "/").split("/")
+        if any(p in ("", "..", ".") for p in parts):
+            return
+        pf_root = sdd_dir / "panel-findings"
+        target = pf_root
+        for p in parts:
+            target = target / p                             # path-JOIN, not prefix
+        if not target.is_dir():
+            return
+        now = time.time()
+        for md in target.glob("*.md"):
+            try:
+                if now - md.stat().st_mtime < STALE_WINDOW_SECS:
+                    continue                                # staleness guard (b)
+                md.unlink()
+            except OSError:
+                pass
+        # rmdir the leaf, then ancestors up to (exclusive) panel-findings/.
+        d = target
+        while d != pf_root and d.is_dir():
+            try:
+                d.rmdir()                                   # succeeds only if empty
+            except OSError:
+                break
+            d = d.parent
+    except Exception:
+        pass                                                # best-effort (R4)
+
+
+def sweep_sdd_cruft(marker_root: Path, *, findings_scope: Optional[str] = None) -> None:
     """Best-effort cleanup of orphaned .sdd/ cruft.
 
     Removes *.tmp files (abandoned atomic-write temps from write_pending_review())
@@ -894,11 +966,20 @@ def sweep_sdd_cruft(marker_root: Path) -> None:
             directory itself; NOT raw args.project_root (which may be None and,
             when a non-ancestor --project-root is supplied, differs from the
             write-side root — using it would sweep the wrong .sdd/).
+        findings_scope: Tier-qualified RELATIVE subpath of the panel-findings
+            subtree this run covered — `sdd/<spec-dir-basename>` for the SDD tier
+            or the literal `blueprint` for the blueprint tier. Drives the C6
+            panel-findings cleanup pass (see _sweep_panel_findings). None/empty
+            (the default) skips that pass entirely; the *.tmp/lock cleanup is
+            unaffected either way.
     """
     try:
         sdd_dir = _marker_path(marker_root).parent          # marker_root/.sdd
         if not sdd_dir.is_dir():
             return
+        # Panel-findings pass (C6) — NOT gated by the marker lock; runs on every
+        # platform regardless of the *.tmp/lock gate outcome below.
+        _sweep_panel_findings(sdd_dir, findings_scope)
         lock_path = _marker_path(marker_root).with_name("pending-review.lock")
 
         if _fcntl is None and _msvcrt is None:              # no-lock platform (AD3)

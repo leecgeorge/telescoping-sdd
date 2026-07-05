@@ -2386,7 +2386,9 @@ def main():
     # (AD1). This also keeps cleanup aligned with _handle_write_arch_config's
     # blueprint_dir.parent write root.
     atexit.register(
-        sweep_sdd_cruft, _resolve_marker_root_and_key(blueprint_dir, project_root)[0]
+        sweep_sdd_cruft,
+        _resolve_marker_root_and_key(blueprint_dir, project_root)[0],
+        findings_scope="blueprint",
     )
 
     # Mode dispatch (audit R3.2). The mode flags are argparse-mutually-exclusive,
