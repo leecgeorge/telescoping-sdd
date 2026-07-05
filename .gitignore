@@ -31,7 +31,13 @@ Thumbs.db
 /.sdd/pending-review.json
 /.sdd/pending-review.lock
 /.sdd/*.tmp
+# Transient off-thread panel-findings (panelists Write here; validator sweeps them).
+/.sdd/panel-findings/
 
 # SDD working artifacts — author-side specs/design/tasks, NOT part of the
 # shipped plugin (the plugin is telescoping-sdd/). Do not ship.
 /specs/
+
+# Project blueprint — author-side planning artifact (SCOPE/ARCHITECTURE/PLAN),
+# NOT part of the shipped plugin. Do not ship.
+/blueprint/
