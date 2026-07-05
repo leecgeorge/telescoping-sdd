@@ -280,6 +280,9 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     # so the synthetic layout must include it too or `parents[3] / "scripts"`
     # import resolution fails.
     shutil.copy2(src_scripts / "run_state.py", dst_scripts / "run_state.py")
+    # reset_checkpoint.py is a runtime import of both validators (the reset-at-
+    # gate advisory seam); likewise shipped in the shared scripts dir.
+    shutil.copy2(src_scripts / "reset_checkpoint.py", dst_scripts / "reset_checkpoint.py")
 
     src_validator = (
         _REPO_ROOT / "telescoping-sdd" / "skills" / "project-blueprint" / "scripts"

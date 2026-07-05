@@ -124,6 +124,7 @@ from project_link import (  # noqa: E402
 )
 from ucr import parse_ucr_stanza  # noqa: E402
 from run_state import derive_run_state, format_run_state, safe_print  # noqa: E402
+from reset_checkpoint import emit_reset_checkpoint  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1825,6 +1826,10 @@ def _handle_approve(args, spec_dir: Path, project_root: Optional[Path]) -> int:
             file=sys.stderr,
         )
         return 1
+    # Reset-at-gate advisory (R1): only on a successful, non-task-tick stamp —
+    # after the load-bearing approve_document returns. Best-effort, never raises.
+    if stamped and not args.task_tick:
+        emit_reset_checkpoint("sdd", args.approve)
     return 0 if stamped else 1
 
 
@@ -1917,6 +1922,10 @@ def _handle_completion_gate(args, spec_dir: Path, project_root: Path) -> int:
         print("Completion gate passed with warnings. Review WARN items above.")
     else:
         print("Completion gate failed. See FAIL items above.")
+    # Reset-at-gate advisory (R1): terminal, list-free variant — only on a
+    # passing gate (WARN-only counts as passed). Best-effort, never raises.
+    if result.passed:
+        emit_reset_checkpoint("sdd", "tasks", completion_gate=True)
     return 0 if result.passed else 1
 
 
