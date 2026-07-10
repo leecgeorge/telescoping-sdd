@@ -48,7 +48,11 @@ CORE_COMMON = [
     "## Synthesizer Self-Check",
     "## Situational panel modes (loaded on demand)",
 ]
-CONV_SECTIONS = ["## Halt and Re-scope Exit", "## Strict-Bar Convergence Mode"]
+CONV_SECTIONS = [
+    "## Halt and Re-scope Exit",
+    "## Strict-Bar Convergence Mode",
+    "## Terminal Compression Check",
+]
 MODES_SECTIONS = [
     "## Lightweight Mode (single-pass panel)",
     "## When to Skip the Panel",
@@ -61,6 +65,16 @@ ALLOWLIST = [
     (
         "**Synthesizer Self-Check** (§ above)",
         "**Synthesizer Self-Check** (`panel-review.md § Synthesizer Self-Check`)",
+    ),
+    # v2.24.0: the strict-bar Exit cross-check now points to the terminal compression
+    # check at its proceed-to-validation step (Finding-1 wiring); the pre-split golden
+    # predates that section, so the pointer is a tolerated addition to the pinned body.
+    (
+        "**Cross-check returns 0 HIGHs** → exit the loop. Proceed to validation.",
+        "**Cross-check returns 0 HIGHs** → exit the loop. Proceed to validation. "
+        "**First run the terminal compression check** (`## Terminal Compression Check` in this file — "
+        "the same pass the NORMAL step-8 exit runs; it applies before validation on every exit path, "
+        "this one included).",
     ),
 ]
 
@@ -313,3 +327,166 @@ def test_skill_bodies_no_stale_panel_review_claim():
                         f"panel-review.md in: {spot[:90]!r}"
                     )
                     idx = low.find(alias, idx + len(alias))
+
+
+# --------------------------------------------------------------------------- #
+# Terminal Compression Check (spec-verbosity-reduction) — R1/R3 sentinel-span
+# byte-pins across the two panel-review.md copies + the R2 section/pointer wiring.
+# --------------------------------------------------------------------------- #
+SENTINEL_IDS = ("canonical-section-rule", "under-doc-guardrail", "bake-resolution")
+
+
+def extract_sentinel_block(text: str, sid: str) -> str:
+    """Return the bytes strictly between a SHARED-DOCTRINE id's open and close
+    sentinels. Raises AssertionError — distinct from a span-divergence failure —
+    when either sentinel is absent or unbalanced (the boundary case in I8)."""
+    open_tag = f"<!-- SHARED-DOCTRINE:{sid} -->"
+    close_tag = f"<!-- /SHARED-DOCTRINE:{sid} -->"
+    oi = text.find(open_tag)
+    ci = text.find(close_tag)
+    assert oi != -1 and ci != -1 and ci > oi, (
+        f"missing or unbalanced SHARED-DOCTRINE sentinel for {sid!r}"
+    )
+    return text[oi + len(open_tag):ci]
+
+
+def test_r1_r3_shared_prose_mirrored():
+    # (a) each R1/R3 sentinel span byte-identical across the two panel-review.md copies
+    sdd = _read(SDD / "panel-review.md")
+    bp = _read(BP / "panel-review.md")
+    for sid in SENTINEL_IDS:
+        a = extract_sentinel_block(sdd, sid)  # distinct AssertionError if a sentinel is missing
+        b = extract_sentinel_block(bp, sid)
+        assert a == b, f"SHARED-DOCTRINE span diverges across copies: {sid!r}"
+    # DEF-06 tie-break and DEF-07 worked example live INSIDE their spans (so the byte-pin covers them)
+    assert "**Tie-break.**" in extract_sentinel_block(sdd, "canonical-section-rule")
+    assert "**Worked example.**" in extract_sentinel_block(sdd, "under-doc-guardrail")
+    # (b) the whole ## Terminal Compression Check section byte-identical across the two convergence
+    # copies — exact compare (no rstrip; tail-whitespace / trailing blank-line drift between the
+    # mirrored copies is real divergence and must fail).
+    ta = extract_section(_read(SDD / "panel-review-convergence.md"), "## Terminal Compression Check")
+    tb = extract_section(_read(BP / "panel-review-convergence.md"), "## Terminal Compression Check")
+    assert ta == tb, "## Terminal Compression Check diverges across the convergence copies"
+
+
+def test_terminal_check_pointer_present():
+    for skill in ("sdd", "blueprint"):
+        core = _read(SKILLDIRS[skill] / "panel-review.md")
+        conv = _read(SKILLDIRS[skill] / "panel-review-convergence.md")
+        # (a) NORMAL-path step-8 reminder: the read-pointer must live ON the step-8 line itself,
+        # not merely somewhere file-wide (the § Situational modes / See-also bullets also name the
+        # file + "every convergence", so a file-wide `in core` check would false-green on a dropped pointer).
+        step8 = next(
+            (ln for ln in core.split("\n") if "Terminal compression check (every convergence)" in ln),
+            None,
+        )
+        assert step8 is not None, f"{skill}: step-8 terminal-check reminder missing"
+        assert "Read `panel-review-convergence.md" in step8 and "every convergence" in step8, (
+            f"{skill}: step-8 reminder line missing its read-pointer / every-convergence phrasing"
+        )
+        # (b) both-exit-path invariant inside the ## Terminal Compression Check section
+        tsec = extract_section(conv, "## Terminal Compression Check")
+        assert "before Phase validation" in tsec and "any exit path" in tsec, (
+            f"{skill}: terminal-check section missing the before-validation / any-exit-path invariant"
+        )
+        # (c) every-convergence load-note in § Situational panel modes AND the convergence blockquote
+        modes = extract_section(core, "## Situational panel modes (loaded on demand)")
+        assert "Not situational — loads at every convergence" in modes and "Terminal Compression Check" in modes, (
+            f"{skill}: § Situational panel modes missing the every-convergence load-note"
+        )
+        assert "Exception — the terminal compression check is not situational" in conv, (
+            f"{skill}: convergence blockquote missing the every-convergence exception note"
+        )
+
+
+def test_exception_blockquotes_mirrored():
+    # The two new exception blockquotes must be byte-identical across tiers, like every other new
+    # span this feature added — presence-per-copy alone would let the two copies silently diverge.
+    def line_with(text: str, needle: str) -> str | None:
+        return next((ln for ln in text.split("\n") if needle in ln), None)
+
+    csdd = line_with(_read(SDD / "panel-review-convergence.md"), "Exception — the terminal compression check is not situational")
+    cbp = line_with(_read(BP / "panel-review-convergence.md"), "Exception — the terminal compression check is not situational")
+    assert csdd is not None and csdd == cbp, "convergence exception blockquote diverges across tiers"
+
+    msdd = line_with(_read(SDD / "panel-review.md"), "Not situational — loads at every convergence")
+    mbp = line_with(_read(BP / "panel-review.md"), "Not situational — loads at every convergence")
+    assert msdd is not None and msdd == mbp, "§ Situational panel modes exception blockquote diverges across tiers"
+
+
+# --------------------------------------------------------------------------- #
+# Per-requirement doctrine-presence guards (R1–R4)
+# --------------------------------------------------------------------------- #
+AGENTS_DIR = _REPO / "telescoping-sdd" / "agents"
+DRAFTER_AGENTS = (
+    "feature-spec-analyst",
+    "feature-architecture-analyst",
+    "feature-task-analyst",
+    "project-spec-analyst",
+    "project-architecture-analyst",
+    "project-plan-analyst",
+)
+R4_HOMES = (
+    AGENTS_DIR / "feature-spec-analyst.md",
+    SDD / "phase-specify.md",
+    SDD / "spec-template-python.md",
+    SDD / "spec-template-java.md",
+)
+
+
+def test_r1_canonical_and_guardrail_present():
+    for skill in ("sdd", "blueprint"):
+        core = _read(SKILLDIRS[skill] / "panel-review.md")
+        canon = extract_sentinel_block(core, "canonical-section-rule")
+        guard = extract_sentinel_block(core, "under-doc-guardrail")
+        assert "**Canonical-section rule.**" in canon, f"{skill}: canonical-section-rule marker"
+        assert "**Tie-break.**" in canon, f"{skill}: DEF-06 tie-break sub-marker inside the span"
+        assert "**Under-documentation guardrail.**" in guard, f"{skill}: under-doc-guardrail marker"
+        assert "**Worked example.**" in guard, f"{skill}: DEF-07 worked-example sub-marker inside the span"
+        # the spans live on the Addressed disposition (R1 obligation attaches there)
+        assert core.index("SHARED-DOCTRINE:canonical-section-rule") > core.index("- **Addressed**"), (
+            f"{skill}: canonical-section-rule span is not on the Addressed disposition"
+        )
+
+
+def test_r2_terminal_check_markers_present():
+    for skill in ("sdd", "blueprint"):
+        sec = extract_section(_read(SKILLDIRS[skill] / "panel-review-convergence.md"), "## Terminal Compression Check")
+        for marker in (
+            "**Charter.**",
+            "**When it runs.**",
+            "**Operator.**",
+            "**Clearly-safe cut.**",
+            "**Cross-reference audit.**",
+            "**Relationship to the exit cross-check.**",
+        ):
+            assert marker in sec, f"{skill}: terminal-check fact-marker {marker!r} missing"
+        # purely-subtractive / no-reopen / no-restore / no-load-bearing-deletion charter
+        for phrase in ("purely subtractive", "never re-opens", "never restores", "never deletes load-bearing content"):
+            assert phrase in sec, f"{skill}: charter phrase {phrase!r} missing"
+        # I5 recorded-cuts rail: before→after list + declined-not-re-run
+        assert "before → after" in sec and "not re-run" in sec, f"{skill}: recorded-cuts rail missing"
+        # SEAL-03's always-on cross-reference audit (decoupled from the cut gate)
+        assert "whether or not" in sec and "any cut is proposed" in sec, (
+            f"{skill}: cross-reference-audit always-on wording missing"
+        )
+
+
+def test_r3_bake_resolution_present():
+    for skill in ("sdd", "blueprint"):
+        core = _read(SKILLDIRS[skill] / "panel-review.md")
+        bake = extract_sentinel_block(core, "bake-resolution")
+        assert "**Bake the resolution, not the debate.**" in bake, f"{skill}: synthesizer bake-resolution marker"
+    for name in DRAFTER_AGENTS:
+        text = _read(AGENTS_DIR / f"{name}.md")
+        assert "Bake the resolution, not the debate" in text, f"{name}: R3 drafter bullet missing"
+
+
+def test_r4_plainer_form_present():
+    for home in R4_HOMES:
+        text = _read(home)
+        assert "**Internal/mechanical requirements:**" in text, f"{home.name}: plainer-form marker missing"
+        assert "**User-facing vs internal.**" in text, f"{home.name}: observable-stakeholder heuristic missing"
+        assert "GIVEN/WHEN/THEN acceptance-criteria grammar" in text and "stays mandatory and unchanged" in text, (
+            f"{home.name}: GWT-stays-mandatory guardrail missing"
+        )

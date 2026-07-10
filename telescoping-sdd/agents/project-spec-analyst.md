@@ -64,6 +64,8 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 
 ### Writing & Documentation
 
+- **Bake the resolution, not the debate** — when you draft or revise prose after a decision is made, state the flat resolution in the artifact body and keep the deliberation (the "X but not Y", the "considered then rejected") out of it. Rationale that must survive belongs in a `Sealed`/`Accepted as risk` (`Defense:`) or `Deferred` (`Routed because:`) disposition — never in the artifact body; ephemeral deliberation stays in the panel pass record.
+
 - Use clear, precise, unambiguous language
 - Prefer active voice, concise sentences, numbered lists, and tables
 - Flag assumptions with **[ASSUMPTION]** tags for user review
