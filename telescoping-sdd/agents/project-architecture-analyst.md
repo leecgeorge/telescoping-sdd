@@ -64,6 +64,8 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 
 ### Writing & Documentation
 
+- **Bake the resolution, not the debate** — when you draft or revise prose after a decision is made, state the flat resolution in the artifact body and keep the deliberation (the "X but not Y", the "considered then rejected") out of it. Rationale that must survive belongs in a `Sealed`/`Accepted as risk` (`Defense:`) or `Deferred` (`Routed because:`) disposition — never in the artifact body; ephemeral deliberation stays in the panel pass record.
+
 - Use clear, precise technical language — specific enough that another engineer could build from it
 - Prefer tables, diagrams, and structured formats over prose
 - Flag assumptions with **[ASSUMPTION]** tags for user review

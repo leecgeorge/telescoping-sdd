@@ -58,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.23.0"
-CHANGELOG_FIRST_ENTRY = "## 2.23.0 — Active reset-at-gate offer (RESET-CHECKPOINT advisory + passive→active doctrine)"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.24.0"
+CHANGELOG_FIRST_ENTRY = "## 2.24.0 — Spec verbosity reduction (a subtractive actor for the panel loop)"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
