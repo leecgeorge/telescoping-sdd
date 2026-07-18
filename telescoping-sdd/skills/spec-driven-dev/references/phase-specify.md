@@ -39,7 +39,7 @@ If the agent believes a CFC's `Per-feature AC` is wrong for this feature (the Pa
 
 Required sections:
 - **Objective** — One paragraph on what and why
-- **Requirements** — User stories in format: "As a [role], I want [action], so that [benefit]" for user-facing behavior. **User-facing vs internal.** For internal/mechanical/infra requirements (only implementers/maintainers care; no externally-observable behavior change), use the plainer form instead — **Internal/mechanical requirements:** a one-line `**Change:** <what changes>. **Purpose:** <why>.` followed by the acceptance criteria. **Guardrail:** the GIVEN/WHEN/THEN acceptance-criteria grammar stays mandatory and unchanged (validator-checked) — only the preamble is relaxed.
+- **Requirements** — User stories in format: "As a [role], I want [action], so that [benefit]"
 - **Acceptance Criteria** — GIVEN/WHEN/THEN for each requirement
 - **Project Structure** — Where new code fits in the existing codebase
 - **Boundaries** — "Always do", "Ask first", "Never do" lists

@@ -14,8 +14,6 @@ Use this template when creating `spec.md` for a Java project.
 
 ## Requirements
 
-> **Requirement framing.** **User-facing vs internal.** Default the "As a [role], I want [action], so that [benefit]" narrative to *user-facing* behavior (a non-implementer stakeholder observes or cares about the outcome). For **Internal/mechanical requirements:** — internal/mechanical/infra work only implementers/maintainers care about, with no externally-observable behavior change — replace the "As a [role]…" preamble with a one-line `**Change:** <what changes>. **Purpose:** <why>.` followed by the acceptance criteria. **Guardrail:** the GIVEN/WHEN/THEN acceptance-criteria grammar below stays mandatory and unchanged (validator-checked) — only the preamble is relaxed.
-
 ### R1: [Requirement Name]
 
 As a [role], I want [action], so that [benefit].

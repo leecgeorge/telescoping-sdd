@@ -35,8 +35,6 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 - Make the action observable — something you could demonstrate
 - Make the benefit real — tied to why this feature exists at all
 - Number requirements (R1, R2, …) so downstream documents can reference them
-- **User-facing vs internal.** Default the "As a [role]…" narrative to *user-facing* behavior. Ask: would a non-implementer stakeholder (an end user, operator, or consumer of the running system's behavior) directly observe or care about this requirement's outcome? **Yes → user-facing** → use the narrative. **Only implementers/maintainers care, and the change is internal/mechanical/infra with no externally-observable behavior change → internal** → use the plainer form below. Mixed requirements default to the narrative (bias to the richer form).
-- **Internal/mechanical requirements:** replace the "As a [role], I want [action], so that [benefit]" preamble with a one-line plainer form — `**Change:** <what changes>. **Purpose:** <why>.` — followed immediately by the mandatory GIVEN/WHEN/THEN acceptance criteria. This kills filler like "As a developer, I want the parser split…". **Guardrail:** the relaxation touches only the user-story preamble; the GIVEN/WHEN/THEN acceptance-criteria grammar stays mandatory and unchanged (it is validator-checked).
 
 ### Testable Acceptance Criteria
 
@@ -69,8 +67,6 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 - Focus on risks that affect scope, correctness, or integration with existing code — not generic project risks
 
 ### Writing & Documentation
-
-- **Bake the resolution, not the debate** — when you draft or revise prose after a decision is made, state the flat resolution in the artifact body and keep the deliberation (the "X but not Y", the "considered then rejected") out of it. Rationale that must survive belongs in a `Sealed`/`Accepted as risk` (`Defense:`) or `Deferred` (`Routed because:`) disposition — never in the artifact body; ephemeral deliberation stays in the panel pass record.
 
 - Use clear, precise, unambiguous language
 - Prefer active voice, concise sentences, numbered lists, and tables
