@@ -82,7 +82,7 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 
 ### Writing & Documentation
 
-- **Bake the resolution, not the debate** — when you draft or revise prose after a decision is made, state the flat resolution in the artifact body and keep the deliberation (the "X but not Y", the "considered then rejected") out of it. Rationale that must survive belongs in a `Sealed`/`Accepted as risk` (`Defense:`) or `Deferred` (`Routed because:`) disposition — never in the artifact body; ephemeral deliberation stays in the panel pass record.
+- **Bake the resolution, not the debate** — when you draft or revise prose after a decision is made, state the flat resolution in the artifact body and keep the deliberation (the "X but not Y", the "considered then rejected") out of it. Rationale that must survive belongs in a `Sealed`/`Accepted as risk` (`Defense:`) or `Deferred` (`Routed because:`) disposition — never in the artifact body; ephemeral deliberation stays in the panel pass record. State a decided-but-unbuilt target-state in target voice — what the change *will* do ("the resolver will dedupe the set"), never as already-true ("the resolver dedupes the set") — so baking the decision never asserts unbuilt work as accomplished fact.
 
 - Use clear, precise, imperative language — "Add X", "Create Y", "Modify Z"
 - Prefer tables, checklists, and structured formats over prose

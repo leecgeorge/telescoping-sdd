@@ -1131,30 +1131,37 @@ def main():
                 })
                 next_seal += 1
             elif d == "Deferred":
-                # T5 (R2): validate Routed because: presence
+                # R4 (terminal-only-subtraction): validate BOTH Deferred-row
+                # requirements — the 'Routed because:' rationale prefix AND the
+                # target shape — accumulating every violated one so a single
+                # malformed row reports both faults in one run (no two round-trips
+                # for one row). The displayed target constraint is stated in plain
+                # language, not the loose '^[A-Za-z0-9._/-]+\\.md$' string, which
+                # over-permits '/' inside a segment and omits the '..' rejection
+                # that the real TARGET_PAT enforces.
                 notes_field = r.get("Notes", "")
-                if "Routed because:" not in notes_field:
-                    concern = r.get("Concern", "")[:80]
-                    print(
-                        f"error: Row in Latest pass detail has Disposition "
-                        f"'{r['Disposition']}' but Notes lacks required "
-                        f"'Routed because: <reason>' prefix. Offending row: "
-                        f"Severity={r.get('Severity', '')} Source={r.get('Source', '')} "
-                        f"Concern={concern}. Add 'Routed because:' to Notes and retry.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(EXIT_FORMAT_VIOLATION)
-                # T5 (R2): extract and validate target shape
                 disposition_str = r["Disposition"]
                 target = disposition_str.split("→", 1)[1].strip() if "→" in disposition_str else ""
+                faults = []
+                if "Routed because:" not in notes_field:
+                    faults.append(
+                        "Notes is missing the required 'Routed because: <reason>' prefix"
+                    )
                 if not TARGET_PAT.match(target):
+                    faults.append(
+                        f"the target '{target}' is not a valid deferral target — it must "
+                        f"be a plain `.md` filename with optional `/`-joined path segments, "
+                        f"no `..` traversal segment, and no `/` inside a segment "
+                        f"(e.g. 'tasks.md', 'PLAN.md', 'subdir/tasks.md')"
+                    )
+                if faults:
+                    concern = r.get("Concern", "")[:80]
+                    problems = "; ".join(faults)
                     print(
-                        f"error: Row in Latest pass detail has Disposition "
-                        f"'{disposition_str}' with target '{target}' that does not "
-                        f"match the required filename shape '^[A-Za-z0-9._/-]+\\.md$' "
-                        f"(no traversal segments). Targets must be plain markdown "
-                        f"filenames (e.g., 'tasks.md', 'PLAN.md', 'subdir/tasks.md'). "
-                        f"Fix the disposition and retry.",
+                        f"error: Row in Latest pass detail disposed "
+                        f"'{disposition_str}' has {len(faults)} format problem(s): "
+                        f"{problems}. Offending row: Severity={r.get('Severity', '')} "
+                        f"Source={r.get('Source', '')} Concern={concern}. Fix and retry.",
                         file=sys.stderr,
                     )
                     sys.exit(EXIT_FORMAT_VIOLATION)

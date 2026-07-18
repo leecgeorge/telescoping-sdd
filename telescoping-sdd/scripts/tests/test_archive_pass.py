@@ -1271,6 +1271,84 @@ def test_deferred_promotion_target_shape_accepts_subdir(tmp_path):
     assert "→ subdir/tasks.md" in text
 
 
+# ----- R4 (terminal-only-subtraction): merged Deferred-row fault reporting -----
+# One malformed Deferred row reports BOTH the missing 'Routed because:' prefix
+# and a bad target shape in a single run; single-fault rows report only their
+# one fault (no phantom); the displayed constraint is plain-language, not the
+# misleading loose regex.
+
+def test_deferred_merged_error_reports_both_faults(tmp_path):
+    """Both faults (no rationale AND non-.md target) → one message names both."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | pragmatist | concern X | Deferred → 03_PLAN | just a note |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode != 0
+    assert "Routed because:" in proc.stderr
+    assert "plain `.md` filename" in proc.stderr
+    assert "no `..`" in proc.stderr
+
+
+def test_deferred_single_fault_rationale_only_no_phantom_target(tmp_path):
+    """Missing rationale but well-formed target → only the rationale fault."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | pragmatist | concern X | Deferred → tasks.md | just a note |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode != 0
+    assert "Routed because:" in proc.stderr
+    assert "plain `.md` filename" not in proc.stderr  # no phantom target-shape fault
+
+
+def test_deferred_single_fault_target_only_no_phantom_rationale(tmp_path):
+    """Valid rationale but bad target → only the target-shape fault."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | critic | x | Deferred → 03_PLAN | Routed because: r |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode != 0
+    assert "plain `.md` filename" in proc.stderr
+    assert "missing the required 'Routed because:'" not in proc.stderr  # no phantom rationale fault
+
+
+def test_deferred_empty_target_reports_target_shape(tmp_path):
+    """Valid rationale but no → <target> (empty target) → target-shape fault."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | critic | x | Deferred | Routed because: r |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode != 0
+    assert "plain `.md` filename" in proc.stderr
+
+
+def test_deferred_both_faults_absent_target_reports_both(tmp_path):
+    """test-M02: a bare Deferred row missing BOTH rationale AND target → both faults."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | critic | x | Deferred | just a note |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode != 0
+    assert "Routed because:" in proc.stderr
+    assert "plain `.md` filename" in proc.stderr
+
+
+def test_deferred_wellformed_row_promotes_without_violation(tmp_path):
+    """A well-formed Deferred row still promotes to [DEF-01] with no violation."""
+    artifact = _artifact_with_latest(
+        tmp_path,
+        "| [MED] | pragmatist | concern A | Deferred → tasks.md | Routed because: belongs in tasks |\n",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, proc.stderr
+    text = artifact.read_text(encoding="utf-8")
+    assert "[DEF-01]" in text
+
+
 def test_deferred_skip_does_not_promote(tmp_path):
     """--skip with Deferred row present → no promotion, exit 0."""
     artifact = _artifact_with_latest(

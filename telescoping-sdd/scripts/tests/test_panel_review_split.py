@@ -333,7 +333,7 @@ def test_skill_bodies_no_stale_panel_review_claim():
 # Terminal Compression Check (spec-verbosity-reduction) — R1/R3 sentinel-span
 # byte-pins across the two panel-review.md copies + the R2 section/pointer wiring.
 # --------------------------------------------------------------------------- #
-SENTINEL_IDS = ("canonical-section-rule", "under-doc-guardrail", "bake-resolution")
+SENTINEL_IDS = ("bake-resolution",)
 
 
 def extract_sentinel_block(text: str, sid: str) -> str:
@@ -358,9 +358,6 @@ def test_r1_r3_shared_prose_mirrored():
         a = extract_sentinel_block(sdd, sid)  # distinct AssertionError if a sentinel is missing
         b = extract_sentinel_block(bp, sid)
         assert a == b, f"SHARED-DOCTRINE span diverges across copies: {sid!r}"
-    # DEF-06 tie-break and DEF-07 worked example live INSIDE their spans (so the byte-pin covers them)
-    assert "**Tie-break.**" in extract_sentinel_block(sdd, "canonical-section-rule")
-    assert "**Worked example.**" in extract_sentinel_block(sdd, "under-doc-guardrail")
     # (b) the whole ## Terminal Compression Check section byte-identical across the two convergence
     # copies — exact compare (no rstrip; tail-whitespace / trailing blank-line drift between the
     # mirrored copies is real divergence and must fail).
@@ -434,18 +431,38 @@ R4_HOMES = (
 )
 
 
+def extract_bake_bullet(text: str) -> str:
+    """Return the drafter's bake-resolution list item — from the '- **Bake the
+    resolution' line up to (not including) the next top-level '- ' sibling or the
+    blank line ending the item (the test-M01 extraction boundary)."""
+    started = False
+    out = []
+    for ln in text.split("\n"):
+        if not started:
+            if ln.lstrip().startswith("- **Bake the resolution"):
+                started = True
+                out.append(ln)
+            continue
+        if ln.strip() == "" or ln.lstrip().startswith("- "):
+            break
+        out.append(ln)
+    assert started, "bake-resolution bullet not found"
+    return "\n".join(out)
+
+
 def test_r1_canonical_and_guardrail_present():
+    # R1 (terminal-only-subtraction): the two subtractive SHARED-DOCTRINE blocks
+    # (canonical-section-rule + under-doc-guardrail) were REMOVED from step 3 of
+    # ## The Loop. This guard is INVERTED from its pre-removal form — the
+    # identifier is retained per design ("identifier may stay, but its assertions
+    # flip") — and now asserts both sentinels are ABSENT from both copies.
     for skill in ("sdd", "blueprint"):
         core = _read(SKILLDIRS[skill] / "panel-review.md")
-        canon = extract_sentinel_block(core, "canonical-section-rule")
-        guard = extract_sentinel_block(core, "under-doc-guardrail")
-        assert "**Canonical-section rule.**" in canon, f"{skill}: canonical-section-rule marker"
-        assert "**Tie-break.**" in canon, f"{skill}: DEF-06 tie-break sub-marker inside the span"
-        assert "**Under-documentation guardrail.**" in guard, f"{skill}: under-doc-guardrail marker"
-        assert "**Worked example.**" in guard, f"{skill}: DEF-07 worked-example sub-marker inside the span"
-        # the spans live on the Addressed disposition (R1 obligation attaches there)
-        assert core.index("SHARED-DOCTRINE:canonical-section-rule") > core.index("- **Addressed**"), (
-            f"{skill}: canonical-section-rule span is not on the Addressed disposition"
+        assert "SHARED-DOCTRINE:canonical-section-rule" not in core, (
+            f"{skill}: canonical-section-rule block must be removed (R1)"
+        )
+        assert "SHARED-DOCTRINE:under-doc-guardrail" not in core, (
+            f"{skill}: under-doc-guardrail block must be removed (R1)"
         )
 
 
@@ -477,9 +494,53 @@ def test_r3_bake_resolution_present():
         core = _read(SKILLDIRS[skill] / "panel-review.md")
         bake = extract_sentinel_block(core, "bake-resolution")
         assert "**Bake the resolution, not the debate.**" in bake, f"{skill}: synthesizer bake-resolution marker"
+        # R2 (terminal-only-subtraction): the synth block carries the target-state
+        # modality worked pair — two fixed labels IN ORDER, each followed by
+        # non-empty example text. DEF-05: the labels + non-emptiness are the
+        # structural anchor; semantic adequacy stays a human-review concern.
+        nc = bake.find("**Non-compliant (already-true):**")
+        cc = bake.find("**Compliant (target-voice):**")
+        assert nc != -1 and cc != -1 and nc < cc, (
+            f"{skill}: bake-resolution missing the ordered modality worked-pair labels"
+        )
+        between = bake[nc + len("**Non-compliant (already-true):**"):cc].strip()
+        after = bake[cc + len("**Compliant (target-voice):**"):].strip()
+        assert between, f"{skill}: no example text between the modality labels"
+        assert after, f"{skill}: no example text after the Compliant label"
+    # R2 (terminal-only-subtraction): each drafter carries the terse micro-cue
+    # WITHIN its bake-resolution bullet span (not merely somewhere file-wide).
     for name in DRAFTER_AGENTS:
-        text = _read(AGENTS_DIR / f"{name}.md")
-        assert "Bake the resolution, not the debate" in text, f"{name}: R3 drafter bullet missing"
+        bullet = extract_bake_bullet(_read(AGENTS_DIR / f"{name}.md"))
+        assert "Bake the resolution, not the debate" in bullet, f"{name}: R3 drafter bullet missing"
+        assert "target voice" in bullet and "already-true" in bullet, (
+            f"{name}: drafter bullet missing the target-state modality micro-cue"
+        )
+
+
+def test_bake_resolution_bullet_six_way_parity():
+    # R2 (terminal-only-subtraction): the drafter bake-resolution bullet — the whole
+    # list item incl. the appended micro-cue — is byte-identical across all six drafters.
+    bullets = {name: extract_bake_bullet(_read(AGENTS_DIR / f"{name}.md")) for name in DRAFTER_AGENTS}
+    assert len(set(bullets.values())) == 1, (
+        "drafter bake-resolution bullets diverge across the six agents"
+    )
+
+
+def test_convergence_retired_phrases_absent():
+    # R3 / I5 (terminal-only-subtraction): the two phrases R1 made dangling are gone
+    # from both convergence copies; the Terminal Check's own legitimate "purely
+    # subtractive" self-description survives (the I5 substring must not catch it).
+    for skill in ("sdd", "blueprint"):
+        conv = _read(SKILLDIRS[skill] / "panel-review-convergence.md")
+        assert "subtractive `Addressed`" not in conv, (
+            f"{skill}: retired 'subtractive `Addressed`' reference still present"
+        )
+        assert "under-documentation guardrail" not in conv, (
+            f"{skill}: retired 'under-documentation guardrail' reference still present"
+        )
+        assert "purely subtractive" in conv, (
+            f"{skill}: legitimate 'purely subtractive' self-description missing"
+        )
 
 
 def test_r4_plainer_form_present():
