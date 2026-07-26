@@ -32,6 +32,28 @@ Thumbs.db
 /.sdd/pending-review.lock
 /.sdd/*.tmp
 
+# Panel-review findings scratch (per-run working state written by the panel
+# loop; author-side, never shipped). Ignore the dir, not all of .sdd/.
+/.sdd/panel-findings/
+
 # SDD working artifacts — author-side specs/design/tasks, NOT part of the
 # shipped plugin (the plugin is telescoping-sdd/). Do not ship.
 /specs/
+/blueprint/
+
+# Author-side working notes and evaluation records. Listed EXPLICITLY rather than
+# by wildcard, so a new root-level doc is never silently ignored.
+#
+# ⚠️ Several of these quote internals of a private downstream project (the
+# `residents` / oakleigh site) used for dogfooding — V2_24_1_REVIEW.md and
+# PROMPT-EVAL-RESULTS.md in particular. This repo is PUBLIC. Ignoring them here
+# so a `git add -A` cannot stage them.
+/WORKING-NOTES.md
+/MULTI-TYPE.md
+/VERBOSITY-REVIEW.md
+/V2_24_1_REVIEW.md
+/OPUS5-PROMPTING-REVIEW.md
+/PROMPT-EVAL-RESULTS.md
+# NOT ignored, deliberately: PROMPT-EVAL-METHOD.md — written subject-agnostic
+# (it names no private project) so it can be committed as maintainer docs. Left
+# visible so that stays an explicit choice rather than an accident.

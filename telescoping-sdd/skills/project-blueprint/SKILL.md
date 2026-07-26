@@ -153,6 +153,10 @@ When an approved document is edited (by Claude at the user's request, by the use
 
 > **WARNING:** Re-stamping is silent; **The panel-review DECISION is not.** The "do not prompt to re-stamp" momentum of steps 1–2 must NOT carry past step 3: going straight from re-stamp → cascade without running the upstream panel re-review on a non-trivial edit is a **flow violation**. The git-ignored `.sdd/pending-review.json` marker turns a skipped step 3 into a later validation FAIL, and `--decline-pending` is a **doctrine-classified, auditable act** (a user-surfaced decline) — never an agent convenience skip to dodge a panel it judged "unnecessary". (project-blueprint has no Phase-4 task-tick carve-out.)
 
+## Communication
+
+Keep operator-facing output brief. The mandated surfaces (tier announce, pass summary, gate prompts, reset offer) are the communication budget — say what they require and stop. Brevity never means dropping a mandated surface or omitting what it requires. When a pass or phase finishes, lead with the outcome: the first sentence answers "what happened," with supporting detail after it. Only correct an earlier statement when the error changes the user's decision; otherwise fix it and move on.
+
 ## See also
 
 - `references/hash-and-cascade.md` — full hash-handling flow: mid-stream entry, re-approval after edits, the cascade, the halt-on-substantive-divergence rule, and the optional panel re-review recommendation. Read this whenever an approved document changes.

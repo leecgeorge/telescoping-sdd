@@ -30,6 +30,8 @@ Review your draft for three categories of issues.
 - Does each high-level statement have the supporting detail needed to act on it?
 - Does every requirement have at least one acceptance criterion? Every component at least one mention of how it's built? Every task a verification command?
 
+**Substantive means specific, not long.** A section that says the one thing it has to say is done — do not close a gap by padding. Gaps are missing *content*, not missing *words*.
+
 ## Fix-or-Flag Discipline
 
 For each issue you find:
