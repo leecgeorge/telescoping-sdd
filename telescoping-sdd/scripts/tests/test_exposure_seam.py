@@ -58,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.24.0"
-CHANGELOG_FIRST_ENTRY = "## 2.24.0 — Opus-5 prompt alignment (length, cadence, task scope) + panel output-contract fixes"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.24.1"
+CHANGELOG_FIRST_ENTRY = "## 2.24.1 — Panelist manifest: HIGH count only (drop the unconsumed MED/LOW tallies)"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
