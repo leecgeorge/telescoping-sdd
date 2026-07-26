@@ -2180,7 +2180,7 @@ def main():
     if args.strict_r5 and not args.completion_gate:
         parser.error("--strict-r5 is only valid with --completion-gate")
 
-    # Best-effort .sdd/ cruft cleanup at process exit (WORKING-NOTES Item 2).
+    # Best-effort .sdd/ cruft cleanup at process exit.
     # Registered AFTER the arg-validation sys.exit(2)/parser.error guards above
     # (a malformed invocation exits before registering) and before the mode
     # dispatch. Uses _resolve_marker_root_and_key(...)[0] — the SAME write-side

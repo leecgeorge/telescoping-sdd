@@ -26,7 +26,7 @@ Actions:
 3. Invoke the `feature-spec-analyst` subagent to draft `spec.md` from the language-specific template, passing the user's requirements and the required sections
 4. Read the agent-written `spec.md` from disk (`specs/cli-todo-app/spec.md`) — the agent already wrote it; confirm non-empty before self-review
 5. Self-review spec.md for inconsistencies, inaccuracies, and gaps (up to 5 passes)
-6. Run the spec panel (`telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`) against spec.md following the loop in `references/panel-review.md` (synthesize, dispose, populate `### Latest pass detail`, run Synthesizer Self-Check, invoke `archive_pass.py`, halt-trigger check, exit on zero HIGHs)
+6. Run the spec panel (`telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`) against spec.md following the loop in `references/panel-review.md` (synthesize, dispose, populate `### Latest pass detail`, run Synthesizer Self-Check, invoke `archive_pass.py`, halt-trigger check, exit on zero unresolved HIGHs — HIGHs other than those dismissed with a recorded `Defense:`)
 7. Run validate_spec.py on the spec
 8. Present spec.md for review
 9. Wait for approval before the design phase

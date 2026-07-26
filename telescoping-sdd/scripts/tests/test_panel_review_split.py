@@ -54,15 +54,98 @@ MODES_SECTIONS = [
     "## When to Skip the Panel",
     "## Handling change requests at the review gate",
 ]
-# The ONLY divergences allowed between the pre-split golden body and the relocated
-# sub-ref body — the positional cross-refs the split had to rewrite.
-ALLOWLIST = [
+# Divergences allowed between the pre-split golden body and the relocated sub-ref
+# body. Two named lists, applied in sequence, because they are two different
+# kinds of divergence with two different disciplines (AD16):
+#
+#   SPLIT_REWRITES           the positional cross-refs the SPLIT itself had to
+#                            rewrite. Unscoped, all-occurrences — exactly as
+#                            before; this half is unchanged.
+#   POST_SPLIT_CONTENT_EDITS deliberate CONTENT edits landed after the split, by
+#                            features that must touch a MOVED section. Each is
+#                            section-scoped and must match EXACTLY ONE
+#                            occurrence inside that heading's golden extract.
+#
+# The pattern is EXTEND THIS LIST, NEVER EDIT THE GOLDENS: `_wcr_goldens.py` is
+# the pre-split provenance snapshot, and rewriting it would make the fidelity
+# check compare the change against itself.
+SPLIT_REWRITES = [
     ("(panel skip, below)", "(`panel-review-modes.md § When to Skip the Panel`)"),
     (
         "**Synthesizer Self-Check** (§ above)",
         "**Synthesizer Self-Check** (`panel-review.md § Synthesizer Self-Check`)",
     ),
 ]
+
+# (heading, old, new) — `heading` scopes the substitution to one MOVED section.
+POST_SPLIT_CONTENT_EDITS: list[tuple[str, str, str]] = [
+    # severity-definition-and-exit-predicate (v2.25.0): the unresolved-HIGH
+    # exit predicate. These land in the SAME commit as the prose edit — the
+    # fidelity check goes red the instant the convergence prose changes.
+    (
+        '## Strict-Bar Convergence Mode',
+        'If a strict-bar pass returns HIGHs, those are genuine this-phase decisions — dispose them normally (often `Sealed`, `Accepted as risk`, or `User input needed`) and run another pass. Mode stays STRICT-BAR.',
+        'If a strict-bar pass returns HIGHs, those are genuine this-phase decisions. Which way the pass goes depends on how they are disposed — the same unresolved-HIGH test `## The Loop` step 8 states:\n\n- **Any HIGH is left unresolved** — disposed `Addressed`, `Deferred → <target>`, `User input needed`, `Halt and re-scope`, or not yet disposed — dispose them normally and run another pass. Mode stays STRICT-BAR. This is unchanged from before.\n- **Every HIGH this pass is disposed `Sealed` or `Accepted as risk`** (each carrying its recorded `Defense:`) — the pass **converged**. Do not run another pass for them. Because this is a STRICT-BAR pass, it exits through the **exit cross-check** below rather than exiting directly.\n- **No HIGH at all** — converged; likewise take the exit cross-check.\n\nThis and `### Exit paths by mode` state one rule between them: a STRICT-BAR pass with no *unresolved* HIGH routes to the cross-check; one with any unresolved HIGH loops.',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        '| NORMAL | 0 HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |',
+        '| NORMAL | 0 unresolved HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        '| NORMAL | HIGHs remain | At the 5-pass cap',
+        '| NORMAL | unresolved HIGHs remain | At the 5-pass cap',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        '| STRICT-BAR | 0 HIGHs | Run the exit cross-check (above) before exiting |',
+        '| STRICT-BAR | 0 unresolved HIGHs | Run the exit cross-check (above) before exiting |',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        '| STRICT-BAR | HIGHs remain | At the 5-pass cap',
+        '| STRICT-BAR | unresolved HIGHs remain | At the 5-pass cap',
+    ),
+    (
+        '## Halt and Re-scope Exit',
+        'distinct from the HIGH-count exit (which fires on successful convergence).',
+        'distinct from the unresolved-HIGH exit (which fires on successful convergence — a pass leaving no HIGH other than those dismissed with a recorded `Defense:`; see `## The Loop` step 8).',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        'When a STRICT-BAR pass returns **zero HIGHs**, do not exit directly.',
+        'When a STRICT-BAR pass returns **zero unresolved HIGHs** — no HIGH other than those disposed `Sealed` / `Accepted as risk` — do not exit directly.',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        '- **Cross-check returns 0 HIGHs** → exit the loop. Proceed to validation.',
+        '- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to validation.',
+    ),
+]
+
+
+def _apply_allowlists(golden_section: str, heading: str) -> str:
+    """Apply both allow-lists to one extracted golden section.
+
+    `SPLIT_REWRITES` keeps its historical unscoped, all-occurrences semantics.
+    `POST_SPLIT_CONTENT_EDITS` is scoped to `heading` and bounded to exactly one
+    occurrence — the bound is asserted here rather than left to `replace`, since
+    an unbounded `replace` is precisely how one entry silently excuses a second,
+    unclassified divergence.
+    """
+    for old, new in SPLIT_REWRITES:
+        golden_section = golden_section.replace(old, new)
+    for entry_heading, old, new in POST_SPLIT_CONTENT_EDITS:
+        if entry_heading != heading:
+            continue
+        found = golden_section.count(old)
+        assert found == 1, (
+            f"POST_SPLIT_CONTENT_EDITS entry for {entry_heading!r} matched "
+            f"{found} occurrences of {old[:60]!r}, expected exactly 1"
+        )
+        golden_section = golden_section.replace(old, new, 1)
+    return golden_section
 
 
 def _read(p: Path) -> str:
@@ -120,9 +203,7 @@ def test_moved_sections_verbatim_except_allowlist():
             "modes": _read(base / "panel-review-modes.md"),
         }
         for heading, home in MOVED.items():
-            g = extract_section(golden, heading)
-            for old, new in ALLOWLIST:
-                g = g.replace(old, new)
+            g = _apply_allowlists(extract_section(golden, heading), heading)
             s = extract_section(subref[home], heading)
             assert g.rstrip() == s.rstrip(), (
                 f"{skill} {heading!r}: relocated body diverged from the pre-split "
@@ -313,3 +394,66 @@ def test_skill_bodies_no_stale_panel_review_claim():
                         f"panel-review.md in: {spot[:90]!r}"
                     )
                     idx = low.find(alias, idx + len(alias))
+
+
+# --------------------------------------------------------------------------- #
+# POST_SPLIT_CONTENT_EDITS bounds (AD16 / AD10 discipline)
+# --------------------------------------------------------------------------- #
+def _golden_sections_for(heading: str) -> dict:
+    return {skill: extract_section(golden, heading) for skill, golden in GOLDENS.items()}
+
+
+def test_post_split_entry_matches_exactly_one_occurrence():
+    """Upper bound: an entry must not silently excuse a second divergence.
+
+    Asserted per tier, because an entry is applied to both and a phrase that is
+    unique in one copy is not guaranteed unique in the other.
+    """
+    for heading, old, _new in POST_SPLIT_CONTENT_EDITS:
+        assert heading in MOVED, (
+            f"POST_SPLIT_CONTENT_EDITS entry names {heading!r}, which is not a "
+            f"MOVED section; only MOVED sections are golden-checked."
+        )
+        for skill, section in _golden_sections_for(heading).items():
+            found = section.count(old)
+            assert found == 1, (
+                f"{skill} {heading!r}: entry old-text {old[:60]!r} occurs "
+                f"{found} times in the golden extract, expected exactly 1."
+            )
+
+
+def test_post_split_has_no_unused_entry():
+    """Lower bound: an entry whose target was reworded away must not linger."""
+    unused = []
+    for heading, old, _new in POST_SPLIT_CONTENT_EDITS:
+        if heading not in MOVED:
+            continue
+        if not any(old in sec for sec in _golden_sections_for(heading).values()):
+            unused.append((heading, old[:60]))
+    assert not unused, (
+        f"POST_SPLIT_CONTENT_EDITS entries match nothing in the goldens and "
+        f"have rotted into permanent waivers: {unused}"
+    )
+
+
+def test_post_split_substitution_is_order_independent():
+    """Applying the entries in reverse must give the same result (`[DEF-15]`).
+
+    The exactly-one-occurrence bound is what makes order irrelevant; this is
+    what proves it stayed that way as entries accumulate.
+    """
+    global POST_SPLIT_CONTENT_EDITS
+    original = POST_SPLIT_CONTENT_EDITS
+    try:
+        for skill, golden in GOLDENS.items():
+            for heading in MOVED:
+                POST_SPLIT_CONTENT_EDITS = original
+                forward = _apply_allowlists(extract_section(golden, heading), heading)
+                POST_SPLIT_CONTENT_EDITS = list(reversed(original))
+                reverse = _apply_allowlists(extract_section(golden, heading), heading)
+                assert forward == reverse, (
+                    f"{skill} {heading!r}: allow-list substitution is "
+                    f"order-dependent; two entries must be overlapping."
+                )
+    finally:
+        POST_SPLIT_CONTENT_EDITS = original

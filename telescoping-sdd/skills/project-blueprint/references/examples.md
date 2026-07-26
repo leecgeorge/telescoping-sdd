@@ -25,7 +25,7 @@ Actions:
 2. Invoke the `project-spec-analyst` subagent to draft `SCOPE.md` from the template, passing the user's requirements and the required sections
 3. Read the agent-written `SCOPE.md` from disk (`blueprint/SCOPE.md`) — the agent already wrote it; confirm non-empty before self-review
 4. Self-review SCOPE.md for inconsistencies, inaccuracies, and gaps (up to 5 passes)
-5. Run the scope panel (`telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`) against SCOPE.md following the loop in `references/panel-review.md` (synthesize, dispose, populate `### Latest pass detail`, run Synthesizer Self-Check, invoke `archive_pass.py`, halt-trigger check, exit on zero HIGHs)
+5. Run the scope panel (`telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`) against SCOPE.md following the loop in `references/panel-review.md` (synthesize, dispose, populate `### Latest pass detail`, run Synthesizer Self-Check, invoke `archive_pass.py`, halt-trigger check, exit on zero unresolved HIGHs — HIGHs other than those dismissed with a recorded `Defense:`)
 6. Run validate_blueprint.py on the scope
 7. Present SCOPE.md for review
 8. Wait for approval before proceeding to architecture

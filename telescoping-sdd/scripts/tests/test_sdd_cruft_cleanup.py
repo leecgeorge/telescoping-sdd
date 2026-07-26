@@ -1,4 +1,4 @@
-"""Tests for best-effort `.sdd/` cruft cleanup (WORKING-NOTES Item 2).
+"""Tests for best-effort `.sdd/` cruft cleanup.
 
 Covers `sweep_sdd_cruft(marker_root)` in `pending_review.py`: the unified
 non-blocking LOCK_EX|LOCK_NB gate that sweeps orphaned `*.tmp` atomic-write

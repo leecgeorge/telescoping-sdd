@@ -56,4 +56,4 @@ The synthesizer reads each panelist's declined list and checks whether any "decl
 
 Strict-bar concerns are written into `### Latest pass detail` exactly like normal-pass concerns and disposed normally — `Addressed`, `Deferred → <target>`, `Sealed`, `Accepted as risk`, `User input needed`, or `Halt and re-scope`. Concerns that clear the strict bar are scope/architecture/plan-shaped by construction and frequently warrant `Sealed` or `Accepted as risk` (both promote to `### Sealed dispositions`).
 
-Archive a strict-bar pass with `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --strict-bar` — this stamps the `### Trajectory` Notes column so the trajectory records the mode. See `panel-review.md` for the exit cross-check that runs once a strict-bar pass returns zero HIGHs.
+Archive a strict-bar pass with `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --strict-bar` — this stamps the `### Trajectory` Notes column so the trajectory records the mode. See `panel-review.md` for the exit cross-check that runs once a strict-bar pass returns zero unresolved HIGHs.
