@@ -2,6 +2,9 @@
 
 All notable changes to the **telescoping-sdd** plugin — the two-tier methodology of `project-blueprint` (project tier) and `spec-driven-dev` (feature tier). Newest first.
 
+## 2.24.1 — Panelist manifest: HIGH count only (drop the unconsumed MED/LOW tallies)
+Subtractive follow-up to 2.24.0's severity census. The MED/LOW integers had no consumer — step 2's presence check reads only the HIGH count — and proved unreliable: a panelist declared `7 MED` over a findings file holding 8. The HIGH count survives because a panelist derives it from the anchors it has just enumerated, so it is self-consistent and checkable without reading any file. `counts: 0 HIGH` with `anchors: (none)` remains the compliant manifest for a quiet pass, so 2.24.0's actual fix is untouched. Both `panel-review.md` copies plus the ten panelist `## Output Format` headers; prose only — no script, validator, or content-hash change.
+
 ## 2.24.0 — Opus-5 prompt alignment (length, cadence, task scope) + panel output-contract fixes
 **Impact:** drafted designs come out roughly a third shorter — −27.6% to −37.5% across three dogfooded features — at **identical specification coverage** (zero acceptance criteria dropped across 201 blind assessments of six drafts), so the gain is *cost* rather than quality: less to read at every review gate and less context carried downstream.
 

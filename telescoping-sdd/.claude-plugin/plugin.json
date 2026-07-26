@@ -1,7 +1,7 @@
 {
   "name": "telescoping-sdd",
   "description": "Telescoping Spec-Driven Development: project-blueprint (project tier) + spec-driven-dev (feature tier)",
-  "version": "2.24.0",
+  "version": "2.24.1",
   "author": {
     "name": "Lee George"
   },
