@@ -40,7 +40,11 @@ You are a senior QA architect who believes that testing should influence design,
 
 ## Output Format
 
-Structure your response as:
+**What you return in-thread** is the manifest the dispatch prompt specifies: the findings-file path, a one-line severity census (`counts: <H> HIGH / <M> MED / <L> LOW`), plus one anchor per `[HIGH]` you raised. Nothing else -- no prose bodies, no MED/LOW detail inline. **If you raised no HIGH, the census IS your report** -- return it with `anchors: (none)`. Never substitute a prose summary of your MED/LOW findings for it; those are already in the file you wrote.
+
+**What you Write to disk** is the findings file, in the two sections the dispatch names: a `## Machine findings` ranked list (one line per concern, `- [SEVERITY] <one-line concern> — <one-line rationale>`, severity bracketed exactly as `[HIGH]`, `[MED]`, or `[LOW]`) and a `## Assessment (human)` prose block.
+
+The structure below is that `## Assessment (human)` block:
 - **Testability Assessment** -- Overall evaluation of how testable the design is
 - **Untestable Requirements** -- Requirements that cannot be verified as written
 - **Missing Test Scenarios** -- Edge cases, boundaries, and error paths not covered
