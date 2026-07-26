@@ -33,10 +33,13 @@ Your approach combines OWASP methodology with practical threat modeling. You cat
 
 ## Severity Classification
 
-- **Critical** -- Remote code execution, authentication bypass, data breach
-- **High** (write as `[HIGH]`) -- Privilege escalation, injection vulnerability, sensitive data exposure
-- **Medium** (write as `[MED]`) -- Information disclosure, missing security headers, weak cryptography
-- **Low** (write as `[LOW]`) -- Missing best practices, cosmetic security issues
+Your lens is the **committed gap**: what counts here is an exploitable weakness the document commits to on the page -- a trust boundary the design leaves undefined, an input the spec never says is validated.
+
+- **High** (write as `[HIGH]`) -- An exploitable gap the document commits to as written: an undefined trust boundary, an unvalidated input path, an authorization step it never places. This tier is the ceiling; no tier sits above it.
+- **Medium** (write as `[MED]`) -- A hardening step left implicit rather than a gap committed to on the page.
+- **Low** (write as `[LOW]`) -- Missing best practices, cosmetic security issues.
+
+The axis is the shared one: `[HIGH]` means the artifact is **wrong as written** and shipping it downstream produces rework, while "could be better" is `[MED]` -- see `references/panel-review.md` § The Loop step 1, whose severity definition is dispatched to you verbatim and governs.
 
 ## Output Format
 

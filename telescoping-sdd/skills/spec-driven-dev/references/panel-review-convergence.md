@@ -6,7 +6,7 @@
 
 The panel can signal that an artifact's problems are scope-shaped — that iterating the panel won't help because the feature is fundamentally the wrong size or boundary. When that signal fires across two consecutive passes, the spec loop halts and routes to the project-blueprint amendment workflow to re-decide feature boundaries. The original spec stays in its current state with the halt recorded in its Trajectory; the amendment workflow produces new boundaries; the spec loop restarts on each re-scoped artifact.
 
-This is the **scope-pivot exit** — distinct from the soft pass budget (a fallback for general convergence failure) and distinct from the HIGH-count exit (which fires on successful convergence).
+This is the **scope-pivot exit** — distinct from the soft pass budget (a fallback for general convergence failure) and distinct from the unresolved-HIGH exit (which fires on successful convergence — a pass leaving no HIGH other than those dismissed with a recorded `Defense:`; see `## The Loop` step 8).
 
 **When to use the `Halt and re-scope` disposition.** When a panelist raises a scope-shaped concern, judge:
 
@@ -101,13 +101,19 @@ The user can also request strict-bar without waiting for the trigger — saying 
 
 Same panelists, same loop steps 1–7. The only change is the invocation prompt: load `references/strict-bar-prompts.md` and append the core filter rule, the current phase's excluded/required lists, and the inspectability instruction to every panelist's prompt. Synthesize, dispose, self-check, and archive as normal — but archive with `python <shared-script-path>/archive_pass.py <artifact> --phase <N> --strict-bar` so the Trajectory Notes record the mode. (For the terminal Phase-3 artifact `tasks.md`, add `--terminal` as well — `archive_pass.py` hard-rejects that filename without it; see the Terminal-archive invocation in `## The Loop`, step 6.)
 
-If a strict-bar pass returns HIGHs, those are genuine this-phase decisions — dispose them normally (often `Sealed`, `Accepted as risk`, or `User input needed`) and run another pass. Mode stays STRICT-BAR.
+If a strict-bar pass returns HIGHs, those are genuine this-phase decisions. Which way the pass goes depends on how they are disposed — the same unresolved-HIGH test `## The Loop` step 8 states:
+
+- **Any HIGH is left unresolved** — disposed `Addressed`, `Deferred → <target>`, `User input needed`, `Halt and re-scope`, or not yet disposed — dispose them normally and run another pass. Mode stays STRICT-BAR. This is unchanged from before.
+- **Every HIGH this pass is disposed `Sealed` or `Accepted as risk`** (each carrying its recorded `Defense:`) — the pass **converged**. Do not run another pass for them. Because this is a STRICT-BAR pass, it exits through the **exit cross-check** below rather than exiting directly.
+- **No HIGH at all** — converged; likewise take the exit cross-check.
+
+This and `### Exit paths by mode` state one rule between them: a STRICT-BAR pass with no *unresolved* HIGH routes to the cross-check; one with any unresolved HIGH loops.
 
 ### Exit cross-check
 
-When a STRICT-BAR pass returns **zero HIGHs**, do not exit directly. Run **one** final NORMAL panel pass as an audit, and archive it with `--cross-check` (this pass does **not** count toward the 5-pass cap). Then judge its HIGHs:
+When a STRICT-BAR pass returns **zero unresolved HIGHs** — no HIGH other than those disposed `Sealed` / `Accepted as risk` — do not exit directly. Run **one** final NORMAL panel pass as an audit, and archive it with `--cross-check` (this pass does **not** count toward the 5-pass cap). Then judge its HIGHs:
 
-- **Cross-check returns 0 HIGHs** → exit the loop. Proceed to validation.
+- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to validation.
 - **Cross-check returns HIGHs that all match the strict-bar prompt's exclusion categories** (Phase 1/2: design choices, task breakdown, test strategy, etc.; Phase 3: all tagged `[detail]` per `## Concern tagging (Phase 2 and 3)`) → exit the loop, validated. The cross-check confirmed the strict bar filtered correctly; record and dispose its concerns exactly as a normal pass would (§ The Loop, step 3) before archiving.
 - **Cross-check returns any `[upstream]`-tagged HIGH** (Phase 2 or 3 only) → halt-and-rescope. `archive_pass.py` auto-routes the `[upstream]` row to a halt vote; the cross-check trajectory row will carry "halt vote" in Notes. Surface this to the user using the `[upstream]`-tag halt prompt in `## Halt and Re-scope Exit`. Do not silently filter `[upstream]` concerns as "strict-bar exclusion match."
 - **Cross-check returns HIGHs that do *not* match the excluded categories** (Phase 1/2: a real at-this-phase concern slipped past strict bar; Phase 3: a `[contract]`-tagged concern slipped past) → the strict bar over-filtered. Set mode back to NORMAL, dispose the cross-check's concerns normally, and continue the loop from step 1. **The 5-pass cap counter does NOT reset** — something unusual is happening, so the user-decision gate stays where it is.
@@ -116,10 +122,10 @@ When a STRICT-BAR pass returns **zero HIGHs**, do not exit directly. Run **one**
 
 | Mode | Pass result | Path |
 |---|---|---|
-| NORMAL | 0 HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |
-| NORMAL | HIGHs remain | At the 5-pass cap → stop at the cap gate (ask user: continue or move on). Under cap → stay NORMAL, or (trigger fired and user confirms / user requested) switch the next pass to STRICT-BAR |
-| STRICT-BAR | 0 HIGHs | Run the exit cross-check (above) before exiting |
-| STRICT-BAR | HIGHs remain | At the 5-pass cap → stop at the cap gate (ask user: continue or move on). Under cap → dispose the strict HIGHs and stay STRICT-BAR |
+| NORMAL | 0 unresolved HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |
+| NORMAL | unresolved HIGHs remain | At the 5-pass cap → stop at the cap gate (ask user: continue or move on). Under cap → stay NORMAL, or (trigger fired and user confirms / user requested) switch the next pass to STRICT-BAR |
+| STRICT-BAR | 0 unresolved HIGHs | Run the exit cross-check (above) before exiting |
+| STRICT-BAR | unresolved HIGHs remain | At the 5-pass cap → stop at the cap gate (ask user: continue or move on). Under cap → dispose the strict HIGHs and stay STRICT-BAR |
 
 ### Cap accounting
 

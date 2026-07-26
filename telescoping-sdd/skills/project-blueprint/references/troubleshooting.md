@@ -48,10 +48,15 @@ Otherwise the copies differ only cosmetically (terminology mapping, example word
 - **Cause:** The auto-fix didn't actually resolve the concern — the panel sees the same issue on the next pass.
 - **Solution:** Stop the loop and ask the user. Either the fix was too shallow (apply a deeper one), or the concern is a judgment call that needs user input, or the concern should be `Accepted as risk`.
 
-## Panel review hits the 5-pass cap with HIGH concerns remaining
+## Panel review hits the 5-pass cap with unresolved HIGH concerns remaining
 
-- **Cause:** The panel and auto-fix loop is producing new HIGH-severity concerns every pass without converging. MEDIUM/LOW concerns alone do not trigger this — the loop exits on zero HIGHs even if MEDIUM/LOW polish remains.
+- **Cause:** The panel and auto-fix loop is producing new HIGH-severity concerns every pass without converging. MEDIUM/LOW concerns alone do not trigger this — the loop exits on zero *unresolved* HIGHs — HIGHs other than those dismissed with a recorded `Defense:` — even if MEDIUM/LOW polish remains.
 - **Solution:** Ask the user to decide: continue reviewing (relaxes the cap for this phase), accept remaining HIGH concerns as known risks, or defer remaining concerns to a later phase if valid. Do not silently extend past 5 passes.
+
+## The loop exited but the last Trajectory row still shows a HIGH
+
+- **Cause:** A sealed exit. Every HIGH that pass was disposed `Sealed` or `Accepted as risk` with a recorded `Defense:`, so none was unresolved and the loop exited. The Notes cell reads `converged (0 unresolved HIGH); sealed=<N>`. The HIGHs column keeps recording HIGHs *raised*, which is why the two disagree — by design.
+- **Solution:** No action required; this is expected behaviour. To see why each was sealed, read the `Defense:` text in `### Sealed dispositions` (cumulative across passes and severities; each entry names its pass). To dispute a seal, re-open the panel loop and raise it with **new substantive evidence** — that is the one route step 1's suppression instruction leaves open; simply running another pass will not re-litigate it.
 
 ## Panel raises a concern that belongs in a later phase
 

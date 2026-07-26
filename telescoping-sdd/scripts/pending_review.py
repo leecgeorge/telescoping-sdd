@@ -868,7 +868,7 @@ def reconcile_to_result(
     return result
 
 
-# ----- Best-effort .sdd/ cruft cleanup (WORKING-NOTES Item 2) ---------------
+# ----- Best-effort .sdd/ cruft cleanup ------------------------------------
 
 
 def _sweep_panel_findings(sdd_dir: Path, findings_scope: Optional[str]) -> None:

@@ -791,6 +791,23 @@ def test_is_normal_pass_row_recognizes_normal_row():
     assert ap._is_normal_pass_row({"Notes": "halt vote tags=d2u0c1"}) is True
 
 
+def test_is_normal_pass_row_recognizes_sealed_exit_row():
+    """A sealed-exit row is still a NORMAL pass.
+
+    The stamp `converged (0 unresolved HIGH); sealed=<N>` contains none of the
+    exclusion substrings, so `_is_normal_pass_row` is unaffected — if it were
+    not, the strict-bar trigger would silently stop seeing these passes. The
+    strict-bar variant still classifies non-NORMAL on its mode tag, as before.
+    """
+    ap = _load_archive_pass()
+    assert ap._is_normal_pass_row(
+        {"Notes": "converged (0 unresolved HIGH); sealed=2"}
+    ) is True
+    assert ap._is_normal_pass_row(
+        {"Notes": "strict-bar pass; converged (0 unresolved HIGH); sealed=1"}
+    ) is False
+
+
 def test_parse_table_warns_on_unescaped_pipe_row(capsys):
     """A panel-table row whose cell count != header (an unescaped `|` in a
     Concern/Notes cell) must NOT be dropped silently — it would vanish from the

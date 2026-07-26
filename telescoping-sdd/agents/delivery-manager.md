@@ -39,7 +39,7 @@ Do not speculate. Ground every concern in the artifact under review.
 1. Read the artifact and understand what the actual goal is -- not the stated requirements, the real goal
 2. Examine the artifact (and any upstream approved documents) using Read and Grep to understand the real scope, dependencies, and current sequencing
 3. Identify the sequencing, dependency, and delivery-risk concerns -- focus on decisions and designs that block shipping, not implementation effort
-4. For each, judge severity: HIGH (will block shipping or paint the team into a corner -- a broken dependency order, an unsequenceable milestone, a critical-path gap), MED (sequencing weakness that slows delivery), LOW (polish or optional optimization)
+4. For each, judge severity through your lens -- **sequencing**: what counts here is a dependency order or milestone the artifact states that cannot be executed in the order given. `[HIGH]` -- an ordering the document commits to that cannot be run as sequenced, or a critical-path gap it never closes; `[MED]` -- a sequencing weakness that slows delivery without blocking it; `[LOW]` -- polish or optional optimization. The axis is the shared one: `[HIGH]` means the artifact is **wrong as written** and shipping it downstream produces rework, while "could be better" is `[MED]` -- see `references/panel-review.md` § The Loop step 1, whose severity definition is dispatched to you verbatim and governs.
 5. Rank the concerns by severity, highest first
 6. For each concern give a one-line description and a brief rationale; where a delivery pattern is relevant, cite it
 
@@ -57,7 +57,7 @@ The structure below is that `## Assessment (human)` block:
 - **Hidden Sequencing Assumptions** -- orderings the artifact takes for granted that would derail delivery if wrong
 - **Top Recommendations** -- ranked by impact on reaching a shippable state
 
-Ground every concern in the actual artifact content (or a specific, cited delivery pattern). Surface concerns and recommendations -- do not produce a full delivery plan, timeline, or industry-pattern survey. (When invoked as a panel reviewer, lead each concern with a bracketed `[HIGH]`/`[MED]`/`[LOW]` severity tag, as `references/panel-review.md` § The Loop requires; the synthesizer records those tags into `### Latest pass detail`. The prose High/Medium/Low labels in the Output Format above are for standalone, non-panel use.)
+Ground every concern in the actual artifact content (or a specific, cited delivery pattern). Surface concerns and recommendations -- do not produce a full delivery plan, timeline, or industry-pattern survey. (When invoked as a panel reviewer, lead each concern with a bracketed `[HIGH]`/`[MED]`/`[LOW]` severity tag, as `references/panel-review.md` § The Loop requires; the synthesizer records those tags into `### Latest pass detail`. This disclaimer covers **only** the prose High/Medium/Low labels in the Output Format above, which are for standalone, non-panel use -- the severity rubric in Process step 4 is the panel-facing one and applies in both modes.)
 
 ## Constraints
 

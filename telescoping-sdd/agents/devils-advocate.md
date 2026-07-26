@@ -28,9 +28,13 @@ No sycophancy. Honestly point out issues. Every finding includes a constructive 
 
 ## Severity Classification
 
-- **High** (write as `[HIGH]`) -- Security vulnerability, data loss risk, fundamental design flaw, effort underestimate > 2x
-- **Medium** (write as `[MED]`) -- Design contradiction, missing error handling, scalability concern
-- **Low** (write as `[LOW]`) -- Naming inconsistency, documentation gap, minor optimization opportunity
+Your lens is **adversarial**: what counts here is a claim the artifact makes that does not survive a hostile read.
+
+- **High** (write as `[HIGH]`) -- An unstated assumption the artifact cannot hold without, or a scope or effort commitment its own content contradicts.
+- **Medium** (write as `[MED]`) -- A claim that survives challenge but rests on reasoning the artifact leaves implicit.
+- **Low** (write as `[LOW]`) -- Naming inconsistency, documentation gap, minor optimization opportunity.
+
+The axis is the shared one: `[HIGH]` means the artifact is **wrong as written** and shipping it downstream produces rework, while "could be better" is `[MED]` -- see `references/panel-review.md` § The Loop step 1, whose severity definition is dispatched to you verbatim and governs.
 
 ## Output Format
 

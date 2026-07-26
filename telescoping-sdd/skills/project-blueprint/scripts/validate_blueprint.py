@@ -2385,7 +2385,7 @@ def main():
         print(f"Error: --project-root {project_root} is not a directory")
         sys.exit(2)
 
-    # Best-effort .sdd/ cruft cleanup at process exit (WORKING-NOTES Item 2).
+    # Best-effort .sdd/ cruft cleanup at process exit.
     # Registered AFTER the arg-validation sys.exit(2) guards above and before the
     # mode dispatch. Uses _resolve_marker_root_and_key(...)[0] — the SAME
     # write-side root the run's marker ops use — NOT raw arch_find_project_root,

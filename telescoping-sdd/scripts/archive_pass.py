@@ -21,10 +21,36 @@ so the trajectory records which mode the pass ran in:
   - `--cross-check` → Notes `cross-check pass (excluded from cap)`. A
     cross-check pass is exit ceremony and does NOT count toward the cap; the
     synthesizer excludes cross-check-noted rows when counting passes.
-Independent of mode, a pass with zero HIGH-severity concerns is marked
-`converged (0 HIGH)` in Notes. The marker is appended to any mode tag (e.g.
-`strict-bar pass; converged (0 HIGH)`) and is documentation-of-fact for the
-trajectory — the loop's exit decision still reads the HIGHs column directly.
+Independent of mode, a pass that leaves no *unresolved* HIGH is marked
+converged in Notes, in one of two forms:
+  - `converged (0 HIGH)`                          — no HIGH was raised at all.
+  - `converged (0 unresolved HIGH); sealed=<N>`   — N HIGHs were raised and all
+    of them were disposed `Sealed` / `Accepted as risk`.
+The exit test, on one line so it stays greppable:
+  no HIGH concerns other than those dismissed with a recorded `Defense:`
+i.e. the non-blocking set is exactly DEFENDED_DISPOSITIONS, the
+same set `validate_row` already requires a `Defense:` for. `Addressed`,
+`Deferred`, `Halt and re-scope` and `User input needed` all still block: an
+`Addressed` HIGH means an edit was made that nobody has reviewed.
+
+That `Defense:` check is deliberately **presence**-only — `validate_row`
+requires the literal token in the row's Notes and grades nothing after it.
+
+`sealed=<N>` is a stable machine token: the grammar `sealed=(\\d+)` is a
+published contract for later readers. Emitting it
+licenses observation, not enforcement — gating approval on its value would
+re-open the seal-justification question this design deliberately leaves to the
+`Defense:` requirement.
+
+Two things the stamp does NOT track. The `### Trajectory` **HIGHs** column
+keeps recording HIGHs *raised*, so a converged row may show a non-zero count;
+and the **Sealed column** counts `Sealed` / `Accepted as risk` rows of every
+severity, while `sealed=<N>` counts the HIGH-severity ones only — on a pass
+that sealed a MED the two legitimately differ. A converged row may also carry
+halt-vote text; read the whole Notes cell.
+
+The marker is appended to any mode tag (e.g. `strict-bar pass; converged
+(0 HIGH)`) and is documentation-of-fact for the trajectory.
 With either flag, an empty Latest pass detail still produces a trajectory row
 (all counts zero) so the mode pass is recorded. The flags are mutually
 exclusive with each other and with `--skip`.
@@ -92,6 +118,12 @@ DISPOSITION_LABELS = {
     "User input needed",
     "Halt and re-scope",
 }
+
+# The dispositions this script REQUIRES a `Defense:` for (see validate_row).
+# The exit predicate is defined as exactly this set, deliberately: it can then
+# be re-derived from the code rather than memorised, and it cannot drift from
+# what the archive actually enforces.
+DEFENDED_DISPOSITIONS = ("Sealed", "Accepted as risk")
 
 
 def disposition_base(disp: str) -> str:
@@ -365,7 +397,7 @@ def validate_row(row, line_num):
             f"Disposition '{disp}' not in vocabulary {sorted(DISPOSITION_LABELS)}",
             line_num,
         )
-    if disp_base in ("Sealed", "Accepted as risk"):
+    if disp_base in DEFENDED_DISPOSITIONS:
         if "Defense:" not in row.get("Notes", ""):
             raise FormatViolation(
                 "Sealed/Accepted-as-risk row must include 'Defense:' in Notes",
@@ -390,6 +422,37 @@ def extract_defense(notes):
 # --- Tag handling for Phases 2 and 3 (per blueprint-strict.md) -----------
 # Panelists prefix each HIGH finding's Concern with [contract] / [detail] /
 # [upstream]. Phase 1 doesn't use these tags; Phases 2 and 3 do.
+
+def high_disposition_counts(rows):
+    """Classify HIGH-severity Latest-pass-detail rows for the exit predicate.
+
+    A HIGH is *unresolved* when it carries no `Defense:`-backed disposition --
+    i.e. its disposition base is not in DEFENDED_DISPOSITIONS. `validate_row`
+    has already guaranteed that any such row carries `Defense:` in its Notes,
+    so "sealed" here implies "defended".
+
+    Args:
+        rows: parsed `### Latest pass detail` rows, each with "Severity" and
+            "Disposition".
+
+    Returns:
+        (raised, sealed_high, unresolved):
+          raised      -- HIGH rows of any disposition; what the HIGHs column records.
+          sealed_high -- HIGH rows disposed Sealed / Accepted as risk; the `sealed=<N>` token.
+          unresolved  -- raised - sealed_high; zero is the exit condition.
+
+    Pure over its argument. Malformed rows are rejected earlier by validate_row.
+    """
+    raised = 0
+    sealed_high = 0
+    for r in rows:
+        if "[HIGH]" not in r["Severity"]:
+            continue
+        raised += 1
+        if disposition_base(r["Disposition"]) in DEFENDED_DISPOSITIONS:
+            sealed_high += 1
+    return raised, sealed_high, raised - sealed_high
+
 
 TAG_NAMES = ("detail", "upstream", "contract")
 
@@ -1010,7 +1073,7 @@ def main():
                 new_content = _maybe_trim_trajectory(content, new_content)
                 write_or_diff(art, content, new_content, args.dry_run)
             sys.exit(EXIT_OK)
-        highs = sum(1 for r in latest_rows if "[HIGH]" in r["Severity"])
+        highs, sealed_high, unresolved_highs = high_disposition_counts(latest_rows)
         regressions = sum(1 for r in latest_rows if "[REGRESSION]" in r["Severity"])
         addressed = sum(
             1 for r in latest_rows
@@ -1022,7 +1085,7 @@ def main():
         )
         sealed_count = sum(
             1 for r in latest_rows
-            if disposition_base(r["Disposition"]) in ("Sealed", "Accepted as risk")
+            if disposition_base(r["Disposition"]) in DEFENDED_DISPOSITIONS
         )
         halt_rows = [
             r for r in latest_rows
@@ -1048,8 +1111,12 @@ def main():
             tag_parts.append("strict-bar pass")
         elif args.cross_check:
             tag_parts.append("cross-check pass (excluded from cap)")
-        if highs == 0:
-            tag_parts.append("converged (0 HIGH)")
+        if unresolved_highs == 0:
+            if sealed_high == 0:
+                tag_parts.append("converged (0 HIGH)")
+            else:
+                tag_parts.append("converged (0 unresolved HIGH)")
+                tag_parts.append(f"sealed={sealed_high}")
         # Stash tag counts for Phase 2/3 so detect_strict_bar_signal can read
         # them across passes (Latest is cleared after each archive).
         if args.phase in (2, 3):
@@ -1074,7 +1141,7 @@ def main():
         next_def = next_def_id(def_entries)
         for r in latest_rows:
             d = disposition_base(r["Disposition"])
-            if d in ("Sealed", "Accepted as risk"):
+            if d in DEFENDED_DISPOSITIONS:
                 title = derive_title(r["Concern"])
                 notes_field = r.get("Notes", "")
                 rerouted_def = False
