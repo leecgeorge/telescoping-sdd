@@ -90,7 +90,7 @@ POST_SPLIT_CONTENT_EDITS: list[tuple[str, str, str]] = [
     (
         '## Strict-Bar Convergence Mode',
         '| NORMAL | 0 HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |',
-        '| NORMAL | 0 unresolved HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |',
+        '| NORMAL | 0 unresolved HIGHs, nothing disposed `Addressed` | Exit directly (strict bar never ran, so no cross-check needed) |',
     ),
     (
         '## Strict-Bar Convergence Mode',
@@ -120,7 +120,33 @@ POST_SPLIT_CONTENT_EDITS: list[tuple[str, str, str]] = [
     (
         '## Strict-Bar Convergence Mode',
         '- **Cross-check returns 0 HIGHs** → exit the loop. Proceed to validation.',
-        '- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to validation.',
+        '- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to validation. **Unless any row this pass was disposed `Addressed`** — then the cross-check is not the exit; fall back to a NORMAL pass per the rule above.',
+    ),
+    # unreviewed-edit-doctrine (v2.26.0): A2 binds the priced-edit rule where
+    # the cross-check is defined. One narrow entry per edit — the lead-in
+    # binding, then each of the two exit-verdict bullets that would otherwise
+    # instruct an exit A2 forbids.
+    (
+        '## Strict-Bar Convergence Mode',
+        '(this pass does **not** count toward the 5-pass cap). Then judge its HIGHs:',
+        '(this pass does **not** count toward the 5-pass cap).\n\n**The priced-edit rule binds the cross-check, not the strict-bar pass that routed to it** (`panel-review.md § The Loop`, step 8). The cross-check is the pass that actually exits, so a row disposed `Addressed` on the cross-check means the cross-check is not the exit. When that happens, **fall back to a NORMAL pass**: set mode back to NORMAL, dispose the cross-check\'s concerns normally, and continue the loop from step 1 — the same landing state as the over-filter kickback below. Do **not** re-run the cross-check: cross-check passes are excluded from the 5-pass cap, so a cross-check re-running on every edit would have no cap-bounded termination, whereas a NORMAL fall-back counts toward the cap and therefore always reaches the cap gate. The cap counter does not reset. **This governs the two exit branches below**, which state their verdict as a flat *"exit the loop"*.\n\nThen judge its HIGHs:',
+    ),
+    (
+        '## Strict-Bar Convergence Mode',
+        'record and dispose its concerns exactly as a normal pass would (§ The Loop, step 3) before archiving.',
+        'record and dispose its concerns exactly as a normal pass would (§ The Loop, step 3) before archiving. **Unless any row this pass was disposed `Addressed`** — then the cross-check is not the exit; fall back to a NORMAL pass per the rule above.',
+    ),
+    # unreviewed-edit-doctrine (v2.26.0): A2's non-application bindings, each
+    # placed where a reader standing in that mode actually is.
+    (
+        '## Lightweight Mode (single-pass panel)',
+        'The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.',
+        'The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.\n\n**The priced-edit rule does not apply here** (`panel-review.md § The Loop`, step 8): lightweight mode is not a convergence exit — the loop is switched off after a single pass — so a row disposed `Addressed` on that pass does not make it non-terminal.',
+    ),
+    (
+        '## When to Skip the Panel',
+        "Lint-class work doesn't need a design review; running a full panel on a sed cleanup wastes cycles and risks the panel objecting to phrasing artifacts of the cleanup itself.",
+        "Lint-class work doesn't need a design review; running a full panel on a sed cleanup wastes cycles and risks the panel objecting to phrasing artifacts of the cleanup itself.\n\n**A skipped pass is never the pass a loop exits on** (`panel-review.md § The Loop`, step 8, *The priced-edit rule*): the skip records a mechanical edit no panelist read, which is exactly the property that rule protects. This changes neither `--skip`'s semantics nor step 8's **What the skip forfeits.** clause.",
     ),
 ]
 

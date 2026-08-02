@@ -58,8 +58,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.25.0"
-CHANGELOG_FIRST_ENTRY = "## 2.25.0 — Severity definition + unresolved-HIGH exit predicate"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.26.0"
+CHANGELOG_FIRST_ENTRY = "## 2.26.0 — Factual falsity is HIGH, and an edit costs a pass"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
