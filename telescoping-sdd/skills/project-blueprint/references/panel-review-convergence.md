@@ -111,10 +111,14 @@ This and `### Exit paths by mode` state one rule between them: a STRICT-BAR pass
 
 ### Exit cross-check
 
-When a STRICT-BAR pass returns **zero unresolved HIGHs** — no HIGH other than those disposed `Sealed` / `Accepted as risk` — do not exit directly. Run **one** final NORMAL panel pass as an audit, and archive it with `--cross-check` (this pass does **not** count toward the 5-pass cap). Then judge its HIGHs:
+When a STRICT-BAR pass returns **zero unresolved HIGHs** — no HIGH other than those disposed `Sealed` / `Accepted as risk` — do not exit directly. Run **one** final NORMAL panel pass as an audit, and archive it with `--cross-check` (this pass does **not** count toward the 5-pass cap).
 
-- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to validation.
-- **Cross-check returns HIGHs that all match the strict-bar prompt's exclusion categories** (Phase 1/2: UX surfaces, feature ACs, ARCH patterns, test strategy, etc.; Phase 3: all tagged `[detail]` per `## Concern tagging (Phase 2 and 3)`) → exit the loop, validated. The cross-check confirmed the strict bar filtered correctly; record and dispose its concerns exactly as a normal pass would (§ The Loop, step 3) before archiving.
+**The priced-edit rule binds the cross-check, not the strict-bar pass that routed to it** (`panel-review.md § The Loop`, step 8). The cross-check is the pass that actually exits, so a row disposed `Addressed` on the cross-check means the cross-check is not the exit. When that happens, **fall back to a NORMAL pass**: set mode back to NORMAL, dispose the cross-check's concerns normally, and continue the loop from step 1 — the same landing state as the over-filter kickback below. Do **not** re-run the cross-check: cross-check passes are excluded from the 5-pass cap, so a cross-check re-running on every edit would have no cap-bounded termination, whereas a NORMAL fall-back counts toward the cap and therefore always reaches the cap gate. The cap counter does not reset. **This governs the two exit branches below**, which state their verdict as a flat *"exit the loop"*.
+
+Then judge its HIGHs:
+
+- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to validation. **Unless any row this pass was disposed `Addressed`** — then the cross-check is not the exit; fall back to a NORMAL pass per the rule above.
+- **Cross-check returns HIGHs that all match the strict-bar prompt's exclusion categories** (Phase 1/2: UX surfaces, feature ACs, ARCH patterns, test strategy, etc.; Phase 3: all tagged `[detail]` per `## Concern tagging (Phase 2 and 3)`) → exit the loop, validated. The cross-check confirmed the strict bar filtered correctly; record and dispose its concerns exactly as a normal pass would (§ The Loop, step 3) before archiving. **Unless any row this pass was disposed `Addressed`** — then the cross-check is not the exit; fall back to a NORMAL pass per the rule above.
 - **Cross-check returns any `[upstream]`-tagged HIGH** (Phase 2 or 3 only) → halt-and-rescope. `archive_pass.py` auto-routes the `[upstream]` row to a halt vote; the cross-check trajectory row will carry "halt vote" in Notes. Surface this to the user using the `[upstream]`-tag halt prompt in `## Halt and Re-scope Exit`. Do not silently filter `[upstream]` concerns as "strict-bar exclusion match."
 - **Cross-check returns HIGHs that do *not* match the excluded categories** (Phase 1/2: a real at-this-phase concern slipped past strict bar; Phase 3: a `[contract]`-tagged concern slipped past) → the strict bar over-filtered. Set mode back to NORMAL, dispose the cross-check's concerns normally, and continue the loop from step 1. **The 5-pass cap counter does NOT reset** — something unusual is happening, so the user-decision gate stays where it is.
 
@@ -122,7 +126,7 @@ When a STRICT-BAR pass returns **zero unresolved HIGHs** — no HIGH other than 
 
 | Mode | Pass result | Path |
 |---|---|---|
-| NORMAL | 0 unresolved HIGHs | Exit directly (strict bar never ran, so no cross-check needed) |
+| NORMAL | 0 unresolved HIGHs, nothing disposed `Addressed` | Exit directly (strict bar never ran, so no cross-check needed) |
 | NORMAL | unresolved HIGHs remain | At the 5-pass cap → stop at the cap gate (ask user: continue or move on). Under cap → stay NORMAL, or (trigger fired and user confirms / user requested) switch the next pass to STRICT-BAR |
 | STRICT-BAR | 0 unresolved HIGHs | Run the exit cross-check (above) before exiting |
 | STRICT-BAR | unresolved HIGHs remain | At the 5-pass cap → stop at the cap gate (ask user: continue or move on). Under cap → dispose the strict HIGHs and stay STRICT-BAR |

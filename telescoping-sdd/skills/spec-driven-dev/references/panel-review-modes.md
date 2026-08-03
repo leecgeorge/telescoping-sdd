@@ -19,6 +19,8 @@ For those cases the user may opt into **lightweight mode**: one panel pass, then
 
 **What lightweight mode turns off:** the convergence loop (no second pass to drive HIGHs to zero), the strict-bar trigger and STRICT-BAR mode, the exit cross-check, and the 5-pass cap (there is only one pass). The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.
 
+**The priced-edit rule does not apply here** (`panel-review.md § The Loop`, step 8): lightweight mode is not a convergence exit — the loop is switched off after a single pass — so a row disposed `Addressed` on that pass does not make it non-terminal.
+
 **What it keeps:** the drafting subagent and its self-review, your own re-review and any cross-doc consistency check, the full disposition vocabulary, the Synthesizer Self-Check, the format contract for `## Panel Review`, validation, and the human approval gate. The halt-and-rescope *disposition* is still available on the single pass — if the one pass surfaces a fundamentally-wrong scope (or an `[upstream]` tag in Phase 2/3), present the halt summary from `## Halt and Re-scope Exit` rather than waving it through; a feature too big to review lightly is exactly the signal lightweight mode must not suppress.
 
 **Mid-stream and re-approval interaction:** lightweight mode governs only the *fresh-artifact* panel. Re-Approval After Edits and mid-stream entry (their upstream panel re-review step) are governed by their own flow in `references/hash-and-cascade.md` and are unaffected; a small artifact's later edits still route through that flow normally.
@@ -26,6 +28,8 @@ For those cases the user may opt into **lightweight mode**: one panel pass, then
 ## When to Skip the Panel
 
 If the only edits since the last panel pass are **mechanical** — string substitutions, file moves, validator-driven changes, or removed-already-decided content with no new semantic content — replace the panel with an automated lint check. Lint-class work doesn't need a design review; running a full panel on a sed cleanup wastes cycles and risks the panel objecting to phrasing artifacts of the cleanup itself.
+
+**A skipped pass is never the pass a loop exits on** (`panel-review.md § The Loop`, step 8, *The priced-edit rule*): the skip records a mechanical edit no panelist read, which is exactly the property that rule protects. This changes neither `--skip`'s semantics nor step 8's **What the skip forfeits.** clause.
 
 **Mechanical vs. not:**
 

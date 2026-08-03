@@ -73,9 +73,13 @@ C1_LABEL = (
 )
 C1_HIGH = (
     "`[HIGH]` — the artifact is **wrong as written**: it contradicts itself or "
-    "an approved upstream artifact, regresses a decision already made, or "
-    "commits to something that cannot be implemented as stated. Shipping it "
-    "downstream produces rework."
+    "an approved upstream artifact, regresses a decision already made, commits "
+    "to something that cannot be implemented as stated, or asserts something "
+    "factually false about the codebase, its dependencies, or a prior approved "
+    "artifact — a helper or module that does not exist, an incorrect "
+    "description of current behaviour, a file path that has moved, or a "
+    "property attributed to a dependency that the dependency lacks. Shipping "
+    "it downstream produces rework."
 )
 C1_MED = (
     "`[MED]` — the artifact is correct as written but **could be better**: a "
@@ -1089,6 +1093,8 @@ STEP8_LIST_CLAUSES = (
     "**Terminology note.**",
     "**Disposition sets.**",
     "**Why `Addressed` blocks.**",
+    "**The priced-edit rule.**",
+    "**Which fixes are worth a pass.**",
     "**Why `Deferred` blocks.**",
     "**Seal suppression is already in force.**",
     "**What the skip forfeits.**",
@@ -1147,9 +1153,11 @@ def test_no_site_states_predicate_as_change_required():
 REQUIRED_SUBSTRING = {
     "skill-body exit clause":
         "no HIGH-severity concerns other than those dismissed with a recorded "
-        "`Defense:`",
+        "`Defense:` (disposed `Sealed` / `Accepted as risk`) and disposed "
+        "nothing `Addressed`",
     "walkthrough exit clause":
-        "exit on zero unresolved HIGHs",
+        "exit on zero unresolved HIGHs — HIGHs other than those dismissed "
+        "with a recorded `Defense:` — and nothing disposed `Addressed`",
     "halt exit-identity clause":
         "distinct from the unresolved-HIGH exit",
     "strict-bar dispose directive":
@@ -1159,7 +1167,7 @@ REQUIRED_SUBSTRING = {
     "cross-check converged branch":
         "- **Cross-check returns 0 unresolved HIGHs** → exit the loop.",
     "exit-paths NORMAL exit row":
-        "| NORMAL | 0 unresolved HIGHs |",
+        "| NORMAL | 0 unresolved HIGHs, nothing disposed `Addressed` |",
     "exit-paths NORMAL continue row":
         "| NORMAL | unresolved HIGHs remain |",
     "exit-paths STRICT-BAR exit row":
@@ -1293,6 +1301,684 @@ def test_cumulative_caveat_literal_at_every_site():
     assert not missing, (
         f"The literal {CUMULATIVE_CAVEAT!r} is absent from: {missing}"
     )
+
+
+# --- A1's falsity clause + A2's priced-edit rule + A3's property-first exit ---
+# --- test ---------------------------------------------------------------------
+#
+# DERIVATION. The A3 restatement set is produced by running this module's
+# both-polarity sweep against the working tree, never from any hand list. Run
+# 2026-08-02 against a tree with no doctrine edit applied returned: 38 hits
+# across 12 files, 24 classified `restated` by a same-line qualifier and 14 by
+# an allow-list entry, 0 unclassified, against 16 SWEEP_ALLOW entries and 36
+# RESTATEMENT_SITES per-site pins. Note 16 is the count of allow-list ENTRIES
+# while only 14 hits classify `allowed` — two allow-listed lines also carry a
+# qualifier and classify `restated` first, so the two numbers are not expected
+# to match. Those counts size the work; they are not a commitment, and a later
+# reader should re-run the sweep rather than trust them.
+
+C1_HIGH_FALSITY = (
+    "or asserts something factually false about the codebase, its "
+    "dependencies, or a prior approved artifact — a helper or module that does "
+    "not exist, an incorrect description of current behaviour, a file path "
+    "that has moved, or a property attributed to a dependency that the "
+    "dependency lacks."
+)
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a1_falsity_clause_in_step1(path: Path, tier: str) -> None:
+    """AC-5.5: A1's fourth `[HIGH]` criterion sits inside `## The Loop` step 1.
+
+    Scoped to the criterion alone, not to all of `C1_HIGH` — the existing
+    `test_c1_definition_present_{sdd,blueprint}` pair already asserts every
+    `C1_FRAGMENTS` member by containment, so a whole-sentence re-check here
+    would be a duplicate. Pinning the fragment is what fails *naming A1* when
+    the clause is reworded away, and it keeps covering the criterion through a
+    later restructuring of the sentence around it.
+    """
+    assert C1_HIGH_FALSITY in C1_HIGH, (
+        "C1_HIGH_FALSITY has drifted out of C1_HIGH. The fragment must remain "
+        "a literal substring of the committed sentence, or this test silently "
+        "stops covering the text that actually ships."
+    )
+    step1 = _step_1(_read(path))
+    assert C1_HIGH_FALSITY in step1, (
+        f"{tier} copy: `## The Loop` step 1's `[HIGH]` bullet is missing A1's "
+        f"falsity criterion:\n  {C1_HIGH_FALSITY!r}"
+    )
+
+
+A3_PROPERTY_FRAGMENTS = (
+    # The property itself, stated before any mechanism.
+    "A pass may exit only when **every HIGH it leaves standing carries an "
+    "on-disk, panelist-visible justification** — so a HIGH is never dismissed "
+    "without a recorded reason a later reader can audit.",
+    # `Defense:` demoted to implementation-of-the-property, cross-referenced to
+    # the code so the non-blocking set stays re-derivable rather than memorised.
+    "`Defense:` is that property's implementation: a HIGH carries such a "
+    "justification exactly when it is disposed `Sealed` or `Accepted as "
+    "risk`, which is exactly `DEFENDED_DISPOSITIONS` in "
+    "`<shared-script-path>/archive_pass.py`",
+)
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a3_exit_test_states_property_first(path: Path, tier: str) -> None:
+    """AC-3.1: step 8's exit test names the property, with `Defense:` as its
+    implementation.
+
+    Named separately because `COMMITTED_FORMULATION` survives A3's rewording
+    verbatim (AD4): `test_step8_exit_test` and
+    `REQUIRED_SUBSTRING["step 8 exit test"]` therefore both pass against a
+    clause from which the new property sentence has been trimmed. Without this
+    test A3's actual deliverable would be unpinned.
+    """
+    _assert_step8(tier, path, "A3 property-first exit-test", A3_PROPERTY_FRAGMENTS)
+
+
+# --- A2-a: the terminality rule (C2) -----------------------------------------
+#
+# One named constant per clause, each a verbatim >=sentence-length fragment of
+# the committed text, and no test asserting a disjunction: a failure names the
+# single clause that was lost rather than reporting one dense tuple.
+
+A2_OUTPUT_NOT_PRECONDITION = (
+    "Terminality is an **output** of disposition, never a precondition of it. "
+    "Dispose every concern on its merits first, without regard to whether the "
+    "pass will exit; then evaluate the rows just written, in this order:"
+)
+A2_CONDITION_1 = (
+    "1. any HIGH carrying no `Defense:`-backed disposition → the loop "
+    "continues (the exit test above);"
+)
+A2_CONDITION_2 = (
+    "2. otherwise, any row disposed `Addressed` → the loop continues, and the "
+    "next pass exists to review those edits;"
+)
+A2_CONDITION_3 = "3. otherwise the loop exits."
+A2_PROPERTY_ENFORCED = (
+    "So fixing is always permitted and exiting is always permitted, and no "
+    "pass does both — the property enforced is that **no edit reaches an "
+    "approved artifact without a panelist having read it**, which is the same "
+    "reason `Addressed` blocks above."
+)
+A2_SEVERITY_SCOPE = (
+    "Condition 1 is HIGH-only; **condition 2 is not** — `Addressed` acts at "
+    "any severity, as does every other disposition in the **Blocking** set "
+    "named above. HIGH-scoping belongs to the exit test, not to the "
+    "dispositions."
+)
+A2_EDIT_BOUNDARY_CITES_STEP1 = (
+    "**What counts as an edit:** a fix that changed the artifact's **content** "
+    "sections, as the review-scope block in step 1 defines them"
+)
+A2_EDIT_BOUNDARY_NARRATIVE_FIELDS = (
+    "**and a fix to either of the two narrative fields that block carves "
+    "out**, `Defense:` on a `[SEAL-NN]` and `Routed because:` on a "
+    "`[DEF-NN]`, because panelists do read those and may grade them, and "
+    "because they are dispatched into passes that have not happened yet."
+)
+A2_EDIT_BOUNDARY_EXEMPTION = (
+    "Any *other* fix confined to `## Panel Review` does not make the pass "
+    "non-terminal: an edit nobody is permitted to review is not an unreviewed "
+    "edit."
+)
+A2_SEALING_STILL_EXITS = (
+    "Writing a `Defense:` while disposing a concern **this pass** is **not** a "
+    "fix and does not count — that is authoring a new row, not editing an "
+    "existing one, and this rule is about rows disposed `Addressed`, so "
+    "sealing still exits."
+)
+A2_REVISING_IS_THE_COUNTING_CASE = (
+    "Revising the `Defense:` text on a `[SEAL-NN]` a *previous* pass promoted "
+    "is the counting case."
+)
+A2_TERMINAL_DISAMBIGUATION = (
+    '**"Terminal pass" is not `--terminal`.** A *terminal pass* is the pass a '
+    "loop exits on; `archive_pass.py`'s `--terminal` flag names the terminal "
+    "Phase-3 *artifact*. The two senses are unrelated."
+)
+
+# Slice bounds for the cross-copy byte-identity assertion (AD8), mirroring the
+# label-to-marker shape of test_c1_definition_identical_across_copies.
+A2_BLOCK_START = "- **The priced-edit rule.**"
+A2_BLOCK_END = "- **Why `Deferred` blocks.**"
+
+
+def _a2_block(content: str) -> str:
+    """The A2 canonical block, sliced out of step 8 between its two markers."""
+    step8 = _step_8(content)
+    start = step8.index(A2_BLOCK_START)
+    end = step8.index(A2_BLOCK_END, start)
+    return step8[start:end]
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_terminality_three_conditions(path: Path, tier: str) -> None:
+    """AC-2.1, first commitment: the three conditions, present and in order."""
+    step8 = _step_8(_read(path))
+    _assert_step8(tier, path, "A2 three-condition", (
+        A2_CONDITION_1, A2_CONDITION_2, A2_CONDITION_3, A2_PROPERTY_ENFORCED,
+    ))
+    positions = [step8.index(c) for c in (A2_CONDITION_1, A2_CONDITION_2, A2_CONDITION_3)]
+    assert positions == sorted(positions), (
+        f"{tier} copy: the three terminality conditions are out of order. "
+        f"The order is load-bearing — condition 2 is only reached 'otherwise'."
+    )
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_terminality_is_an_output_not_a_precondition(path: Path, tier: str) -> None:
+    """AC-2.1, second commitment: dispose-on-merits-first, evaluate-after.
+
+    Split from the conditions test because it is the commitment a later trim is
+    most likely to read as redundant preamble, and it is the whole rule.
+    """
+    _assert_step8(tier, path, "A2 output-not-precondition",
+                  (A2_OUTPUT_NOT_PRECONDITION,))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_condition_two_is_not_severity_scoped(path: Path, tier: str) -> None:
+    """AC-2.1, third commitment: condition 1 is HIGH-only, condition 2 is not."""
+    _assert_step8(tier, path, "A2 severity-scoping", (A2_SEVERITY_SCOPE,))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_edit_boundary_is_content_sections(path: Path, tier: str) -> None:
+    """AD7 / Q3: the edit boundary, its cross-reference to step 1's review-scope
+    block, AND the two narrative fields named as counting.
+
+    The narrative-field limb is the load-bearing one: a boundary that only
+    cites step 1 passes against text exempting the reviewable half of
+    `## Panel Review`, which is the hole R2 exists to close.
+    """
+    _assert_step8(tier, path, "A2 edit-boundary", (
+        A2_EDIT_BOUNDARY_CITES_STEP1,
+        A2_EDIT_BOUNDARY_NARRATIVE_FIELDS,
+        A2_EDIT_BOUNDARY_EXEMPTION,
+    ))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_sealing_still_exits(path: Path, tier: str) -> None:
+    """AD7's disambiguator — authoring a `Defense:` while disposing is not a fix.
+
+    Without it the narrative-field carve-out reads as making every sealed exit
+    non-terminal, which would deadlock the loop against condition 1.
+    """
+    _assert_step8(tier, path, "A2 sealing-still-exits", (
+        A2_SEALING_STILL_EXITS, A2_REVISING_IS_THE_COUNTING_CASE,
+    ))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_terminal_pass_is_not_terminal_flag(path: Path, tier: str) -> None:
+    """AC-2.3: both senses named — and neither names a filename (AD8).
+
+    The filename check is what keeps the block byte-identical across the two
+    copies: the terminal Phase-3 filename is a recorded intentional asymmetry,
+    so naming it here would create a new one inside a block that has no reason
+    to carry one.
+    """
+    _assert_step8(tier, path, "A2 --terminal disambiguation",
+                  (A2_TERMINAL_DISAMBIGUATION,))
+    block = _a2_block(_read(path))
+    for filename in ("tasks.md", "PLAN.md"):
+        assert filename not in block, (
+            f"{tier} copy: the A2 canonical block names {filename!r}. The "
+            f"terminal Phase-3 filename is a recorded asymmetry; naming it "
+            f"inside this block makes the cross-copy identity assertion "
+            f"unsatisfiable (AD8)."
+        )
+
+
+def test_a2_block_identical_across_copies() -> None:
+    """AD8: the A2 canonical block is byte-identical in the two copies.
+
+    Asserted on the extracted block rather than on the two files, so a
+    divergence cannot hide behind an asymmetry elsewhere. Mirrors
+    test_c1_definition_identical_across_copies.
+    """
+    blocks = {tier: _a2_block(_read(path)) for tier, path in PANEL_COPIES.items()}
+    assert blocks["sdd"] == blocks["blueprint"], (
+        "The A2 canonical block has diverged between the two panel-review.md "
+        "copies. It carries no tier-specific content by construction (AD8), so "
+        "any difference is drift, not a recorded asymmetry."
+    )
+
+
+def test_a2_rule_implies_a1_clause() -> None:
+    """AC-2.9: R2 is hard-gated on R1, per copy.
+
+    Without A1 a factually false statement grades `[MED]` and enters A2's
+    triage test as an ordinary quality nit rather than as a `[HIGH]` that
+    blocks the exit outright.
+    """
+    for tier, path in PANEL_COPIES.items():
+        content = _read(path)
+        if A2_BLOCK_START not in content:
+            continue
+        assert C1_HIGH_FALSITY in _step_1(content), (
+            f"{tier} copy: A2's priced-edit rule is present but A1's falsity "
+            f"criterion is not. R2 ships only with R1."
+        )
+
+
+# --- A2-b: the triage test (C3) + the trailing-paragraph rewrite (AC-2.11) ---
+
+A2_TRIAGE_PER_CONCERN = (
+    "Because a fix costs a pass, decide **per concern, never per batch** "
+    "whether to fix a MED or LOW or accept it."
+)
+A2_TRIAGE_LIMBS = (
+    "**Fix it** if it touches: an acceptance criterion (these are the Phase-4 "
+    "test oracle, so a weak criterion becomes a weak test); an interface, "
+    "contract, or named dependency; a statement a later phase will build on as "
+    "fact; or a security or privacy surface."
+)
+A2_TRIAGE_OTHERWISE_ACCEPT = (
+    "**Otherwise accept it** — `Accepted as risk` with a recorded `Defense:` "
+    "(step 3)."
+)
+A2_WHEN_IN_DOUBT = (
+    "**When in doubt, fix it:** being wrong that way costs one pass; being "
+    "wrong the other way ships a weak criterion into the tests."
+)
+A2_NO_TRIVIAL_EXCEPTION = (
+    "**There is no trivial-edit exception**, because there is nothing to carve "
+    "out of — the rule never forbids a fix, it only prices it. A one-word fix "
+    "is made when this test says fix, and the pass that made it is not the exit."
+)
+
+# AC-2.11's four load-bearing clauses of the trailing paragraph, plus C2's
+# second change (the MED/LOW local-consequence sentence) so neither half of the
+# rewrite is left uncovered.
+A2_PARA_CAP = "**Cap: 5 passes.**"
+A2_PARA_STOP_AND_ASK = (
+    "If unresolved HIGH concerns remain after 5 passes, stop and ask the user: "
+    "continue reviewing, or move on."
+)
+A2_PARA_LOOP_REPEAT = (
+    "Otherwise (the priced-edit evaluation says continue — an unresolved HIGH "
+    "remains, or a row was disposed `Addressed` — and the cap is not yet "
+    "reached), repeat from step 1 against the updated artifact."
+)
+A2_PARA_FRESH_READ = (
+    "Each new pass reads the full doc fresh — including the cleared "
+    "`### Latest pass detail` and the cumulative `### Sealed dispositions` "
+    "list (panelists are instructed not to re-raise sealed items unless they "
+    "have new substantive evidence)."
+)
+A2_PARA_MEDLOW = (
+    "They do not block **condition 1** — that test is HIGH-only. But a MED or "
+    "LOW disposed `Addressed` makes the pass non-terminal under **condition "
+    "2** — see *The priced-edit rule* above."
+)
+
+# The superseded single-condition wording. AC-2.11 carves the loop-repeat
+# clause out of "survives verbatim": it must be REPLACED, not preserved.
+A2_SUPERSEDED_LOOP_REPEAT = "unresolved HIGHs remain, cap not yet reached"
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_triage_test_four_limbs(path: Path, tier: str) -> None:
+    """AC-2.2: the four limbs, per-concern-not-per-batch, and the default."""
+    _assert_step8(tier, path, "A2 triage", (
+        A2_TRIAGE_PER_CONCERN, A2_TRIAGE_LIMBS, A2_TRIAGE_OTHERWISE_ACCEPT,
+        A2_WHEN_IN_DOUBT,
+    ))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_no_trivial_edit_exception(path: Path, tier: str) -> None:
+    """AC-2.7: the nothing-to-carve-out-of statement."""
+    _assert_step8(tier, path, "A2 no-trivial-exception", (A2_NO_TRIVIAL_EXCEPTION,))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_step8_paragraph_clauses_survive(path: Path, tier: str) -> None:
+    """AC-2.11: the rewrite replaces the MEDIUM/LOW sentences, not the paragraph.
+
+    All four load-bearing clauses survive — deleting the cap or the loop-repeat
+    instruction would remove the loop's termination bound and its continuation
+    step. The loop-repeat clause is the one AC-2.11 explicitly does NOT require
+    verbatim: its old single-condition wording is incomplete once the
+    three-condition evaluation lands, so this asserts the widened form is
+    present AND the superseded phrasing is gone.
+    """
+    _assert_step8(tier, path, "AC-2.11 surviving-clause", (
+        A2_PARA_CAP, A2_PARA_STOP_AND_ASK, A2_PARA_LOOP_REPEAT,
+        A2_PARA_FRESH_READ, A2_PARA_MEDLOW,
+    ))
+    assert A2_SUPERSEDED_LOOP_REPEAT not in _read(path), (
+        f"{tier} copy: the superseded single-condition loop-repeat wording "
+        f"{A2_SUPERSEDED_LOOP_REPEAT!r} is still present. It states one "
+        f"continuation condition and is incomplete under AC-2.1's three."
+    )
+
+
+# --- A2-c: the acceptance route (C4, step 3) ---------------------------------
+
+
+def _step_3(content: str) -> str:
+    """Return `## The Loop` step 3 — the disposition vocabulary.
+
+    Scoped like `_step_1` / `_step_8`: the gloss must sit in the step that
+    defines the vocabulary, not merely somewhere in the file.
+    """
+    start = content.index("3. For each remaining concern")
+    end = content.index("4. Write every concern", start)
+    return content[start:end]
+
+
+A2_ACCEPTED_TWO_ROUTES = (
+    "the concern is valid but is not being fixed, and the reason is on record. "
+    "Two routes reach it: the user, after being asked, explicitly accepts it "
+    "as a known risk; or **you** judge a MED/LOW not worth the pass it would "
+    "cost (`## The Loop` step 8, *Which fixes are worth a pass*)."
+)
+A2_ACCEPTED_SYNTHESIZER_JUDGED = (
+    "The second is **synthesizer-judged, not user-confirmed**, and the "
+    "`Defense:` text must say so — otherwise a later reader of "
+    "`### Sealed dispositions` infers a sign-off that never happened."
+)
+A2_ACCEPTED_MARKER_SCOPE = (
+    "Keep it distinct from the re-routing case: a concern already routed to an "
+    "existing `[DEF-NN]` is disposed with the bare `Defense: rerouted "
+    "[DEF-NN]` marker as the **whole** Notes field (*Handling re-raised "
+    "deferred concerns*, below), which `archive_pass.py` expands and which "
+    "hard-fails when no such entry exists — so that marker never applies to a "
+    "freshly triaged concern, which carries ordinary `Defense:` prose instead."
+)
+A2_ACCEPTED_NOT_DEFERRED = (
+    "**Not `Deferred → <target>`:** `Deferred` feeds the strict-bar "
+    "deferral-rate trigger, so routing acceptance through it would move a "
+    "second predicate as a side effect."
+)
+
+
+def _assert_step3(tier: str, path: Path, clause: str, fragments) -> None:
+    step3 = _step_3(_read(path))
+    for fragment in fragments:
+        assert fragment in step3, (
+            f"{tier} copy: step 3 has lost its {clause} clause:\n  {fragment!r}"
+        )
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_accepted_as_risk_gloss_reconciled(path: Path, tier: str) -> None:
+    """AC-2.6 / Q1(b): the widened gloss with its binding disclosure constraint.
+
+    The marker-scope clause is load-bearing beyond wording: without it a
+    synthesizer can put the bare `Defense: rerouted [DEF-NN]` marker on a
+    freshly triaged row, and `archive_pass.py` then exits EXIT_FORMAT_VIOLATION
+    at archive time because no such entry exists.
+    """
+    _assert_step3(tier, path, "A2 accepted-as-risk gloss", (
+        A2_ACCEPTED_TWO_ROUTES,
+        A2_ACCEPTED_SYNTHESIZER_JUDGED,
+        A2_ACCEPTED_MARKER_SCOPE,
+    ))
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_acceptance_not_routed_through_deferred(path: Path, tier: str) -> None:
+    """AC-2.8: acceptance is not routed through `Deferred`, and why.
+
+    Using `Deferred` would feed the strict-bar deferral-rate trigger, moving a
+    second predicate as a side effect of an unrelated disposition choice.
+    """
+    _assert_step3(tier, path, "A2 not-Deferred", (A2_ACCEPTED_NOT_DEFERRED,))
+
+
+# --- A2-d: the scope bindings (C5) -------------------------------------------
+#
+# These target the sibling references rather than panel-review.md, so they
+# parametrize over the tier key and resolve SDD_REFS / BP_REFS themselves.
+
+_TIER_REFS = {"sdd": SDD_REFS, "blueprint": BP_REFS}
+
+
+def _tier_ref(tier: str, relname: str) -> str:
+    return _read(_TIER_REFS[tier] / relname)
+
+
+A2_CROSS_CHECK_BINDING = (
+    "**The priced-edit rule binds the cross-check, not the strict-bar pass "
+    "that routed to it** (`panel-review.md § The Loop`, step 8). The "
+    "cross-check is the pass that actually exits, so a row disposed "
+    "`Addressed` on the cross-check means the cross-check is not the exit."
+)
+A2_CROSS_CHECK_FALLBACK = (
+    "When that happens, **fall back to a NORMAL pass**: set mode back to "
+    "NORMAL, dispose the cross-check's concerns normally, and continue the "
+    "loop from step 1 — the same landing state as the over-filter kickback "
+    "below."
+)
+A2_CROSS_CHECK_NO_RERUN = (
+    "Do **not** re-run the cross-check: cross-check passes are excluded from "
+    "the 5-pass cap, so a cross-check re-running on every edit would have no "
+    "cap-bounded termination, whereas a NORMAL fall-back counts toward the cap "
+    "and therefore always reaches the cap gate. The cap counter does not reset."
+)
+A2_CROSS_CHECK_BRANCH_QUALIFIER = (
+    "**Unless any row this pass was disposed `Addressed`** — then the "
+    "cross-check is not the exit; fall back to a NORMAL pass per the rule "
+    "above."
+)
+
+# The two exit-verdict bullets the qualifier must attach to, each identified by
+# the verdict text that currently precedes it.
+A2_CROSS_CHECK_BRANCH_ANCHORS = (
+    "- **Cross-check returns 0 unresolved HIGHs** → exit the loop. Proceed to "
+    "validation.",
+    "record and dispose its concerns exactly as a normal pass would "
+    "(§ The Loop, step 3) before archiving.",
+)
+
+
+@pytest.mark.parametrize("tier", sorted(PANEL_COPIES))
+def test_a2_cross_check_binding_and_fallback(tier: str) -> None:
+    """AC-2.4 + AD1: the binding sits where the cross-check is defined.
+
+    It must name the cross-check (not the strict-bar pass that routed to it),
+    and commit the NORMAL fall-back with its cap-boundedness reason — the
+    reason is what makes AD1 auditable rather than an arbitrary branch choice.
+    """
+    text = _tier_ref(tier, "panel-review-convergence.md")
+    for fragment in (A2_CROSS_CHECK_BINDING, A2_CROSS_CHECK_FALLBACK,
+                     A2_CROSS_CHECK_NO_RERUN):
+        assert fragment in text, (
+            f"{tier} copy: panel-review-convergence.md is missing the A2 "
+            f"cross-check binding:\n  {fragment!r}"
+        )
+
+
+@pytest.mark.parametrize("tier", sorted(PANEL_COPIES))
+def test_a2_cross_check_exit_branches_carry_the_qualifier(tier: str) -> None:
+    """C5 item 1: BOTH exit-verdict bullets carry the qualifier inline.
+
+    Separate from the lead-in test because the branch list is what a reader
+    actually follows: a lead-in binding can be present above a branch list
+    whose bullets still read as a flat "exit the loop", and those bullets are
+    the point of decision.
+    """
+    text = _tier_ref(tier, "panel-review-convergence.md")
+    assert text.count(A2_CROSS_CHECK_BRANCH_QUALIFIER) >= 2, (
+        f"{tier} copy: the `Addressed` qualifier appears "
+        f"{text.count(A2_CROSS_CHECK_BRANCH_QUALIFIER)} time(s) in "
+        f"§ Exit cross-check's branch list; both exit-verdict bullets need it."
+    )
+    for anchor in A2_CROSS_CHECK_BRANCH_ANCHORS:
+        assert anchor in text, (
+            f"{tier} copy: the exit-verdict bullet this qualifier attaches to "
+            f"has itself changed:\n  {anchor!r}"
+        )
+        tail = text[text.index(anchor) + len(anchor):]
+        assert tail.lstrip().startswith(A2_CROSS_CHECK_BRANCH_QUALIFIER), (
+            f"{tier} copy: the qualifier does not immediately follow the "
+            f"exit-verdict it qualifies:\n  {anchor!r}"
+        )
+
+
+A2_CAP_LIGHTWEIGHT_EXCLUSION = (
+    "The 5-pass cap gate is **not** a convergence exit — it is the user "
+    "electing to move on with unresolved HIGHs outstanding — so the "
+    "priced-edit rule does not apply to it, and neither does it apply to "
+    "`panel-review-modes.md`'s lightweight mode, where the loop is switched "
+    "off after a single pass."
+)
+A2_LIGHTWEIGHT_MIRROR = (
+    "**The priced-edit rule does not apply here** (`panel-review.md § The "
+    "Loop`, step 8): lightweight mode is not a convergence exit — the loop is "
+    "switched off after a single pass — so a row disposed `Addressed` on that "
+    "pass does not make it non-terminal."
+)
+A2_SKIP_EXCLUSION = (
+    "And a pass archived with `--skip` is never the pass a loop exits on: it "
+    "records a mechanical edit no panelist read, which is the property this "
+    "rule protects. Its dashed count columns make condition 2 vacuous, which "
+    "is an artefact of the count columns rather than a licence."
+)
+A2_SKIP_MIRROR = (
+    "**A skipped pass is never the pass a loop exits on** (`panel-review.md § "
+    "The Loop`, step 8, *The priced-edit rule*): the skip records a mechanical "
+    "edit no panelist read, which is exactly the property that rule protects."
+)
+A2_CAP_PRESSURE_INVERSION = (
+    "**Under the priced-edit rule the bias inverts.** Accepting is now what "
+    "exits, so cap pressure pushes the opposite way — toward accepting "
+    "everything rather than addressing everything. Both are the same error: "
+    "pricing convergence above the concern's merits. Dispose on the merits and "
+    "let terminality fall out (step 8)."
+)
+A2_DIGEST_BINDING = (
+    "(each carries a recorded `Defense:`) **and disposed nothing `Addressed`**; "
+    "otherwise loop (cap 5 passes)."
+)
+
+# The caveat's role-specific examples are a recorded intentional asymmetry
+# (see each panel-review.md's leading HTML comment). C5 item 3 inserts into the
+# SHARED portion only, so these must survive untouched.
+A2_CAVEAT_ROLE_SPECIFIC = {
+    "sdd": "(seals, sealed dispositions, CFC-consumer obligations, the "
+           "Self-Check (a)–(d) categories)",
+    "blueprint": "(seals, immutability, CFC structure, the Self-Check (a)–(f) "
+                 "categories)",
+}
+
+
+@pytest.mark.parametrize("tier", sorted(PANEL_COPIES))
+def test_a2_non_convergence_exits_excluded(tier: str) -> None:
+    """AC-2.5: neither the cap gate nor lightweight mode is a convergence exit.
+
+    Asserted at both sites the rule is stated: step 8 in panel-review.md, and
+    the mirrored one-line binding in panel-review-modes.md § Lightweight Mode
+    (AC-4.4) — a reader standing in lightweight mode never opens step 8.
+    """
+    assert A2_CAP_LIGHTWEIGHT_EXCLUSION in _step_8(_read(PANEL_COPIES[tier])), (
+        f"{tier} copy: step 8 does not exclude the cap gate and lightweight "
+        f"mode from the priced-edit rule:\n  {A2_CAP_LIGHTWEIGHT_EXCLUSION!r}"
+    )
+    assert A2_LIGHTWEIGHT_MIRROR in _tier_ref(tier, "panel-review-modes.md"), (
+        f"{tier} copy: panel-review-modes.md § Lightweight Mode is missing the "
+        f"mirrored exclusion:\n  {A2_LIGHTWEIGHT_MIRROR!r}"
+    )
+
+
+@pytest.mark.parametrize("tier", sorted(PANEL_COPIES))
+def test_a2_skip_pass_is_never_the_exit(tier: str) -> None:
+    """Q2 / C5 item 2: a `--skip` pass can never be the pass a loop exits on.
+
+    Kept separate from the AC-2.5 test because Q2 is a distinct commitment
+    resolved at the Design gate, not one of AC-2.5's two. Both of its named
+    sites are asserted: step 8's trailing paragraph, and the cross-reference in
+    § When to Skip the Panel — where a reader is standing when they decide to
+    skip.
+    """
+    assert A2_SKIP_EXCLUSION in _step_8(_read(PANEL_COPIES[tier])), (
+        f"{tier} copy: step 8 does not exclude a `--skip` pass from being the "
+        f"exit:\n  {A2_SKIP_EXCLUSION!r}"
+    )
+    assert A2_SKIP_MIRROR in _tier_ref(tier, "panel-review-modes.md"), (
+        f"{tier} copy: panel-review-modes.md § When to Skip the Panel is "
+        f"missing the binding:\n  {A2_SKIP_MIRROR!r}"
+    )
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_cap_pressure_bias_inverted(path: Path, tier: str) -> None:
+    """AC-2.10: the caveat records that the bias inverts under the new rule.
+
+    Also asserts the caveat's role-specific parenthetical is still present and
+    unchanged, because C5 item 3 is deliberately scoped to the paragraph's
+    SHARED portion — an insertion that swallowed the example would sync away a
+    recorded asymmetry (AC-4.3).
+    """
+    content = _read(path)
+    assert A2_CAP_PRESSURE_INVERSION in content, (
+        f"{tier} copy: the Cap-pressure caveat does not record the inversion:"
+        f"\n  {A2_CAP_PRESSURE_INVERSION!r}"
+    )
+    assert A2_CAVEAT_ROLE_SPECIFIC[tier] in content, (
+        f"{tier} copy: the caveat's role-specific example has been altered or "
+        f"synced away — it is a recorded intentional asymmetry:\n"
+        f"  {A2_CAVEAT_ROLE_SPECIFIC[tier]!r}"
+    )
+
+
+@pytest.mark.parametrize("path,tier", BOTH_PANELS)
+def test_a2_digest_binding_present(path: Path, tier: str) -> None:
+    """C5 item 4: the digest's exit line carries the `Addressed` condition.
+
+    Named separately because the insertion sits OUTSIDE
+    `REQUIRED_SUBSTRING["digest step 5"]`, which pins only the text preceding
+    it — so that per-site pin passes against a digest from which this binding
+    has been dropped, leaving the digest affirmatively wrong on the common path
+    with no test failing.
+    """
+    assert A2_DIGEST_BINDING in _read(path), (
+        f"{tier} copy: `## Minimum to run the NORMAL loop` item 5 does not "
+        f"carry the `Addressed` condition:\n  {A2_DIGEST_BINDING!r}"
+    )
+
+
+A2_EXIT_PATHS_NORMAL_ROW = (
+    "| NORMAL | 0 unresolved HIGHs, nothing disposed `Addressed` | Exit "
+    "directly (strict bar never ran, so no cross-check needed) |"
+)
+# The two STRICT-BAR rows are deliberately NOT amended: a strict-bar pass with
+# 0 unresolved HIGHs still routes to the cross-check, and it is the cross-check
+# — bound by C5 item 1 — that the priced-edit rule governs.
+A2_EXIT_PATHS_STRICT_BAR_ROWS = (
+    "| STRICT-BAR | 0 unresolved HIGHs | Run the exit cross-check (above) "
+    "before exiting |",
+    "| STRICT-BAR | unresolved HIGHs remain | At the 5-pass cap",
+)
+
+
+@pytest.mark.parametrize("tier", sorted(PANEL_COPIES))
+def test_a2_exit_paths_normal_row_updated(tier: str) -> None:
+    """C5 item 5: § Exit paths by mode's NORMAL exit row states both conditions.
+
+    Pairs with the hand-updated `REQUIRED_SUBSTRING["exit-paths NORMAL exit
+    row"]` (AC-5.2): the pin proves the sweep still finds the row, this test
+    proves the row says the new thing. The table is what a reader consults
+    instead of the prose, so a row stating only the HIGH condition is
+    affirmatively wrong on the common path.
+    """
+    text = _tier_ref(tier, "panel-review-convergence.md")
+    assert A2_EXIT_PATHS_NORMAL_ROW in text, (
+        f"{tier} copy: § Exit paths by mode's NORMAL exit row does not state "
+        f"the `Addressed` condition:\n  {A2_EXIT_PATHS_NORMAL_ROW!r}"
+    )
+    for row in A2_EXIT_PATHS_STRICT_BAR_ROWS:
+        assert row in text, (
+            f"{tier} copy: a STRICT-BAR row was amended; C5 item 5 amends the "
+            f"NORMAL row only:\n  {row!r}"
+        )
 
 
 # =============================================================================
@@ -1646,6 +2332,68 @@ def test_strict_bar_signal_unchanged_across_sealed_exits():
         "the sealed-exit stamp changed the strict-bar trigger's verdict; it "
         "must read the HIGHs column, not the Notes stamp"
     )
+
+
+def test_strict_bar_signal_unchanged_across_a2_shaped_terminal_row():
+    """RK1: A2 moves a terminal-pass MED/LOW from `Addressed` to `Sealed`.
+
+    Under the priced-edit rule the synthesizer accepts a MED/LOW instead of
+    fixing it on the pass that exits, so a terminal `### Trajectory` row that
+    would have read `Addressed=k` now reads `Sealed=k`. A loop re-entered after
+    such a pass (cascade re-stamp, `--skip`, backport) feeds that altered row
+    to `detect_strict_bar_signal`, which reads disposition counts from the last
+    two NORMAL rows.
+
+    The verdict must not move. Two independent reasons, both asserted here:
+      * the numerators do not read `Addressed` at all — Phase 1/2's is
+        deferral-based, Phase 3's is `[detail]`-tag-based; and
+      * the pooled denominator `Addressed + Deferred + Sealed` is algebraically
+        invariant, because the row moves *between addends* rather than in or
+        out of the sum.
+
+    The risk RK1 actually prices is therefore a numerator misread, not a
+    denominator shift — so this pins every phase, not just the one.
+    """
+    def row(addressed, sealed, notes):
+        return {"Pass": "1", "Date": "2026-08-03", "HIGHs": "2",
+                "Regressions": "0", "Addressed": str(addressed),
+                "Deferred": "2", "Sealed": str(sealed), "Notes": notes}
+
+    def args_for(phase):
+        class _A:
+            pass
+        _A.phase = phase
+        _A.strict_bar = False
+        _A.cross_check = False
+        _A.skip = False
+        _A.terminal = False
+        return _A()
+
+    # Same total dispositions (4 + 2 deferred); only the split moves.
+    pre_a2_notes = "tags=d2u0c1"
+    post_a2_notes = "converged (0 unresolved HIGH); sealed=1; tags=d2u0c1"
+
+    for phase in (1, 2, 3):
+        pre_a2 = [row(3, 1, pre_a2_notes), row(3, 1, pre_a2_notes)]
+        post_a2 = [row(0, 4, post_a2_notes), row(0, 4, post_a2_notes)]
+
+        pre_verdict = archive_pass.detect_strict_bar_signal(
+            pre_a2[:-1], pre_a2[-1], args_for(phase))
+        post_verdict = archive_pass.detect_strict_bar_signal(
+            post_a2[:-1], post_a2[-1], args_for(phase))
+
+        assert pre_verdict == post_verdict, (
+            f"phase {phase}: moving a terminal-pass MED/LOW from the "
+            f"`Addressed` column to the `Sealed` column changed "
+            f"detect_strict_bar_signal's verdict "
+            f"({pre_verdict!r} -> {post_verdict!r}). A2 shifts exactly that "
+            f"row, so the trigger must be blind to the split."
+        )
+
+    # The denominator invariance the docstring claims, asserted directly rather
+    # than left as prose: a reader should not have to trust the arithmetic.
+    for a, s in ((3, 1), (0, 4)):
+        assert a + 2 + s == 6, "pooled denominator is not invariant across the shift"
 
 
 # --- C5: the module docstring as the published contract (R5, R6) -------------
