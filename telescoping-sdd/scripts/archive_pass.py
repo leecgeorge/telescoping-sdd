@@ -290,28 +290,84 @@ def find_table(lines, start, end):
     return h, sep, first, last
 
 
-def parse_table(lines, start, end):
+# Split a markdown row on unescaped pipes; a literal `\|` is an escaped cell
+# character. Borrowed from compact_table.py's _UNESCAPED_PIPE (AD13); the
+# unescape half in _split_row is new and parse_table-local. Deliberately NOT
+# imported from compact_table: that would couple the archive path to a
+# validator module it does not otherwise use, for one 12-character regex, and
+# the two functions' cell semantics differ.
+_UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+
+
+def _split_row(line):
+    """Split one markdown table line into stripped, unescaped cell values.
+
+    Splits on unescaped `|` only, drops one leading and one trailing empty
+    boundary fragment, then strips each cell and unescapes `\\|` to `|`.
+    Applied identically to the header line and to every data row, so header
+    and rows can never disagree on cell count (R11 AC-2).
+
+    A malformed line yields a wrong-length list; the caller decides what that
+    means. Nothing is raised here.
+    """
+    parts = _UNESCAPED_PIPE.split(line.strip())
+    # Drop exactly ONE empty boundary fragment at each end — not every one, as
+    # str.strip("|") did. Repeated adjacent boundary pipes therefore survive as
+    # empty cells rather than collapsing (AD13; pinned by
+    # test_parse_table_boundary_empty_cell_preserved).
+    if parts and not parts[0].strip():
+        parts = parts[1:]
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return [c.strip().replace("\\|", "|") for c in parts]
+
+
+def parse_table(lines, start, end, *, malformed=None, table_name=""):
+    """Parse a pipe table into a list of header-keyed row dicts.
+
+    `malformed`, when supplied, collects one dict per row whose cell count does
+    not match the header (DM8's MalformedRow fields); the stderr warning is
+    emitted either way. `table_name` labels those records so the caller's
+    diagnostic can name the table and state the consequence that applies to it.
+
+    Both new parameters are keyword-only, so the arity and the 3-positional
+    call pinned by test_parse_table_warns_on_unescaped_pipe_row are untouched.
+    Returns the unchanged `(rows, table)` 2-tuple. Never raises; the hard
+    failure is the caller's (AD14).
+    """
     table = find_table(lines, start, end)
     if table is None:
         return [], None
     h, _, first, last = table
-    header = [c.strip() for c in lines[h].strip().strip("|").split("|")]
+    header = _split_row(lines[h])
     rows = []
     for i in range(first, last):
-        cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+        cells = _split_row(lines[i])
         if len(cells) == len(header):
             rows.append(dict(zip(header, cells)))
         elif lines[i].strip():
-            # A non-blank row whose cell count != header — almost always an
-            # unescaped `|` in a Concern/Notes cell. Do NOT drop it silently:
-            # a dropped row vanishes from the HIGH/Deferred/Sealed counts and
-            # the audit trail. Warn, naming the 1-based line and the offender.
+            # A non-blank row whose cell count != header. Since _split_row
+            # honours the documented `\|` escape, this is no longer the
+            # ordinary escaped-pipe case — it is a genuinely malformed row. Do
+            # NOT drop it silently: a dropped row vanishes from the
+            # HIGH/Deferred/Sealed counts and the audit trail. Warn, naming the
+            # 1-based line and the offender, and record it for the caller's
+            # gate.
+            excerpt = lines[i].strip()[:100]
             print(
                 f"warning: panel table row at line {i + 1} has {len(cells)} "
                 f"cells, expected {len(header)} — unescaped '|'? escape it as "
-                f"'\\|'. Row not counted: {lines[i].strip()[:100]}",
+                f"'\\|'. Row not counted: {excerpt}",
                 file=sys.stderr,
             )
+            if malformed is not None:
+                malformed.append({
+                    "line_num": i + 1,
+                    "actual": len(cells),
+                    "expected": len(header),
+                    "excerpt": excerpt,
+                    "table": table_name,
+                })
     return rows, table
 
 
@@ -973,8 +1029,47 @@ def main():
             d_start, d_end = deferred_post
             def_entries = parse_defs(lines, d_start, d_end)
 
-    latest_rows, latest_table = parse_table(lines, l_start, l_end)
-    traj_rows, traj_table = parse_table(lines, t_start, traj[1])
+    # Two separate collectors, so each row's diagnostic can name the table it
+    # came from and the consequence that actually applies to it. A single
+    # shared list would force one generic message across both tables (AD14).
+    latest_malformed = []
+    traj_malformed = []
+    latest_rows, latest_table = parse_table(
+        lines, l_start, l_end,
+        malformed=latest_malformed, table_name="Latest pass detail",
+    )
+    traj_rows, traj_table = parse_table(
+        lines, t_start, traj[1],
+        malformed=traj_malformed, table_name="Trajectory",
+    )
+    # Refuse to archive a pass containing a row that could not be parsed. Sited
+    # here rather than inside parse_table because the pinned warn test
+    # constrains that function to warn-and-return. Placed before the
+    # validate_row loop and before the --check early return, so --check gives
+    # the same verdict as a real archive and nothing is written first.
+    if latest_malformed or traj_malformed:
+        for m in latest_malformed + traj_malformed:
+            print(
+                f"error: {m['table']} row at line {m['line_num']} has "
+                f"{m['actual']} cells, expected {m['expected']} — escape a "
+                f"literal pipe as '\\|'. Row: {m['excerpt']}",
+                file=sys.stderr,
+            )
+        if latest_malformed:
+            print(
+                "error: refusing to archive — an unparsed Latest pass detail row "
+                "is invisible to the 'User input needed' gate and to "
+                "seal/deferral promotion.",
+                file=sys.stderr,
+            )
+        if traj_malformed:
+            print(
+                "error: refusing to archive — an unparsed Trajectory row is not "
+                "counted, so pass numbering and the strict-bar signal are "
+                "computed from an incomplete table.",
+                file=sys.stderr,
+            )
+        sys.exit(EXIT_FORMAT_VIOLATION)
     seal_entries = parse_seals(lines, s_start, s_end)
 
     violations = []

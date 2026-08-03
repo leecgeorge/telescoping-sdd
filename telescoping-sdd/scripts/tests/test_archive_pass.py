@@ -2647,3 +2647,317 @@ def test_disposition_accounting_and_promotion_unchanged_after_base_refactor(tmp_
     assert cells[6] == "1", f"Sealed: {cells}"       # one Sealed
     # Sealed promotion produced a Sealed-dispositions entry.
     assert "[SEAL-01]" in text
+
+
+# ============================================================================
+# R11 — escaped-pipe parsing + archive-time hard-fail gate (Unit B, C8)
+# See specs/unit-b-spec-thinning-doctrine-and-archive-fix/{01_spec,02_design}.md
+#
+# The documented remedy for a literal pipe in a panel-table cell is to escape
+# it as `\|`. Before this feature that remedy did not work: `parse_table` split
+# on every `|`, so an escaped cell still produced a phantom cell, the row's
+# count disagreed with the header, and the row was warned about and dropped —
+# which can silently disable the `User input needed` gate.
+#
+# NOTE ON RED-FIRST (design AD7): the behavioural assertions below are red
+# against the unfixed parser. Two are green pre-fix *by nature* because they
+# pin behaviour this change must PRESERVE, not introduce:
+# `test_parse_table_still_warns_on_genuine_mismatch` and the first (space-
+# separated) shape inside `test_parse_table_boundary_empty_cell_preserved`.
+# ============================================================================
+
+_R11_HEADER = "| Severity | Source | Concern | Disposition | Notes |"
+_R11_SEP = "|----------|--------|---------|-------------|-------|"
+
+
+def _r11_artifact(latest_rows: list[str], traj_rows: list[str] = ()) -> str:
+    """A minimal panel artifact with caller-supplied Latest / Trajectory rows."""
+    traj_block = "".join(row + "\n" for row in traj_rows)
+    latest_block = "".join(row + "\n" for row in latest_rows)
+    return (
+        "# Doc\n\n"
+        "## Panel Review\n\n"
+        "### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        f"{traj_block}"
+        "\n"
+        "### Sealed dispositions\n\n"
+        "_None yet._\n\n"
+        "### Latest pass detail\n\n"
+        f"{_R11_HEADER}\n"
+        f"{_R11_SEP}\n"
+        f"{latest_block}"
+        "\n"
+        "## Approval\n\n"
+        "- [ ] Approved to proceed to next phase\n"
+        "- **Content Hash:** `pending`\n"
+    )
+
+
+def test_parse_table_parses_escaped_pipe_in_concern_and_notes(capsys):
+    """R11 AC-1 — the documented `\\|` escape must actually work.
+
+    A five-column row carrying an escaped pipe in both `Concern` and `Notes`
+    parses to five cells, each escape becomes ONE literal pipe, and nothing is
+    warned about.
+    """
+    ap = _load_archive_pass()
+    lines = [
+        _R11_HEADER,
+        _R11_SEP,
+        "| [HIGH] | critic | fix A \\| B ordering | Addressed | see \\| note |",
+    ]
+    rows, table = ap.parse_table(lines, 0, len(lines))
+    assert table is not None
+    assert len(rows) == 1, f"escaped-pipe row was dropped: {rows}"
+    assert rows[0]["Concern"] == "fix A | B ordering", rows[0]["Concern"]
+    assert rows[0]["Notes"] == "see | note", rows[0]["Notes"]
+    assert capsys.readouterr().err == "", "a correctly-escaped row must not warn"
+
+
+def test_parse_table_unescapes_header_cells():
+    """R11 AC-2 — header and rows are split by the SAME rule.
+
+    If the header were split differently from the rows the two could disagree
+    on cell count, which is the bug class this fix exists to remove.
+    """
+    ap = _load_archive_pass()
+    lines = [
+        "| Severity \\| Grade | Source |",
+        "|---|---|",
+        "| [HIGH] | critic |",
+    ]
+    rows, table = ap.parse_table(lines, 0, len(lines))
+    assert table is not None
+    assert len(rows) == 1, f"row dropped — header/row split disagreed: {rows}"
+    assert "Severity | Grade" in rows[0], f"header cell not unescaped: {list(rows[0])}"
+    assert rows[0]["Severity | Grade"] == "[HIGH]"
+
+
+def test_parse_table_still_warns_on_genuine_mismatch(capsys):
+    """R11 AC-3 — a mismatch NOT caused by an escaped pipe still warns.
+
+    Green pre-fix by nature: this pins behaviour the fix must preserve.
+    """
+    ap = _load_archive_pass()
+    lines = [
+        _R11_HEADER,
+        _R11_SEP,
+        "| [HIGH] | critic | only three cells |",
+    ]
+    rows, table = ap.parse_table(lines, 0, len(lines))
+    assert table is not None
+    assert rows == [], "a genuinely malformed row must still not be counted"
+    err = capsys.readouterr().err
+    assert "line 3" in err, err
+    assert "3 cells" in err and "expected 5" in err, err
+
+
+def test_parse_table_boundary_empty_cell_preserved():
+    """AD13 / RISK-13 — the two boundary shapes behave differently, on purpose.
+
+    `| | x |` (pipes separated by a space) yields the same cell count as the old
+    splitter — unchanged. `|| x |` (repeated ADJACENT boundary pipes) is the
+    input AD13 discloses as divergent: dropping exactly ONE leading empty
+    fragment now yields an extra empty leading cell where `.strip("|")` used to
+    collapse them all.
+    """
+    ap = _load_archive_pass()
+
+    # Shape 1 — unchanged (green pre-fix by nature).
+    lines = ["| a | b |", "|---|---|", "| | x |"]
+    rows, table = ap.parse_table(lines, 0, len(lines))
+    assert table is not None
+    assert len(rows) == 1, f"space-separated boundary shape changed: {rows}"
+    assert rows[0]["a"] == "" and rows[0]["b"] == "x"
+
+    # Shape 2 — the disclosed divergence.
+    lines = ["| a | b |", "|---|---|", "|| x |"]
+    rows, table = ap.parse_table(lines, 0, len(lines))
+    assert table is not None
+    assert len(rows) == 1, (
+        f"repeated-adjacent-pipe row should now parse to 2 cells, not collapse: {rows}"
+    )
+    assert rows[0]["a"] == "" and rows[0]["b"] == "x"
+
+
+def test_archive_user_input_gate_fires_with_escaped_pipe(tmp_path):
+    """R11 AC-5 — the failure that motivated this fix.
+
+    A `User input needed` row whose Concern carries an escaped pipe was dropped
+    at parse time, so the gate that must block the archive never saw it.
+    """
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        _r11_artifact(
+            ["| [HIGH] | critic | choose A \\| B | User input needed | ask the user |"]
+        ),
+        encoding="utf-8",
+    )
+    before = artifact.read_text(encoding="utf-8")
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 2, (
+        f"expected EXIT_USER_INPUT_NEEDED; got {proc.returncode}\n{proc.stderr}"
+    )
+    assert "User input needed" in proc.stderr
+    assert artifact.read_text(encoding="utf-8") == before, (
+        "artifact must not be modified when the gate fires"
+    )
+
+
+def test_archive_promotes_sealed_row_with_escaped_pipe_in_defense(tmp_path):
+    """R11 AC-6 — a Sealed row carrying an escaped pipe inside its `Defense:`
+    is promoted into `### Sealed dispositions` with the pipe rendered literally.
+    """
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        _r11_artifact(
+            [
+                "| [MED] | simplifier | drop R8 \\| R9 | Sealed | "
+                "Defense: user directed \\| keep both. |"
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, f"{proc.returncode}\n{proc.stderr}"
+    text = artifact.read_text(encoding="utf-8")
+    assert "[SEAL-01]" in text, "escaped-pipe Sealed row was not promoted"
+    assert "drop R8 | R9" in text, "pipe not rendered literally in the seal title"
+    assert "user directed | keep both" in text, "pipe not literal in the Defense"
+
+
+def test_archive_promotes_deferred_row_with_escaped_pipe(tmp_path):
+    """R11 AC-6 — a `Deferred → <target>` row carrying an escaped pipe is
+    promoted as a `[DEF-NN]` entry and increments the Trajectory Deferred count.
+    """
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        _r11_artifact(
+            [
+                "| [MED] | critic | logging A \\| B fields | Deferred → design.md | "
+                "Routed because: field design belongs downstream. |"
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 0, f"{proc.returncode}\n{proc.stderr}"
+    text = artifact.read_text(encoding="utf-8")
+    assert "[DEF-01]" in text, "escaped-pipe Deferred row was not promoted"
+    assert "logging A | B fields" in text, "pipe not rendered literally"
+    traj = [ln for ln in text.splitlines() if ln.strip().startswith("| 1 ")]
+    assert traj, "no Trajectory row written"
+    cells = [c.strip() for c in traj[0].strip().strip("|").split("|")]
+    assert cells[5] == "1", f"Deferred count should be 1: {cells}"
+
+
+def test_archive_hard_fails_on_unparseable_row(tmp_path):
+    """AD14 — a row that still cannot be parsed refuses the archive.
+
+    Warn-and-continue let a malformed row be erased from the audit record on
+    the very pass that cleared the table.
+    """
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        _r11_artifact(["| [HIGH] | critic | only three cells |"]),
+        encoding="utf-8",
+    )
+    before = artifact.read_text(encoding="utf-8")
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 1, (
+        f"expected EXIT_FORMAT_VIOLATION; got {proc.returncode}\n{proc.stderr}"
+    )
+    assert "Latest pass detail" in proc.stderr, proc.stderr
+    assert "refusing to archive" in proc.stderr, proc.stderr
+    assert artifact.read_text(encoding="utf-8") == before, "artifact must be untouched"
+
+
+def test_archive_hard_fail_names_trajectory_consequence(tmp_path):
+    """AD14 / DM8 `table` field — a malformed TRAJECTORY row reports the
+    pass-numbering / strict-bar consequence, not the `User input needed` one.
+    """
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        _r11_artifact([], traj_rows=["| 1 | 2026-01-01 | 0 | 0 | 0 |"]),
+        encoding="utf-8",
+    )
+    proc = _run_archive_pass([str(artifact)])
+    assert proc.returncode == 1, f"{proc.returncode}\n{proc.stderr}"
+    assert "Trajectory" in proc.stderr, proc.stderr
+    assert "strict-bar" in proc.stderr, proc.stderr
+    assert "User input needed" not in proc.stderr, (
+        "the Latest-table consequence must not be reported for a Trajectory row"
+    )
+
+
+def test_check_mode_hard_fails_on_unparseable_row(tmp_path):
+    """AD14 — `--check` gives the same verdict as a real archive, because the
+    gate precedes the `--check` early return."""
+    artifact = tmp_path / "spec.md"
+    artifact.write_text(
+        _r11_artifact(["| [HIGH] | critic | only three cells |"]),
+        encoding="utf-8",
+    )
+    proc = _run_archive_pass([str(artifact), "--check"])
+    assert proc.returncode == 1, (
+        f"--check must not report OK on an unparseable row; got {proc.returncode}\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+    assert "refusing to archive" in proc.stderr, proc.stderr
+
+
+# --- R11 AC-7: the published doctrine sentence must stop being false --------
+#
+# Slices the `Concern` format-contract bullet from each tier's panel-review.md
+# by DM5's `panel.concern-bullet` rule. Module-local by design (design
+# Interfaces § R11): the C6 guard and this suite are independent test modules
+# and neither imports the other.
+
+_CONCERN_ANCHOR = "- `Concern`"
+_PANEL_SDD = "telescoping-sdd/skills/spec-driven-dev/references/panel-review.md"
+_PANEL_BP = "telescoping-sdd/skills/project-blueprint/references/panel-review.md"
+
+
+def _concern_bullet(rel_path: str) -> str:
+    """Return the `Concern` format-contract bullet block, whitespace-collapsed."""
+    path = _REPO_ROOT / rel_path
+    assert path.is_file(), f"missing surface: {rel_path}"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith(_CONCERN_ANCHOR):
+            start = i
+            break
+    assert start is not None, f"{rel_path}: anchor {_CONCERN_ANCHOR!r} not found"
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if not line.strip() or line.startswith("- ") or line.startswith("#"):
+            break
+        block.append(line)
+    return re.sub(r"\s+", " ", " ".join(block)).strip()
+
+
+def test_r11_concern_bullet_corrected():
+    """R11 AC-7 — the `Concern` bullet documents `\\|` as the remedy, so it must
+    describe what the parser now actually does, in both tiers, in parity.
+
+    The stale claim ("silently drops") was false in two ways once this feature
+    lands: the row is not silent (it warns) and it no longer merely drops (it
+    refuses the archive).
+    """
+    for rel in (_PANEL_SDD, _PANEL_BP):
+        bullet = _concern_bullet(rel)
+        assert "is parsed as a literal pipe" in bullet, (
+            f"{rel}: corrected escape statement absent from the Concern bullet:\n{bullet}"
+        )
+        assert "refuses the archive" in bullet, (
+            f"{rel}: the archive-refusal consequence is not stated:\n{bullet}"
+        )
+        assert "silently drops" not in bullet, (
+            f"{rel}: the stale 'silently drops' claim survives:\n{bullet}"
+        )
+    assert _concern_bullet(_PANEL_SDD) == _concern_bullet(_PANEL_BP), (
+        "the two tiers' Concern bullets have drifted out of parity"
+    )

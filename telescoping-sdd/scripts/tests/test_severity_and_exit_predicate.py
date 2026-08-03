@@ -1568,23 +1568,41 @@ def test_a2_rule_implies_a1_clause() -> None:
 
 # --- A2-b: the triage test (C3) + the trailing-paragraph rewrite (AC-2.11) ---
 
+# R12 (the free-ride rule) re-derived these four. The property each pins is
+# unchanged; the wording they pin is the amended two-branch rule. The MED/LOW
+# tiebreak reading these used to pin is now enforced by their ABSENCE from the
+# amended text — a pinned-presence assertion on the new wording is strictly
+# stronger than an absence assertion on the old, because the constant the text
+# must match has been replaced.
 A2_TRIAGE_PER_CONCERN = (
-    "Because a fix costs a pass, decide **per concern, never per batch** "
-    "whether to fix a MED or LOW or accept it."
+    "The cost of a fix is borne **per pass, not per fix**, so what a MED or LOW "
+    "costs depends entirely on whether this pass was going to exit anyway."
+)
+# The discriminator is the subtlest committed point: blocking-set membership,
+# NOT "a HIGH was raised". Pinned so it cannot silently regress to the latter.
+A2_TRIAGE_DISCRIMINATOR = (
+    "**The discriminator — and it is not the obvious one: did a HIGH land in "
+    "the blocking set** (`Addressed`, `Deferred \u2192 <target>`, `User input "
+    "needed`, `Halt and re-scope`)? **Not** \"did this pass raise a HIGH\" \u2014 a "
+    "HIGH disposed `Sealed` or `Accepted as risk` is non-blocking, so a pass "
+    "that raised one can still exit"
 )
 A2_TRIAGE_LIMBS = (
-    "**Fix it** if it touches: an acceptance criterion (these are the Phase-4 "
+    "**fix it** if it touches an acceptance criterion (these are the Phase-4 "
     "test oracle, so a weak criterion becomes a weak test); an interface, "
     "contract, or named dependency; a statement a later phase will build on as "
     "fact; or a security or privacy surface."
 )
 A2_TRIAGE_OTHERWISE_ACCEPT = (
-    "**Otherwise accept it** — `Accepted as risk` with a recorded `Defense:` "
-    "(step 3)."
+    "**On the exit-capable branch** accept every MED and LOW with a recorded "
+    "`Defense:`; fixing one converts an exiting pass into a whole extra pass, "
+    "and the four-item list is superseded here."
 )
 A2_WHEN_IN_DOUBT = (
-    "**When in doubt, fix it:** being wrong that way costs one pass; being "
-    "wrong the other way ships a weak criterion into the tests."
+    "*\"When in doubt, fix it\"* stays for HIGH and for grading doubt \u2014 being "
+    "wrong that way costs one pass; being wrong the other way ships a weak "
+    "criterion into the tests \u2014 and is no longer the MED/LOW tiebreak on an "
+    "exit-capable pass."
 )
 A2_NO_TRIVIAL_EXCEPTION = (
     "**There is no trivial-edit exception**, because there is nothing to carve "
@@ -1626,8 +1644,8 @@ A2_SUPERSEDED_LOOP_REPEAT = "unresolved HIGHs remain, cap not yet reached"
 def test_a2_triage_test_four_limbs(path: Path, tier: str) -> None:
     """AC-2.2: the four limbs, per-concern-not-per-batch, and the default."""
     _assert_step8(tier, path, "A2 triage", (
-        A2_TRIAGE_PER_CONCERN, A2_TRIAGE_LIMBS, A2_TRIAGE_OTHERWISE_ACCEPT,
-        A2_WHEN_IN_DOUBT,
+        A2_TRIAGE_PER_CONCERN, A2_TRIAGE_DISCRIMINATOR, A2_TRIAGE_LIMBS,
+        A2_TRIAGE_OTHERWISE_ACCEPT, A2_WHEN_IN_DOUBT,
     ))
 
 
@@ -1677,7 +1695,8 @@ A2_ACCEPTED_TWO_ROUTES = (
     "the concern is valid but is not being fixed, and the reason is on record. "
     "Two routes reach it: the user, after being asked, explicitly accepts it "
     "as a known risk; or **you** judge a MED/LOW not worth the pass it would "
-    "cost (`## The Loop` step 8, *Which fixes are worth a pass*)."
+    "cost \u2014 which, per `## The Loop` step 8, *Which fixes are worth a pass*, "
+    "is the case exactly when the pass is **exit-capable**."
 )
 A2_ACCEPTED_SYNTHESIZER_JUDGED = (
     "The second is **synthesizer-judged, not user-confirmed**, and the "

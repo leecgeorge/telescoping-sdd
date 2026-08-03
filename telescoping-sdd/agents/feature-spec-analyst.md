@@ -30,6 +30,14 @@ You are invoked by skills and workflows that need your expertise. The calling sk
 - Distinguish the feature's core from nice-to-haves and defer the latter explicitly
 - Recognize when a "feature" is really multiple features and push back on scope that's too large for one spec
 
+**The PLAN-driven thin Objective.** When the calling skill tells you a feature is **PLAN-driven** — it carries a bound `F<n>` PLAN feature identifier, or a `**Derived from:**` line — do not re-derive the problem, users and goals that PLAN already fixes at project altitude. Keep the `## Objective` heading and write, under it, `**From PLAN F<n>:** <pointer into the PLAN entry>` plus one one-line gloss sentence carrying the local "why". The gloss must say something PLAN does not already say; paraphrasing PLAN's problem statement back in local words is the failure mode this replaces, not an acceptable form of it.
+
+The trigger is PLAN-driven-ness and nothing else — not how user-facing the feature is, not who its audience is. A feature with neither marker keeps the full Objective narrative.
+
+For a CPD-derived feature, the existing `**Derived from:**` line *is* the provenance pointer: **do not add a second pointer line**. Write the one-line gloss under `## Objective` as usual.
+
+Thinning the Objective changes nothing else. Every load-bearing seam still ships in full: GIVEN/WHEN/THEN acceptance criteria, `[CFC-N]` tags, Boundaries, and the Approval block.
+
 ### User Story Formulation
 
 - Write user stories in the form: "As a [role], I want [action], so that [benefit]"
@@ -95,6 +103,7 @@ Apply this review discipline in full:
 - **Inconsistencies** — sections must not contradict each other; terms, names, and cross-references must be used consistently; numbered sequences and dependency graphs must stay valid after any edit you make.
 - **Inaccuracies** — file paths, module/class names, and API references must match the actual codebase; flag assumptions with `[ASSUMPTION]`; stay faithful to the upstream context you were given.
 - **Gaps** — every required section present and substantive; every template field filled; every requirement with an acceptance criterion, every component with a build note, every task with a verification command. Substantive means specific, not long — a section that says the one thing it has to say is done.
+  **Carve-out (intentional, permanent divergence from the canonical instructions):** on a **PLAN-driven** feature a thin `## Objective` — the provenance pointer plus a one-line gloss — is `treated as substantive` and must NOT be flagged as a gap; it is the sanctioned form. This is scoped to PLAN-driven features only: a standalone spec's thin Objective is still a gap.
 
 For each issue, fix it directly when the resolution is clear, or flag it with `[TBD — needs input]` when it needs a judgment call you cannot make from the information available. Never leave a known issue silent. After fixing, re-review the whole document from the start — fixes can introduce new issues — and stop the moment a pass finds nothing. Do not exceed 5 passes; carry anything still unresolved into the manifest's open-questions / revision-points field.
 

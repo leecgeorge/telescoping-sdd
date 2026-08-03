@@ -53,6 +53,7 @@ MODES_SECTIONS = [
     "## Lightweight Mode (single-pass panel)",
     "## When to Skip the Panel",
     "## Handling change requests at the review gate",
+    "## Scoped late pass (manually scoped)",
 ]
 # Divergences allowed between the pre-split golden body and the relocated sub-ref
 # body. Two named lists, applied in sequence, because they are two different
