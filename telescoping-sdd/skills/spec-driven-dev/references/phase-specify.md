@@ -22,6 +22,16 @@ When invoking the agent, provide:
 - A clear instruction to reproduce the template's exact formatting for structural sections — in particular: Success Criteria must use `- [ ]` checkboxes (not numbered lists), Open Questions must use `- [ ] Q1:` checkbox format, and the Approval section must be exactly `- [ ] Approved to proceed to next phase` followed by `- **Content Hash:** \`pending\`` (not a table or other format). The agent must read the template file and match its syntax precisely.
 - A clear instruction enforcing the downstream-identifier prohibition: **DO NOT use downstream identifier references in this artifact.** Task IDs (`T<n>`) are minted downstream in `03_tasks.md`, not in spec/design artifacts — a real `T<n>` token in prose or a `### T<n>:` heading creates a phantom coupling that goes stale when tasks are renumbered (the heading form blocks `--approve`). Allowed: naming the downstream file/phase (`tasks.md`, `03_tasks.md`, "the Tasks phase", `Deferred → tasks.md`); an example token inside a backtick span (`` `T5` ``). (A feature's own `**PLAN feature identifier:** F<n>` line is not a downstream reference and is unaffected — the SDD tier never flags `F<n>`.)
 
+**PLAN-driven thin Objective (drafting).** When a feature is PLAN-driven, the `## Objective` section does not need to re-derive the problem, users and goals that PLAN already fixes at project altitude. Keep the heading — it is still a required section — and, under it, write `**From PLAN F<n>:** <pointer into the PLAN entry>` plus one one-line gloss sentence giving the local "why" a gate reviewer needs without opening PLAN. This is the sanctioned default, author-declinable only to add genuinely feature-specific framing PLAN does not cover.
+
+PLAN-driven-ness is the **sole trigger**: the feature carries either a bound `F<n>` `**PLAN feature identifier:**` or a `**Derived from:**` line. Nothing else qualifies a feature for the thin form — not how user-facing it is, not who its audience is, not how much framing the author judges inheritable. A feature with neither marker keeps the full Objective narrative.
+
+The two provenance lines sit in different places and do different jobs, and are not redundant: `**PLAN feature identifier:**` at the top of the document is the machine identifier and the spec-directory agreement key, while `**From PLAN F<n>:**` under `## Objective` is the human provenance pointer for framing inheritance. As authoring discipline — not a validator check — the pointer's `F<n>` should match the identifier.
+
+For a CPD-derived feature (`**PLAN feature identifier:** n/a` alongside a `**Derived from:** <project>:F<n>` line), that existing `**Derived from:**` line *is* the provenance pointer: do not add a second pointer line. The one-line gloss still accompanies it, as the local fallback for the "why" when the master contract hash is `unbound` or the master repo is unreachable.
+
+**What the drafting dispatch must carry.** Pass the drafter the PLAN-driven-ness verdict *and*, when the feature is bound, the **PLAN entry reference** it needs — not the bare identifier alone. A drafter handed only `F7` can write neither `**From PLAN F7:** <pointer>` nor a gloss of framing it has never seen, and will fall back to re-deriving the narrative this sanction exists to avoid.
+
 ## Is this feature derived from another repo's PLAN?
 
 Before drafting, answer one intake question: **does this feature implement a master feature defined in a *different* repo's `blueprint/PLAN.md`?** (Cross-Project Derivation — e.g. a `vps-edge` feature that implements `residents` `F7`, where the `residents` `### F7` row carries `**Implemented by:** vps-edge`.) If **no**, ignore this section and use the bound/standalone identifier as usual. If **yes**, drive the *derived flow* instead:
@@ -38,7 +48,10 @@ Before drafting, answer one intake question: **does this feature implement a mas
 If the agent believes a CFC's `Per-feature AC` is wrong for this feature (the Participating-features list is mistaken, the AC text is unworkable as written, the Enforcement is infeasible), the agent must NOT edit the AC text locally. Instead, surface the concern as a candidate `Halt and re-scope` for the spec panel — the CFC lives in PLAN and must be revised at PLAN level via project-blueprint's amendment workflow, not silently dropped from the feature.
 
 Required sections:
-- **Objective** — One paragraph on what and why
+- **Objective** — One paragraph on what and why, unless the feature is **PLAN-driven**
+  (see the thin-Objective sanction above), in which case the sanctioned form is the
+  `**From PLAN F<n>:**` provenance pointer plus a one-line gloss; the heading is
+  required either way
 - **Requirements** — User stories in format: "As a [role], I want [action], so that [benefit]"
 - **Acceptance Criteria** — GIVEN/WHEN/THEN for each requirement
 - **Project Structure** — Where new code fits in the existing codebase
@@ -108,6 +121,12 @@ After the spec self-review is complete, run the spec panel against `specs/F<n>-<
 Panelists: `telescoping-sdd:user-advocate`, `telescoping-sdd:devils-advocate`, `telescoping-sdd:pragmatist`.
 
 There are no upstream approved artifacts at this phase — pass the current spec.md only. Deferred concerns from this panel can target `design.md` or `tasks.md`.
+
+**Thin-Objective sanction (PLAN-driven features only).** When the feature under review is PLAN-driven, **append** the following to each Specify panelist's invocation prompt, in the same way the CFC Compliance Check appends its own block:
+
+> This feature is PLAN-driven, so a thin `## Objective` — the `**From PLAN F<n>:**` provenance pointer plus a one-line gloss — is the sanctioned form, not a gap. Do not raise the Objective as under-specified **merely because it is brief**.
+
+The sanction is deliberately narrow: it sanctions *brevity* and nothing else. A panelist must still scrutinise whether the gloss is faithful — a gloss that **paraphrase**s PLAN's problem statement back in local words says nothing PLAN does not already say, and a pointer that glosses what the PLAN entry *says* can be false from the moment it is written. Seam-presence checks (GIVEN/WHEN/THEN, `[CFC-N]` tags, Boundaries, the Approval block) are unaffected.
 
 ## Validation and approval
 

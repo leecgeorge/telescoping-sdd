@@ -32,6 +32,8 @@ Review your draft for three categories of issues.
 
 **Substantive means specific, not long.** A section that says the one thing it has to say is done — do not close a gap by padding. Gaps are missing *content*, not missing *words*.
 
+*Maintainer note — one sanctioned divergence:* `agents/feature-spec-analyst.md` carries a deliberate, permanent extension to its inlined Gaps bullet (a PLAN-driven feature's thin `## Objective` is not a gap). Do not remove it when resyncing that file against this canonical copy.
+
 ## Fix-or-Flag Discipline
 
 For each issue you find:

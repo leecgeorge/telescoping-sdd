@@ -1,6 +1,6 @@
 # Panel Review — Modes (lightweight, panel skip, gate change requests)
 
-> **Loaded on demand.** A situational sub-reference of `panel-review.md`. Load it only when: the user opts into a single-pass review (lightweight mode), a change is mechanical enough to skip the panel (when to skip the panel), or a change request arrives at the review gate (handling change requests at the review gate). A NORMAL panel pass never needs it — the normal loop, panelists, format contract, and Synthesizer Self-Check all live in `panel-review.md`.
+> **Loaded on demand.** A situational sub-reference of `panel-review.md`. Load it only when: the user opts into a single-pass review (lightweight mode), a change is mechanical enough to skip the panel (when to skip the panel), a change request arrives at the review gate (handling change requests at the review gate), or a late pass on a large artifact is being manually scoped (scoped late pass). A NORMAL panel pass never needs it — the normal loop, panelists, format contract, and Synthesizer Self-Check all live in `panel-review.md`.
 
 ## Lightweight Mode (single-pass panel)
 
@@ -80,3 +80,32 @@ The artifact has **not been approved yet**, so it has no content hash. This is t
 **Either way, the change is recorded as a Trajectory pass** — it is another panel-relevant change to a not-yet-approved artifact, so it counts against the 5-pass cap exactly like any other pass (a skip is still a loop iteration). Dispose any concerns it surfaces with the normal vocabulary (`Addressed` / `Deferred` / `Sealed` / `Accepted as risk`). Then re-present the updated artifact at the same gate. Only when the user approves does the phase run its validator (`validate_blueprint.py --approve <phase>`) and stamp the first content hash — at which point any *later* edit becomes a `Re-Approval After Edits` event, not a gate change request.
 
 **What the synthesizer must not do:** apply a gate change request silently without a Trajectory row (no audit trail); re-stamp or run a cascade (no hash exists yet — those belong to the post-approval flow); or treat a substantive scope/requirement change as trivial to avoid a panel pass.
+
+## Scoped late pass (manually scoped)
+
+On a large artifact's late pass — a confirming pass, or any pass whose delta since the last one is small and known — the orchestrator MAY tell the panelists **what changed** since the last pass and **what is already settled**: naming the changed regions, and optionally naming specific facts an earlier pass established so they are not re-derived. Panelists then **self-select depth** against that scope. That self-selection is the saving; nothing here tells a panelist how much to read.
+
+A specimen of the orchestrator's message:
+
+> Changed since pass 3: § Interfaces and DM4. Settled: the route count (pass 2), the regression list (enumerated pass 3). Read what you judge necessary.
+
+**Evidence condition.** The orchestrator may pre-load evidence it **already holds** from having applied the fixes — supplying evidence is structural (it is context), not behavioural (it is not depth). Only what is already held. Gathering evidence *specially* in order to pre-load it moves verification onto the main thread and forfeits the saving entirely.
+
+**Fresh-context corollary.** An orchestrator resuming a mid-loop artifact after a **context reset** holds no such evidence, so it supplies none — and must not go and gather some in order to have something to pre-load. A fresh context makes that the default temptation rather than an unusual one.
+
+**Scope, not bar.** This sanctions the **scope** a panelist is pointed at, never the **severity bar** it applies. Raising the bar is a different and already-shipped mode, user-requestable at any pass — see `panel-review-convergence.md` § Strict-Bar Convergence Mode, which carries an exit cross-check that a hand-rolled bar-raise does not.
+
+**Backstops are unchanged.** Every existing backstop still applies — in particular the **Synthesizer Self-Check**, which reviews the delta every pass regardless of how deeply the panel read.
+
+### What must never be added (the obligation test)
+
+The discriminator for any future edit to this section: **a clause that removes work is admissible; a clause that creates an obligation is not.** A clause that creates an obligation rebuilds precisely the cost this mode exists to remove. Apply that test before adding anything here.
+
+Four shapes are therefore prohibited:
+
+- **No depth prescription.** Never direct a panelist to read at full depth, or to any other prescribed depth. It converts a permission into a mandate, which is the whole cost back.
+- **No read-through floor** for the unchanged remainder, at any non-zero value. A floor is a mandate wearing a smaller number.
+- **No tool-call budget.** It measures the wrong thing, and is satisfied by a panelist that reads less carefully in fewer calls.
+- **No escalation hatch** — no needs-verification route handing work back to the orchestrator. It relocates verification onto the main thread, the most expensive context available, and is unenforceable on a stateless agent besides.
+
+**The withdrawn-attempt record.** A mechanized form of this idea was built here and then withdrawn, after an A/B dogfood measured it *increasing* panelist tool-use — attributed to exactly the full-depth mandate and non-zero read-through floor prohibited above. A reviewer proposing a safety clause here is proposing to re-run that experiment.

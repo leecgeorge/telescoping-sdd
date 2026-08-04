@@ -8,9 +8,71 @@ Use this template when creating `spec.md` for a Java project.
 
 **PLAN feature identifier:** `F<n>` (matches the feature entry in `blueprint/03_PLAN.md`'s Feature Breakdown — e.g. `F1`, `F11`; the bare `blueprint/PLAN.md` is also accepted). If no upstream PLAN exists, write `n/a`.
 
+> **Authoring convention — point rather than restate.** This template is
+> multi-view by construction: `Success Criteria` mirror the acceptance criteria,
+> `Boundaries` mirror them, `Modified Files` mirrors what the ACs commit to, and
+> `Risks` mitigations restate ACs. Every fact therefore has three or four
+> legitimate homes, and an incremental edit desyncs the copies it did not touch.
+>
+> **Where a fact has an authoritative home, other sites point to it rather than
+> restating it.** This is conditional, never absolute — it does not mean every
+> restatement must become a pointer. `Success Criteria` reduced to bare index
+> pointers lose their standalone checklist function, which is a real cost.
+>
+> **A pointer names a location and a role; it never describes what the target
+> says.** `See R2's third acceptance criterion` cannot be wrong about that
+> criterion's content. `See R2's third acceptance criterion, which requires a
+> hard cap` can — the gloss is a restatement smuggled into the pointer, and it can
+> be false from the moment it is written, not only when the target drifts. The
+> unglossed form makes the defect impossible rather than merely detectable.
+>
+> **The authoritative home is the most *durable* site, not merely the most
+> complete one.** Completeness alone is the wrong tiebreak: choosing "the more
+> specific copy" once made an *open question* the home for a doctrine quotation,
+> and an open question gets answered and rewritten, orphaning every pointer aimed
+> at it. An acceptance criterion outlives an open question.
+>
+> This is a **consistency** measure. De-duplicating by pointer typically makes a
+> document slightly *longer*; it is not a length, verbosity or word-count
+> reduction, and must not be applied as one. (Distinct from the PLAN-driven thin
+> Objective below, which is about inherited framing, not about cross-site copies.)
+
 ## Objective
 
 [One paragraph describing what this feature does and why it's needed.]
+
+> **PLAN-driven thin form (sanctioned default).** If this feature is PLAN-driven —
+> it carries a bound `F<n>` `**PLAN feature identifier:**` OR a `**Derived from:**`
+> line — you MAY thin this section instead of re-deriving the problem/users/goals
+> that PLAN already fixes at project altitude. Keep the `## Objective` heading (it
+> is still a required section) and, under it, write:
+>
+> - `**From PLAN F<n>:** <pointer into the PLAN entry>` — the human provenance
+>   pointer for framing inheritance. This is distinct from the top-of-document
+>   `**PLAN feature identifier:**` (the machine identifier / spec-dir agreement
+>   key); as authoring discipline (not a validator check) the pointer's `F<n>`
+>   should match that identifier.
+> - one one-line gloss sentence paraphrasing the PLAN framing, so a gate reviewer
+>   gets the local "why" without opening PLAN.
+>
+> **What a good gloss looks like.** *Legitimate:* "This feature is the first to
+> write to the shared cache, so its failure mode is a stale read no other feature
+> can produce" — a fact about THIS feature that PLAN, writing at project altitude,
+> does not state. *Not legitimate:* "Operators need faster dashboards because slow
+> queries erode trust" — that is PLAN's problem statement re-derived in local
+> words. The test is not length or tone: **does this sentence say something PLAN
+> does not already say?**
+>
+> For a CPD-derived feature (`**PLAN feature identifier:** n/a` with a
+> `**Derived from:** <project>:F<n>` line), the existing `**Derived from:**`
+> line *is* the provenance pointer — do not add a second pointer line — and the
+> one-line gloss still accompanies it as the local fallback for the "why" when the
+> master hash is `unbound` or unreachable.
+>
+> The thin form is the sanctioned default for a PLAN-driven feature,
+> author-declinable only to add genuinely feature-specific framing PLAN does not
+> cover — never to re-derive PLAN's framing. A standalone feature (`n/a`, no
+> `**Derived from:**`) is NOT eligible: keep the full Objective narrative above.
 
 ## Requirements
 
