@@ -8,14 +8,16 @@ container belongs here too). Callers add presentation-layer concerns
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 # arch_config is a leaf module (no blueprint_common dependency), so this import
 # is one-directional. Used by the shared _resolve_marker_root_and_key (R2.1).
@@ -42,6 +44,36 @@ from trajectory import (  # noqa: E402,F401
     _trajectory_bounds,
     _trajectory_data_rows,
     _trajectory_row_notes,
+    # Unit C0 (AD1/AD2): table helpers, terminal rules and stamp constants.
+    CONVERGED_STAMPS,
+    SEAL_ENTRY_RE,
+    STAMP_CONVERGED_NO_HIGH,
+    STAMP_CONVERGED_SEALED,
+    STAMP_CROSS_CHECK,
+    STAMP_HALT_DISPOSITION,
+    STAMP_STRICT_BAR,
+    TERMINAL_FILENAMES,
+    TERMINAL_HTML_MARKER,
+    TRAJECTORY_COLS,
+    is_terminal_artifact,
+    render_table,
+    render_table_row,
+    split_table_row,
+    # Unit C0 (T6/T22): provenance token and the convergence verdict.
+    PROVENANCE_HEX_WIDTH,
+    PROVENANCE_PREFIX,
+    PROVENANCE_TOKEN_RE,
+    UPSTREAM_TAG_STRIP_RE,
+    ConvergenceVerdict,
+    TrajectoryRow,
+    evaluate_convergence,
+    notes_tokens,
+    parse_trajectory_rows,
+    provenance_token,
+    read_provenance_hash,
+    select_closing_row,
+    stamp_provenance,
+    strip_upstream_tags,
 )
 
 # content_hash.py is a layer over trajectory (audit R3.1): the versioned
@@ -96,6 +128,38 @@ from artifact_resolution import (  # noqa: E402,F401
     _all_identical_content,
     _detect_prefix_state,
     _has_artifact_ambiguity,
+)
+
+# approval_records.py is a leaf over content_hash (Unit C0 AD1): the `## Approval`
+# record grammar (upstream bindings, convergence override), display safety, and
+# the operator text both lower layers print. Imported at the top and re-exported.
+# Layering: {trajectory, artifact_resolution} <- content_hash <- approval_records
+# <- blueprint_common <- pending_review.
+from approval_records import (  # noqa: E402,F401
+    BINDING_LINE_RE,
+    BINDING_PART,
+    DISPLAY_ARG_MAX,
+    GLOSS_BINDING,
+    GLOSS_LEGACY,
+    GLOSS_SUPERSEDED,
+    GLOSS_UNBOUND,
+    OVERRIDE_LINE_RE,
+    REPAD_PART,
+    RESTAMP_CARVE_OUT_PREFIX,
+    SEAL_PART,
+    TIER_VALIDATOR_CMD,
+    USER_DECISION_NOTE,
+    DisplayArg,
+    OverrideRecord,
+    UpstreamBinding,
+    append_override_record,
+    display_arg,
+    display_text,
+    read_bindings,
+    read_override_record,
+    sanitize_override_reason,
+    strip_binding_lines,
+    upsert_binding_lines,
 )
 
 # ---------------------------------------------------------------------------
@@ -487,6 +551,17 @@ def check_previous_phase_approved(
             False,
             f"{prev_file} must be approved before proceeding",
         )
+        return
+    # Unit C0 (AC-4.2): the previous artifact's own superseded bindings block
+    # this phase too (its signature and predecessor contract are unchanged).
+    prev_bare = strip_artifact_prefix(prev_path.name)
+    rep = binding_report(prev_bare, prev_content, _read_upstream_texts(target_dir, prev_bare))
+    for s in rep.superseded:
+        result.add(
+            f"previous phase ({prev_file}) upstream binding current",
+            False,
+            superseded_binding_detail(prev_bare, s),
+        )
 
 
 def _atomic_write(target: Path, content: str) -> None:
@@ -512,6 +587,603 @@ def _atomic_write(target: Path, content: str) -> None:
         tmp_status = "removed" if tmp_removed else f"left at {tmp}"
         exc.args = (*exc.args, f"atomic write to {target} failed; temp file {tmp_status}")
         raise
+
+
+# ----- Unit C0 R3: upstream maps, approval writes and the race check ---------
+
+# Each downstream's upstreams, keyed by bare name, in binding-line order (AD11).
+UPSTREAM_SETS = {
+    "design.md": ("spec.md",),
+    "tasks.md": ("spec.md", "design.md"),
+    "ARCHITECTURE.md": ("SCOPE.md",),
+    "PLAN.md": ("SCOPE.md", "ARCHITECTURE.md"),
+}
+
+# Bare artifact name -> panel phase number (`archive_pass.py --phase <N>`).
+ARTIFACT_PHASE_NO = {
+    "spec.md": 1, "SCOPE.md": 1,
+    "design.md": 2, "ARCHITECTURE.md": 2,
+    "tasks.md": 3, "PLAN.md": 3,
+}
+
+
+class UnbindableUpstreamError(Exception):
+    """An upstream's stamp is pending, missing or not 16-hex, so a downstream
+    approval cannot bind to it (AC-3.8)."""
+
+    def __init__(self, upstream: str, value: "Optional[str]") -> None:
+        self.upstream = upstream
+        self.value = value
+        shown = "missing" if value is None else f"`{display_text(value, max_len=40)}`"
+        super().__init__(
+            f"{upstream} has no 16-hex approval stamp (Content Hash: {shown})"
+        )
+
+
+class ApprovalRaceError(Exception):
+    """Judged content or an upstream stamp changed between plan_approval and
+    the stamp (AD7); raised before any write."""
+
+
+@dataclass(frozen=True)
+class ApprovalWrites:
+    """DM3: what an approval writes into `## Approval` beyond the stamp."""
+
+    bindings: "Tuple[UpstreamBinding, ...]" = ()
+    override: "Optional[OverrideRecord]" = None
+    judged_hash: str = ""
+
+
+def judged_text_hash(text: str) -> str:
+    """Full-text SHA-256 of the trimmed text — NOT compute_content_hash: every
+    byte counts, Trajectory rows and stamp lines included (AD7)."""
+    return hashlib.sha256(trim_trajectory_table(text).encode("utf-8")).hexdigest()
+
+
+def _read_upstream_stamp(directory: Path, upstream: str) -> "Optional[str]":
+    """The upstream's stored stamp text, or None when absent/unreadable.
+    ArtifactAmbiguityError propagates."""
+    p = resolve_artifact(directory, upstream)
+    if not p.is_file():
+        return None
+    try:
+        text = p.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return read_stored_hash(text)
+
+
+def collect_upstream_bindings(directory: Path, bare_name: str) -> "Tuple[UpstreamBinding, ...]":
+    """The bindings a `bare_name` approval would write, in UPSTREAM_SETS order.
+
+    Each upstream binds to its stored 16-hex stamp, lowercased, even when its
+    content has drifted (that drift is the previous-phase check's to report).
+    Raises UnbindableUpstreamError for a pending, missing or non-16-hex stamp
+    (AC-3.8).
+    """
+    out = []
+    for up in UPSTREAM_SETS.get(bare_name, ()):
+        value = _read_upstream_stamp(Path(directory), up)
+        if value is None or not _is_valid_16_hex(value):
+            raise UnbindableUpstreamError(up, value)
+        out.append(UpstreamBinding(upstream=up, content_hash=value.lower()))
+    return tuple(out)
+
+
+def verify_judged_transform(content: str, file_path: Path, *, writes: ApprovalWrites) -> str:
+    """First transform in approve_document's chain (AD7, AD12): refuse with
+    ApprovalRaceError if the core's trimmed content no longer hashes to what
+    plan_approval judged, or an upstream stamp it bound has moved. Returns the
+    content unchanged."""
+    if judged_text_hash(content) != writes.judged_hash:
+        raise ApprovalRaceError(
+            f"{file_path} changed between the approval check and the stamp"
+        )
+    for b in writes.bindings:
+        now = _read_upstream_stamp(Path(file_path).parent, b.upstream)
+        if now is None or now.lower() != b.content_hash:
+            raise ApprovalRaceError(
+                f"{b.upstream}'s approval stamp changed between the approval "
+                f"check and the stamp"
+            )
+    return content
+
+
+def apply_approval_writes(content: str, file_path: Path, *, writes: ApprovalWrites) -> str:
+    """Upsert the binding lines (AD10) and append the override record once
+    (AD8), inside approval_section_bounds only. Idempotent (I4)."""
+    if writes.bindings:
+        content = upsert_binding_lines(content, writes.bindings)
+    if writes.override is not None and read_override_record(content) is None:
+        content = append_override_record(content, writes.override)
+    return content
+
+
+def compose_content_transforms(*transforms):
+    """One `content_transform(content, file_path)` applying each non-None
+    transform in order (AD12: race check, producer hook, approval writes)."""
+    chain = [t for t in transforms if t is not None]
+
+    def _composed(content: str, file_path: Path) -> str:
+        for t in chain:
+            content = t(content, file_path)
+        return content
+
+    return _composed
+
+
+# ----- Unit C0 R3/R4: binding reports ----------------------------------------
+
+# The consistency check each downstream's bindings are re-verified with, and
+# its `--approve` phase flag.
+_BINDING_PAIR_CHECK = {
+    "design.md": "Spec-Design",
+    "tasks.md": "Spec-Design-Tasks",
+    "ARCHITECTURE.md": "Scope-Architecture",
+    "PLAN.md": "Scope-Architecture-Plan",
+}
+_APPROVE_PHASE_FLAG = {
+    "spec.md": "spec", "design.md": "design", "tasks.md": "tasks",
+    "SCOPE.md": "scope", "ARCHITECTURE.md": "architecture", "PLAN.md": "plan",
+}
+
+
+@dataclass(frozen=True)
+class SupersededBinding:
+    """DM4: one superseded binding. ``reason`` is 'newer-stamp',
+    'upstream-unapproved' or 'duplicate'."""
+
+    upstream: str
+    recorded: "Tuple[str, ...]"
+    current: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class BindingReport:
+    """DM4: unbound upstreams and superseded bindings of one downstream."""
+
+    unbound: "Tuple[str, ...]" = ()
+    superseded: "Tuple[SupersededBinding, ...]" = ()
+
+
+def binding_report(
+    downstream_bare: str,
+    downstream_text: str,
+    upstream_texts: "Mapping[str, Optional[str]]",
+) -> BindingReport:
+    """The one binding comparator (AD11), shared by validation, `--run-state` and
+    the previous-phase check. A no-op on an unapproved downstream (a draft never
+    reads as unbound, AC-3.6). Over an approved downstream it is total: an
+    upstream with no line is unbound; one whose text is None or whose stamp is
+    not 16-hex is superseded ('upstream-unapproved'); two or more lines for one
+    upstream are superseded ('duplicate'); a single line whose value differs
+    from the upstream's current stamp is superseded ('newer-stamp'). Stamps are
+    compared lowercased."""
+    if not has_approval(downstream_text):
+        return BindingReport()
+    recorded = read_bindings(downstream_text)
+    unbound = []
+    superseded = []
+    for up in UPSTREAM_SETS.get(downstream_bare, ()):
+        vals = recorded.get(up, ())
+        if not vals:
+            unbound.append(up)
+            continue
+        text = upstream_texts.get(up)
+        cur = read_stored_hash(text) if text is not None else "missing"
+        if text is None or not _is_valid_16_hex(cur):
+            superseded.append(SupersededBinding(up, vals, cur, "upstream-unapproved"))
+        elif len(vals) >= 2:
+            superseded.append(SupersededBinding(up, vals, cur.lower(), "duplicate"))
+        elif vals[0] != cur.lower():
+            superseded.append(SupersededBinding(up, vals, cur.lower(), "newer-stamp"))
+    return BindingReport(tuple(unbound), tuple(superseded))
+
+
+def _read_upstream_texts(directory: Path, bare_name: str) -> "dict":
+    return {
+        up: read_file(resolve_artifact(Path(directory), up))
+        for up in UPSTREAM_SETS.get(bare_name, ())
+    }
+
+
+def superseded_binding_detail(downstream: str, s: SupersededBinding) -> str:
+    """AC-4.1 / AC-4.2 FAIL text for one superseded binding (shared wording)."""
+    dt = lambda x: display_text(x, max_len=DISPLAY_ARG_MAX)  # noqa: E731
+    rec = ", ".join(dt(v) for v in s.recorded)
+    if s.reason == "duplicate":
+        what = f"{downstream} has {len(s.recorded)} binding lines for {s.upstream} ({rec})"
+    elif s.reason == "upstream-unapproved":
+        what = (
+            f"{downstream} is bound to {s.upstream} @ {rec}, but {s.upstream} is not "
+            f"approved now (Content Hash: {dt(s.current)})"
+        )
+    else:
+        what = (
+            f"{downstream} is bound to {s.upstream} @ {rec}, but {s.upstream} is now "
+            f"stamped {dt(s.current)}"
+        )
+    pair = _BINDING_PAIR_CHECK.get(downstream, "consistency")
+    flag = _APPROVE_PHASE_FLAG.get(downstream, "<phase>")
+    return (
+        f"{what} ({s.reason}) — {downstream} was approved against an older "
+        f"{s.upstream}; {GLOSS_SUPERSEDED}. Run the {pair} consistency check "
+        f"against the current {s.upstream}, then re-approve top-down "
+        f"(`--approve {flag}`), expecting further FAILs below it until each "
+        f"downstream is re-approved. An upstream re-approval with no "
+        f"reviewed-content change (e.g. a seal-promotion re-stamp) produces this "
+        f"same FAIL; the re-approval clears it."
+    )
+
+
+def check_upstream_bindings(
+    directory: Path,
+    bare_name: str,
+    content: str,
+    result: "ValidationResult",
+    *,
+    exempt_own_binding: bool = False,
+) -> None:
+    """`<name> upstream binding current`: superseded -> FAIL (AC-4.1), unbound
+    -> WARN (AC-3.6). No-op when the artifact is unapproved, has no upstreams,
+    or ``exempt_own_binding`` (the approve about to rebind it)."""
+    if exempt_own_binding or bare_name not in UPSTREAM_SETS or not has_approval(content):
+        return
+    rep = binding_report(bare_name, content, _read_upstream_texts(directory, bare_name))
+    check = f"{bare_name} upstream binding current"
+    for s in rep.superseded:
+        result.add(check, False, superseded_binding_detail(bare_name, s))
+    if rep.unbound:
+        pair = _BINDING_PAIR_CHECK[bare_name]
+        flag = _APPROVE_PHASE_FLAG[bare_name]
+        result.add(
+            check,
+            False,
+            f"{bare_name} has no upstream binding for {', '.join(rep.unbound)} — "
+            f"{GLOSS_UNBOUND}. To bind it: run the {pair} consistency check against "
+            f"the current upstream, then re-approve (`--approve {flag}`), top-down.",
+            warn_only=True,
+        )
+    if not rep.superseded and not rep.unbound:
+        result.add(check, True)
+
+
+# ----- Unit C0 R5: the convergence gate wrapper (AD6) -------------------------
+
+MSG_MISSING_CROSS_CHECK = (
+    "a NORMAL pass followed a strict-bar pass — the likely cause is a missing "
+    "`--cross-check` stamp: a STRICT-BAR run exits only through a cross-check "
+    "pass archived with `archive_pass.py --cross-check`"
+)
+MSG_STRICT_BAR_EXIT = (
+    "the closing pass is a STRICT-BAR pass, which exits only through a cross-check "
+    "(`panel-review-convergence.md` § Exit cross-check)"
+)
+_MSG_LEGACY_FORMAT = (
+    "`## Panel Review` is in the legacy single-table format, which the archive "
+    "script refuses: first migrate it by hand to the three-sub-section format "
+    "(`### Trajectory`, `### Sealed dispositions`, `### Latest pass detail`)"
+)
+
+
+def _gate_code_text(code: str) -> str:
+    if code == "no-converged-stamp":
+        return "the closing pass carries no converged stamp (it left an unresolved HIGH concern)"
+    if code.startswith("addressed="):
+        return (f"the closing pass disposed {code.split('=', 1)[1]} concern(s) Addressed "
+                f"— an edit no pass has reviewed yet")
+    if code.startswith("deferred="):
+        return f"the closing pass disposed {code.split('=', 1)[1]} concern(s) Deferred"
+    if code == "cross-check-without-strict-bar":
+        return "the closing cross-check pass has no strict-bar pass before it"
+    if code == "normal-after-strict-bar":
+        return MSG_MISSING_CROSS_CHECK
+    if code == "strict-bar-closing":
+        return MSG_STRICT_BAR_EXIT
+    if code == "halt-and-rescope":
+        return "the closing pass recorded a Halt and re-scope disposition"
+    if code == "edited-after-pass":
+        return "the content changed after the closing pass was archived, so no pass reviewed it"
+    return code
+
+
+def _panel_body(content: str) -> str:
+    m = re.search(r"^##\s+Panel Review\s*$", content, re.MULTILINE)
+    if m is None:
+        return ""
+    nxt = re.search(r"^##\s+", content[m.end():], re.MULTILINE)
+    return content[m.end(): m.end() + nxt.start()] if nxt else content[m.end():]
+
+
+def check_convergence_gate(
+    content: str, bare_name: str, artifact_path: Path, result: "ValidationResult"
+) -> ConvergenceVerdict:
+    """`<name> convergence gate` (R5). The caller runs it at FIRST approval only
+    (I5). Adds one FAIL, WARN or PASS row with the AD6 evidence-based routes, and
+    returns the verdict with ``edited-after-pass`` appended when the freshness
+    check (AC-5.11) fails."""
+    check = f"{bare_name} convergence gate"
+    v = evaluate_convergence(content)
+    terminal = " --terminal" if is_terminal_artifact(content, Path(artifact_path).name) else ""
+    phase = ARTIFACT_PHASE_NO.get(bare_name, "<N>")
+    art = display_text(str(artifact_path), max_len=DISPLAY_ARG_MAX)
+    panel_route = (
+        f"run another panel pass and archive it (`archive_pass.py {art} --phase {phase}{terminal}`)"
+    )
+    override_route = (
+        f"approve with `--override-convergence \"<reason>\"` — {USER_DECISION_NOTE}"
+    )
+    failed = list(v.failed)
+
+    if v.legacy and failed:
+        codes = "; ".join(_gate_code_text(c) for c in failed)
+        result.add(
+            check, False,
+            f"{bare_name}'s closing Trajectory row is legacy ({GLOSS_LEGACY}); it would "
+            f"fail the convergence rules ({', '.join(failed)}: {codes}). Not blocking: "
+            f"size the backlog with `--audit-convergence`.",
+            warn_only=True,
+        )
+        return v
+    if v.legacy:
+        result.add(check, True, "legacy closing row passes the convergence rules")
+        return v
+
+    if "no-converged-pass" in failed:
+        body = _panel_body(content)
+        evidence = bool(PANEL_TRAJECTORY_ROW.search(body) or PANEL_SEAL_ENTRY.search(body))
+        routes = []
+        if v.legacy_format:
+            routes.append(_MSG_LEGACY_FORMAT)
+        routes.append(panel_route)
+        if evidence:
+            routes.append(override_route)
+        result.add(
+            check, False,
+            f"no converged panel pass recorded for {bare_name} (no Trajectory row "
+            f"other than skip rows). Route out: " + "; or ".join(routes) + ".",
+        )
+        return v
+
+    if v.freshness_hash is not None and v.freshness_hash != compute_content_hash(content):
+        failed.append("edited-after-pass")
+
+    if not failed:
+        result.add(check, True, f"closing pass {v.closing_pass} converged")
+        return v
+
+    reasons = "; ".join(_gate_code_text(c) for c in failed)
+    if "edited-after-pass" in failed:
+        routes = (
+            f"(1) for a mechanical edit only, record it: `archive_pass.py {art} --phase "
+            f"{phase}{terminal} --skip \"<what changed>\"` (valid only per "
+            f"panel-review-modes.md § When to Skip the Panel); (2) for a substantive "
+            f"edit, {panel_route.replace('run another panel pass', 'another panel pass')}; "
+            f"(3) {override_route}"
+        )
+    else:
+        routes = f"{panel_route}; or {override_route}"
+    result.add(
+        check, False,
+        f"{bare_name}'s closing pass {v.closing_pass} did not converge "
+        f"({', '.join(failed)}): {reasons}. Route out: {routes}.",
+    )
+    return ConvergenceVerdict(v.closing_pass, tuple(failed), v.legacy, v.legacy_format, v.freshness_hash)
+
+
+# ----- Unit C0 R6: the read-only convergence audit (AD9) ---------------------
+
+AUDIT_STATES = (
+    "converged",
+    "converged (previously overridden)",
+    "overridden",
+    "unconverged",
+    "no converged panel pass recorded",
+)
+AUDIT_UNAUDITABLE = "unauditable (ambiguous NN_ prefix)"
+_AUDIT_OK = {"converged", "converged (previously overridden)", "overridden"}
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    """DM12: one audit report line. ``reason`` carries the stored override
+    reason for 'overridden', or 'duplicate override records'."""
+
+    path: str
+    state: str
+    legacy: bool
+    reason: "Optional[str]" = None
+
+
+def _audit_one(label: str, text: str) -> AuditEntry:
+    v = evaluate_convergence(text)
+    rec = read_override_record(text)
+    duplicate = rec is not None and rec.duplicate
+    if duplicate:
+        rec = None
+    note = "duplicate override records" if duplicate else None
+    if "no-converged-pass" in v.failed:
+        if rec is not None:
+            return AuditEntry(label, "overridden", v.legacy, rec.reason)
+        # AC-6.5: an approved artifact with no closing row and no override
+        # record is labelled legacy here, independently of verdict.legacy.
+        return AuditEntry(label, "no converged panel pass recorded", True, note)
+    if not v.failed:
+        state = "converged (previously overridden)" if rec is not None else "converged"
+        return AuditEntry(label, state, v.legacy, note)
+    if rec is not None:
+        return AuditEntry(label, "overridden", v.legacy, rec.reason)
+    return AuditEntry(label, f"unconverged ({', '.join(v.failed)})", v.legacy, note)
+
+
+def audit_convergence(artifacts: "Sequence[Tuple[str, Path]]") -> "List[AuditEntry]":
+    """Judge each APPROVED artifact (valid 16-hex stored stamp) by its current
+    closing row, AC-5.2–5.6, without the freshness check (AC-6.5). Pure read."""
+    out = []
+    for label, path in artifacts:
+        p = Path(path)
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not _is_valid_16_hex(read_stored_hash(text)):
+            continue
+        out.append(_audit_one(label, text))
+    return out
+
+
+def audit_directory(
+    directory: Path, names: "Sequence[str]", *, label: "Optional[str]" = None
+) -> "List[AuditEntry]":
+    """Audit one artifact directory. An ambiguous NN_ prefix makes the whole
+    directory one `unauditable` entry (AD9) instead of aborting the run."""
+    shown = label if label is not None else str(directory)
+    try:
+        paths = [resolve_artifact(Path(directory), n) for n in names]
+        items = [(f"{shown}/{p.name}", p) for p in paths]
+    except ArtifactAmbiguityError:
+        return [AuditEntry(display_text(shown, max_len=DISPLAY_ARG_MAX), AUDIT_UNAUDITABLE, False)]
+    return audit_convergence(items)
+
+
+def format_audit_report(entries: "Sequence[AuditEntry]") -> "Tuple[str, int]":
+    """(text, exit_code): one line per entry, then the DM12 summary line. Exit
+    0 iff nothing is unauditable and every non-legacy artifact is converged,
+    previously overridden or overridden."""
+    lines = []
+    counts = {s: 0 for s in AUDIT_STATES}
+    unauditable = legacy = 0
+    ok = True
+    for e in entries:
+        line = f"{display_text(e.path, max_len=DISPLAY_ARG_MAX)}: {e.state}"
+        if e.state == "overridden" and e.reason:
+            line += f" — reason: {display_text(e.reason, max_len=DISPLAY_ARG_MAX)}"
+        elif e.reason:
+            line += f" ({e.reason})"
+        if e.legacy:
+            line += " — legacy"
+        lines.append(line)
+        if e.state == AUDIT_UNAUDITABLE:
+            unauditable += 1
+            ok = False
+            continue
+        if e.legacy:
+            legacy += 1
+            continue
+        base = "unconverged" if e.state.startswith("unconverged") else e.state
+        counts[base] = counts.get(base, 0) + 1
+        if base not in _AUDIT_OK:
+            ok = False
+    lines.append(
+        "convergence audit: "
+        + ", ".join(f"{s} {counts[s]}" for s in AUDIT_STATES)
+        + f", unauditable {unauditable}; legacy {legacy}"
+    )
+    return "\n".join(lines), 0 if ok else 1
+
+
+# ----- Unit C0 R5/R6/R3: approve-flow orchestration (AD7) ---------------------
+
+
+@dataclass
+class ApprovalPlan:
+    """DM11. Any FAIL row in ``result`` means exit 1 and no write, under any
+    flags. ``writes`` is None under --task-tick (AC-3.9) or on a refusal."""
+
+    writes: "Optional[ApprovalWrites]"
+    result: "ValidationResult"
+    post_lines: "List[str]"
+
+
+_OVERRIDE_NOT_NEEDED = "convergence override not needed for {name}: {why}; no override record written"
+
+
+def plan_approval(
+    target: Path,
+    *,
+    directory: Path,
+    bare_name: str,
+    task_tick: bool,
+    override_reason: "Optional[str]",
+) -> ApprovalPlan:
+    """Judge one approve before anything is written (AD7). Pure read.
+
+    Rows: AC-5.8's unstamped --task-tick refusal (SDD only); AC-3.8's
+    unbindable-upstream refusal; at first approval (no valid 16-hex stored
+    stamp, R5 scope) the convergence gate, or the override that resolves its
+    FAIL. Records the full-text ``judged_hash`` the race check re-verifies.
+    """
+    result = ValidationResult()
+    post: "List[str]" = []
+    text = Path(target).read_text(encoding="utf-8-sig")
+    first = not _is_valid_16_hex(read_stored_hash(text))
+    name = display_text(Path(target).name, max_len=DISPLAY_ARG_MAX)
+
+    if task_tick:
+        if first:
+            result.add(
+                f"{bare_name} task-tick on a stamped artifact",
+                False,
+                f"{name} carries no approval stamp, so `--task-tick` would be a first "
+                f"approval that bypasses the convergence gate and the upstream binding "
+                f"write. Route out: run a plain `--approve tasks`.",
+            )
+        elif override_reason is not None:
+            post.append(_OVERRIDE_NOT_NEEDED.format(
+                name=name, why="a re-approval never meets the convergence gate"))
+        return ApprovalPlan(None, result, post)
+
+    try:
+        bindings = collect_upstream_bindings(directory, bare_name)
+    except UnbindableUpstreamError as exc:
+        flag = _APPROVE_PHASE_FLAG.get(exc.upstream, "<phase>")
+        result.add(
+            f"{bare_name} upstream approval stamp",
+            False,
+            f"{exc}, so {name} cannot record which version it was approved against. "
+            f"Approve the named upstream first: `--approve {flag}`.",
+        )
+        return ApprovalPlan(None, result, post)
+
+    override = None
+    if first:
+        gate = ValidationResult()
+        verdict = check_convergence_gate(text, bare_name, Path(target), gate)
+        gate_failed = any(c[1] == Severity.FAIL for c in gate.checks)
+        if gate_failed and override_reason is not None:
+            reason = sanitize_override_reason(override_reason)
+            override = OverrideRecord(verdict.closing_pass, reason)
+            shown_pass = "none" if verdict.closing_pass is None else str(verdict.closing_pass)
+            result.add(
+                f"{bare_name} convergence gate", False,
+                f"overridden as a user decision (closing pass {shown_pass}; "
+                f"{', '.join(verdict.failed)}) — recorded in ## Approval",
+                warn_only=True,
+            )
+            post.append(
+                f"convergence override: {name} approved at pass {shown_pass} although "
+                f"it failed ({', '.join(verdict.failed)}) — reason: {reason}"
+            )
+        else:
+            result.checks.extend(gate.checks)
+            if override_reason is not None:
+                why = (
+                    "its closing row is legacy, so the gate only warns"
+                    if verdict.legacy else "it passes the convergence gate"
+                )
+                if not gate_failed:
+                    post.append(_OVERRIDE_NOT_NEEDED.format(name=name, why=why))
+    elif override_reason is not None:
+        post.append(_OVERRIDE_NOT_NEEDED.format(
+            name=name, why="a re-approval never meets the convergence gate"))
+
+    writes = ApprovalWrites(
+        bindings=bindings, override=override, judged_hash=judged_text_hash(text)
+    )
+    return ApprovalPlan(writes, result, post)
 
 
 def approve_document(
@@ -553,6 +1225,9 @@ def approve_document(
     # so the refreshed sub-block is part of the document-level hash.
     if content_transform is not None:
         content = content_transform(content, file_path)
+    # Post-transform, pre-rewrite snapshot (Unit C0 AD12): what the restamp
+    # classifier compares with content_trimmed (only binding lines may differ).
+    transformed = content
 
     content_hash = compute_content_hash(content)
 
@@ -615,6 +1290,7 @@ def approve_document(
         content_trimmed=content_trimmed,
         marker_root=root,
         doc_rel=doc_rel,
+        final_content=transformed,
     )
     return True
 
@@ -827,6 +1503,9 @@ REAPPROVAL_REMINDER = (
 # --decline-pending exit code when one or more keys are held back or flagged
 # (a non-clean partition). Distinct from 1 (corrupt marker) and 2 (arg error).
 EXIT_DECLINE_HELD_BACK = 3
+# --decline-pending exit code when the decline is refused outright (multi-scope,
+# other-tier, or a refused --decline-key); nothing is written (Unit C0 AD15).
+EXIT_DECLINE_REFUSED = 4
 
 DECLINE_UNSATISFIABLE_HELD_BACK_MSG = (
     "Held back {doc_rel}: NOT declined. A genuine upstream-panel re-review tag is "
@@ -840,6 +1519,22 @@ DECLINE_FLAGGED_ANOMALOUS_MSG = (
     "(corrupt/non-16-hex hash, or an out-of-tree key) — surfaced so a corrupt entry "
     "is never mistaken for a normal decline. Inspect .sdd/pending-review.json if "
     "this is unexpected."
+)
+
+# Unit C0 (AD16): the two kinds a FLAGGED key splits into when the caller knows
+# the project root. DECLINE_FLAGGED_ANOMALOUS_MSG stays for callers that don't.
+DECLINE_FLAGGED_ESCAPING_MSG = (
+    "Flagged {doc_rel}: cleared, but its key is containment-escaping (its path "
+    "resolves outside the project, so no session can own or satisfy it) — "
+    "surfaced so it is never mistaken for a normal decline. Inspect "
+    ".sdd/pending-review.json if this is unexpected."
+)
+
+DECLINE_FLAGGED_MALFORMED_MSG = (
+    "Flagged {doc_rel}: cleared, but its pending-review entry was malformed "
+    "(corrupt/non-16-hex hash, or a hand-edited path) — surfaced so a corrupt "
+    "entry is never mistaken for a normal decline. Inspect "
+    ".sdd/pending-review.json if this is unexpected."
 )
 
 REVERSED_ORDER_CREATE_WARN = (
@@ -919,6 +1614,20 @@ def add_orphaned_trajectory_results(
 # partially-loaded module without a cycle.
 # ---------------------------------------------------------------------------
 from pending_review import (  # noqa: E402
+    BLUEPRINT_ARTIFACT_NAMES,
+    RestampDelta,
+    classify_restamp_delta,
+    format_restamp_carve_out,
+    SDD_ARTIFACT_NAMES,
+    DeclineRefusal,
+    DeclineResult,
+    decline_pending_scoped,
+    format_decline_refusal,
+    is_containment_escaping,
+    owning_dir_route,
+    partition_keys,
+    scope_of_key,
+    tier_of_scope,
     clear_pending_entries_for_prefix,
     format_decline_output,
     partition_decline_clear,

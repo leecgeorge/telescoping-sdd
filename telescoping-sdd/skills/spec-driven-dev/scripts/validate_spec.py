@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
@@ -58,14 +59,30 @@ from blueprint_common import (  # noqa: E402
     Severity,
     ValidationResult,
     approval_section_bounds,
+    ApprovalWrites,
+    apply_approval_writes,
     approve_document as _approve_document_core,
+    check_upstream_bindings,
+    ApprovalRaceError,
+    ArtifactAmbiguityError,
+    audit_directory,
+    strip_artifact_prefix,
+    format_audit_report,
+    plan_approval,
+    sanitize_override_reason,
+    compose_content_transforms,
+    verify_judged_transform,
     changed_since_stamp,
     check_approval,
     check_previous_phase_approved,
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    EXIT_DECLINE_REFUSED,
+    decline_pending_scoped,
     format_decline_output,
+    format_decline_refusal,
+    scope_of_key,
     has_section,
     is_basis_migration_only,
     mixed_state_warning,
@@ -619,6 +636,7 @@ def approve_document(
     *,
     task_tick: bool = False,
     project_root: Optional[Path] = None,
+    approval_writes: Optional[ApprovalWrites] = None,
 ) -> bool:
     """Mark a document as approved (thin wrapper over the shared core, audit 3.5a).
 
@@ -627,11 +645,24 @@ def approve_document(
     passes ``content_transform=None`` and forwards the Phase-4 ``task_tick``
     carve-out. Signature is preserved byte-for-byte so all in-process callers and
     tests keep working; see the core for the full contract (R1.5 / R2.6).
+
+    Unit C0 (AD12): with ``approval_writes`` the core's ``content_transform`` is
+    the composed race check (``verify_judged_transform``) then the approval
+    writes (binding lines, override record). Without it — every direct caller
+    and test — behaviour is exactly as before. Under ``--task-tick`` the CLI
+    passes no writes (AC-3.9).
     """
+    transform = None
+    if approval_writes is not None:
+        transform = compose_content_transforms(
+            partial(verify_judged_transform, writes=approval_writes),
+            partial(apply_approval_writes, writes=approval_writes),
+        )
     return _approve_document_core(
         file_path,
         task_tick=task_tick,
         project_root=project_root,
+        content_transform=transform,
     )
 
 
@@ -1061,6 +1092,93 @@ def check_dir_identifier(
 # Phase validators
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Unit C0 R7: every cited AC label resolves to a definition in spec.md (AD18)
+# ---------------------------------------------------------------------------
+
+AC_DEFINITION_RE = re.compile(r"^[-*+] \*\*AC-(\d+)\.(\d+)\*\*(?=\s|$)", re.MULTILINE)
+AC_CITATION_RE = re.compile(r"(?<![\w.-])AC-(\d+)\.(\d+)(?![\w]|\.\d)")
+_FENCE_OPEN_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)")
+_AC_DEF_TOKEN_RE = re.compile(r"^[-*+] \*\*AC-\d+\.\d+\*\*")
+_AC_ROUTE = (
+    "Route out: define the label in spec.md, fix the citation, or quote it in a "
+    "code span; that fix is a mechanical edit eligible for "
+    "`panel-review-modes.md` § When to Skip the Panel."
+)
+
+
+def collect_ac_definitions(spec_content: str) -> "dict[str, int]":
+    """Label -> 1-based line of each unindented, line-start bold-label list item."""
+    out: "dict[str, int]" = {}
+    for m in AC_DEFINITION_RE.finditer(spec_content):
+        label = f"AC-{m.group(1)}.{m.group(2)}"
+        out.setdefault(label, spec_content.count("\n", 0, m.start()) + 1)
+    return out
+
+
+def collect_ac_citations(content: str, *, is_spec: bool) -> "list[tuple[str, int]]":
+    """(label, 1-based line) of every citation outside fenced blocks (backtick
+    or tilde), inline code spans, the `## Panel Review` section and — in
+    spec.md — each definition line's leading bold token (AD18)."""
+    out: "list[tuple[str, int]]" = []
+    fence: "Optional[str]" = None
+    in_panel = False
+    for lineno, line in enumerate(content.split("\n"), start=1):
+        m = _FENCE_OPEN_RE.match(line)
+        if fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            continue
+        if m:
+            fence = m.group(1)
+            continue
+        if re.match(r"^##\s+", line):
+            in_panel = bool(re.match(r"^##\s+Panel Review\s*$", line))
+        if in_panel:
+            continue
+        text = line
+        if is_spec:
+            text = _AC_DEF_TOKEN_RE.sub("", text, count=1)
+        text = _CODE_SPAN_RE.sub("", text)
+        for c in AC_CITATION_RE.finditer(text):
+            out.append((f"AC-{c.group(1)}.{c.group(2)}", lineno))
+    return out
+
+
+def check_ac_labels(spec_dir: Path, filename: str, content: str, result: ValidationResult) -> None:
+    """`<file> AC labels resolve` (R7): no row when nothing is defined or cited
+    (AC-7.4); a WARN when spec.md defines no labels but the file cites some
+    (AC-7.5); otherwise a FAIL listing each dangling `label:line` (AC-7.3) or
+    a PASS. Only a label's existence is checked (AC-7.6 known limit)."""
+    is_spec = strip_artifact_prefix(filename) == "spec.md"
+    if is_spec:
+        spec_content = content
+    else:
+        spec_content = read_file(resolve_artifact(spec_dir, "spec.md")) or ""
+    defs = collect_ac_definitions(spec_content)
+    cites = collect_ac_citations(content, is_spec=is_spec)
+    check = f"{filename} AC labels resolve"
+    if not defs:
+        if cites:
+            labels = ", ".join(sorted({label for label, _ in cites}))
+            result.add(
+                check, False,
+                f"cites {labels}, but spec.md defines no AC labels — read as "
+                f"illustrative; quote another feature's label in a code span.",
+                warn_only=True,
+            )
+        return
+    dangling = [f"{label}:{line}" for label, line in cites if label not in defs]
+    if dangling:
+        result.add(
+            check, False,
+            f"dangling AC label(s) not defined in spec.md: {', '.join(dangling)}. {_AC_ROUTE}",
+        )
+    else:
+        result.add(check, True)
+
+
 def validate_spec(spec_dir: Path) -> ValidationResult:
     """Validate spec.md for required sections.
 
@@ -1075,6 +1193,8 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     result.add("spec.md exists", content is not None, str(spec_path))
     if content is None:
         return result
+
+    check_ac_labels(spec_dir, "spec.md", content, result)
 
     for section in SPEC_REQUIRED_SECTIONS:
         result.add(
@@ -1126,7 +1246,12 @@ def validate_spec(spec_dir: Path) -> ValidationResult:
     return result
 
 
-def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> ValidationResult:
+def validate_design(
+    spec_dir: Path,
+    language: str = NEUTRAL_LANGUAGE,
+    *,
+    exempt_own_binding: bool = False,
+) -> ValidationResult:
     """Validate design.md for required sections."""
     result = ValidationResult()
     profile = get_profile(language)
@@ -1139,6 +1264,11 @@ def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validat
     result.add("design.md exists", content is not None, str(design_path))
     if content is None:
         return result
+
+    check_upstream_bindings(
+        spec_dir, "design.md", content, result, exempt_own_binding=exempt_own_binding
+    )
+    check_ac_labels(spec_dir, "design.md", content, result)
 
     for section in DESIGN_REQUIRED_SECTIONS:
         result.add(
@@ -1168,7 +1298,12 @@ def validate_design(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validat
     return result
 
 
-def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> ValidationResult:
+def validate_tasks(
+    spec_dir: Path,
+    language: str = NEUTRAL_LANGUAGE,
+    *,
+    exempt_own_binding: bool = False,
+) -> ValidationResult:
     """Validate tasks.md for proper task entries."""
     result = ValidationResult()
     profile = get_profile(language)
@@ -1181,6 +1316,11 @@ def validate_tasks(spec_dir: Path, language: str = NEUTRAL_LANGUAGE) -> Validati
     result.add("tasks.md exists", content is not None, str(tasks_path))
     if content is None:
         return result
+
+    check_upstream_bindings(
+        spec_dir, "tasks.md", content, result, exempt_own_binding=exempt_own_binding
+    )
+    check_ac_labels(spec_dir, "tasks.md", content, result)
 
     # Count task entries
     task_matches = list(TASK_ENTRY_PATTERN.finditer(content))
@@ -1689,28 +1829,46 @@ def validate_cfc_consumer(
 # Main
 # ---------------------------------------------------------------------------
 
-def _handle_decline_pending(spec_dir: Path, project_root: Optional[Path]) -> int:
+def _handle_decline_pending(
+    spec_dir: Path, project_root: Optional[Path], decline_key: Optional[str] = None
+) -> int:
     """`--decline-pending` mode (audit R3.2 — extracted from main).
 
     Clear this spec dir's pending-review obligations — an auditable user decision
     (logged to stdout), the validator-owned marker lifecycle (no hand-edited
     JSON). DEF-01/RI-11 v1-posture: the bypass trace is stdout-audited +
     fail-closed (the gate fires by default). Returns a process exit code.
+
+    Unit C0 (R1): routed through the shared ``decline_pending_scoped`` with the
+    SDD tier — a decline spanning more than one scope, or aimed at the other
+    tier's scope, is refused (exit 4, nothing written); ``decline_key`` is the
+    per-key opt-in for a vanished directory (AC-1.9).
     """
     root, spec_rel = _resolve_marker_root_and_key(spec_dir, project_root)
     restore_cmd = f"validate_spec.py {spec_dir} --restore-anchor"
     try:
-        cleared, held_back, flagged = partition_decline_clear(root, spec_rel)
+        res = decline_pending_scoped(
+            root, spec_rel, running_tier="sdd", decline_key=decline_key
+        )
     except MarkerCorruptError as exc:
         print(
             f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
             f".sdd/pending-review.json manually."
         )
         return 1
+    if res.refusal is not None:
+        print(format_decline_refusal(
+            res.refusal, project_root=root, target_rel=spec_rel, running_tier="sdd"
+        ))
+        return EXIT_DECLINE_REFUSED
+    cleared, held_back, flagged = list(res.cleared), list(res.held_back), list(res.flagged)
     if not cleared and not held_back and not flagged:
         print(f"No pending-review entries found for {spec_dir}.")
         return 0
-    msg, code = format_decline_output(cleared, held_back, flagged, restore_cmd=restore_cmd)
+    msg, code = format_decline_output(
+        cleared, held_back, flagged, restore_cmd=restore_cmd, project_root=root,
+        scope=scope_of_key(decline_key) if decline_key is not None else None,
+    )
     print(msg)
     return code
 
@@ -1785,6 +1943,7 @@ def _handle_approve(args, spec_dir: Path, project_root: Optional[Path]) -> int:
     # re-stamping tasks.md after ticking already-approved tasks; the content
     # was gated at the initial `--approve tasks`, and re-validating each tick
     # would risk blocking the interactive implement loop.
+    pre_result = None
     if not args.force and not args.task_tick:
         if args.approve == "spec":
             pre_result = validate_spec(spec_dir)
@@ -1796,24 +1955,55 @@ def _handle_approve(args, spec_dir: Path, project_root: Optional[Path]) -> int:
                 known_languages=list(LANGUAGE_PROFILES.keys()),
                 project_root=project_root,
             )
+            # The approve is about to rebind the target, so its own superseded
+            # binding is exempt here (AD11); the previous phase's still FAILs.
             if args.approve == "design":
-                pre_result = validate_design(spec_dir, gate_language)
+                pre_result = validate_design(spec_dir, gate_language, exempt_own_binding=True)
             else:
-                pre_result = validate_tasks(spec_dir, gate_language)
-        if not pre_result.passed:
-            print(f"Refusing to approve {target.name}: validation FAILed.")
-            print(pre_result.summary())
+                pre_result = validate_tasks(spec_dir, gate_language, exempt_own_binding=True)
+
+    # Unit C0 (AD7): the shared approval plan — AC-5.8's unstamped --task-tick
+    # refusal, AC-3.8's unbindable-upstream refusal, and at first approval the
+    # convergence gate or its override. Plan rows block under ANY flags;
+    # --force bypasses only the phase-validator rows (AC-5.9).
+    plan = plan_approval(
+        target,
+        directory=spec_dir,
+        bare_name=file_map[args.approve],
+        task_tick=args.task_tick,
+        override_reason=getattr(args, "override_convergence", None),
+    )
+    phase_failed = pre_result is not None and not pre_result.passed
+    if phase_failed or not plan.result.passed:
+        combined = ValidationResult()
+        combined.checks = list(pre_result.checks if pre_result is not None else []) + list(
+            plan.result.checks
+        )
+        print(f"Refusing to approve {target.name}: validation FAILed.")
+        print(combined.summary())
+        if phase_failed and plan.result.passed:
             print(
                 "\nFix the FAIL items above, OR re-run with --force to "
                 "approve anyway (you take responsibility for the "
                 "approved-but-invalid state)."
             )
-            return 1
+        else:
+            print(
+                "\nThe approval-plan FAILs above (upstream stamp, task-tick, "
+                "convergence gate) block under any flags; --force does not bypass them."
+            )
+        return 1
+    if plan.result.has_warnings:
+        print(plan.result.summary())
 
     try:
         stamped = approve_document(
-            target, task_tick=args.task_tick, project_root=project_root
+            target, task_tick=args.task_tick, project_root=project_root,
+            approval_writes=plan.writes,
         )
+    except ApprovalRaceError as exc:
+        print(f"Refusing to approve {target.name}: {exc} — changed during approval; re-run.")
+        return 1
     except MarkerCorruptError as exc:
         # The document was stamped (atomic) before restamp_or_suppress hit the
         # corrupt marker — surface it cleanly instead of a traceback, and exit
@@ -1826,11 +2016,63 @@ def _handle_approve(args, spec_dir: Path, project_root: Optional[Path]) -> int:
             file=sys.stderr,
         )
         return 1
+    if stamped:
+        for line in plan.post_lines:
+            print(line)
     # Reset-at-gate advisory (R1): only on a successful, non-task-tick stamp —
     # after the load-bearing approve_document returns. Best-effort, never raises.
     if stamped and not args.task_tick:
         emit_reset_checkpoint("sdd", args.approve)
     return 0 if stamped else 1
+
+
+SDD_AUDIT_NAMES = ("spec.md", "design.md", "tasks.md")
+
+
+def _is_feature_dir(d: Path) -> bool:
+    """AD9: a directory is a feature dir iff its spec.md resolves to a file (an
+    ambiguous NN_ prefix also marks it one, so it is reported unauditable)."""
+    try:
+        return resolve_artifact(d, "spec.md").is_file()
+    except ArtifactAmbiguityError:
+        return True
+
+
+def _handle_audit(spec_dir: Path) -> int:
+    """`--audit-convergence` (AD9): the feature dir itself, or else its immediate
+    child feature dirs sorted by name (non-feature children ignored). Pure read."""
+    if _is_feature_dir(spec_dir):
+        targets = [(spec_dir, spec_dir.name)]
+    else:
+        targets = [
+            (c, f"{c.name}") for c in sorted(spec_dir.iterdir(), key=lambda p: p.name)
+            if c.is_dir() and _is_feature_dir(c)
+        ]
+    entries = []
+    for d, label in targets:
+        entries.extend(audit_directory(d, SDD_AUDIT_NAMES, label=label))
+    text, code = format_audit_report(entries)
+    print(text)
+    return code
+
+
+def _guard_override_convergence(args) -> None:
+    """AC-6.2 / AD8: `--override-convergence` is a modifier of `--approve`, and a
+    blank reason, or one that sanitises to empty, exits 2 before any read."""
+    reason = getattr(args, "override_convergence", None)
+    if reason is None:
+        return
+    if not args.approve:
+        print("Error: --override-convergence is only valid with --approve")
+        sys.exit(2)
+    try:
+        sanitize_override_reason(reason)
+    except ValueError:
+        print(
+            'Error: --override-convergence needs a non-empty reason: '
+            '--override-convergence "<reason>"'
+        )
+        sys.exit(2)
 
 
 def _handle_set_language(args, spec_dir: Path, project_root: Optional[Path]) -> int:
@@ -2008,6 +2250,7 @@ def _run_validation(args, spec_dir: Path, project_root: Optional[Path]) -> int:
         spec_rel,
         decline_cmd=f"validate_spec.py {spec_dir} --decline-pending",
         restore_cmd=f"validate_spec.py {spec_dir} --restore-anchor",
+        running_tier="sdd",
     )
     if pending_result.checks:
         if use_json:
@@ -2104,6 +2347,31 @@ def main():
         "performed) is refused and routed to --restore-anchor, never mis-recorded "
         "as skipped; exit 3 if any obligation is held back or flagged.",
     )
+    parser.add_argument(
+        "--override-convergence",
+        metavar="REASON",
+        default=None,
+        help="With --approve: stamp a first approval even though its panel loop did "
+        "not converge, recording REASON in ## Approval. This is a user decision; "
+        "confirm before running.",
+    )
+    parser.add_argument(
+        "--decline-key",
+        metavar="KEY",
+        default=None,
+        help="With --decline-pending: decline ONLY this one marker key (it must "
+        "equal a key in .sdd/pending-review.json exactly) — for an obligation whose "
+        "owning directory no longer exists. This is a user decision; confirm "
+        "before running. One key per run.",
+    )
+    mode_group.add_argument(
+        "--audit-convergence",
+        action="store_true",
+        help="Read-only: report every approved artifact's convergence state "
+        "(converged / overridden / unconverged / no converged panel pass recorded, "
+        "plus a legacy label) and a summary line; writes nothing. Exit 0 iff every "
+        "non-legacy artifact is converged or overridden.",
+    )
     mode_group.add_argument(
         "--restore-anchor",
         action="store_true",
@@ -2171,6 +2439,10 @@ def main():
     if args.task_tick and args.approve != "tasks":
         print("Error: --task-tick is only valid with --approve tasks")
         sys.exit(2)
+    if args.decline_key is not None and not args.decline_pending:
+        print("Error: --decline-key is only valid with --decline-pending")
+        sys.exit(2)
+    _guard_override_convergence(args)
 
     # R5 completion-gate guards (AD3), mirroring the --task-tick guard's exit-2
     # behaviour. --completion-gate needs a repo root to scan; --strict-r5 only
@@ -2179,6 +2451,11 @@ def main():
         parser.error("--completion-gate requires --project-root")
     if args.strict_r5 and not args.completion_gate:
         parser.error("--strict-r5 is only valid with --completion-gate")
+
+    # Unit C0 (AC-6.5): the audit is dispatched BEFORE the atexit registration
+    # below, so the cruft sweep never runs and the audit writes nothing.
+    if args.audit_convergence:
+        sys.exit(_handle_audit(spec_dir))
 
     # Best-effort .sdd/ cruft cleanup at process exit.
     # Registered AFTER the arg-validation sys.exit(2)/parser.error guards above
@@ -2196,7 +2473,7 @@ def main():
     # so at most one of these is set; each handler returns a process exit code.
     # The default (no mode flag) runs validation.
     if args.decline_pending:
-        sys.exit(_handle_decline_pending(spec_dir, project_root))
+        sys.exit(_handle_decline_pending(spec_dir, project_root, args.decline_key))
     if args.restore_anchor:
         sys.exit(_handle_restore_anchor(spec_dir, project_root))
     if args.approve:

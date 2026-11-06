@@ -22,8 +22,9 @@ import os
 import sys
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import AbstractSet, Dict, Iterable, List, Optional, Tuple
 
 # Best-effort staleness window (seconds) for the panel-findings sweep: a matched
 # findings file modified within this window is left in place as defense-in-depth
@@ -41,8 +42,32 @@ try:  # Windows advisory file locking
 except ImportError:  # pragma: no cover - non-Windows
     _msvcrt = None
 
+# approval_records is a leaf over content_hash (Unit C0 AD1): display safety
+# and the operator text this module prints.
+from approval_records import (  # noqa: E402
+    BINDING_PART,
+    DISPLAY_ARG_MAX,
+    REPAD_PART,
+    RESTAMP_CARVE_OUT_PREFIX,
+    SEAL_PART,
+    TIER_VALIDATOR_CMD,
+    USER_DECISION_NOTE,
+    display_arg,
+    display_text,
+    strip_binding_lines,
+)
+from trajectory import (  # noqa: E402
+    SEAL_ENTRY_RE,
+    TRAJECTORY_KEEP_DEFAULT,
+    _trajectory_bounds,
+    render_table,
+    split_table_row,
+    strip_upstream_tags,
+)
 from blueprint_common import (  # noqa: E402
     DECLINE_FLAGGED_ANOMALOUS_MSG,
+    DECLINE_FLAGGED_ESCAPING_MSG,
+    DECLINE_FLAGGED_MALFORMED_MSG,
     DECLINE_UNSATISFIABLE_HELD_BACK_MSG,
     EXIT_DECLINE_HELD_BACK,
     HASH_BASIS_MIGRATION_SUPPRESS_MSG,
@@ -61,11 +86,13 @@ from blueprint_common import (  # noqa: E402
     _trajectory_data_rows,
     _trajectory_row_notes,
     changed_since_stamp,
+    compute_content_hash,
     content_for_hashing,
     find_orphaned_trajectory_rows,
     is_basis_migration_only,
     now_iso_utc,
     stamped_at_pass_from_content,
+    strip_artifact_prefix,
 )
 
 
@@ -288,6 +315,7 @@ def restamp_or_suppress(
     content_trimmed: str,
     marker_root: Path,
     doc_rel: str,
+    final_content: Optional[str] = None,
 ) -> None:
     """Post-stamp decision: preserve, create, or suppress a pending-review marker.
 
@@ -312,6 +340,15 @@ def restamp_or_suppress(
     Guarded-if (not early return), so suppression/preservation is scoped to the
     marker block. content_hash is positional; the rest are keyword-only (a
     same-typed-str positional swap is a TypeError — RISK-4).
+
+    Unit C0 (R2, AD13): in the create arm only — after the preserve and
+    basis-migration tests — ``classify_restamp_delta`` decides whether the
+    delta is a recognised carve-out (seal promotion, upstream binding refresh,
+    Trajectory re-pad). If so, one I9 audit line prints in place of
+    REAPPROVAL_REMINDER and no marker is written. ``final_content`` is the
+    approve core's post-transform, pre-rewrite snapshot (None means
+    ``content_trimmed``). Any classifier exception means unrecognised, so the
+    create arm runs — the carve-out can never fail open.
     """
     if not changed_since_stamp(content_hash, stored_hash, original_content):
         return
@@ -326,7 +363,24 @@ def restamp_or_suppress(
             content_trimmed=content_trimmed,
             marker_root=marker_root,
             doc_rel=doc_rel,
+            final_content=final_content,
         )
+
+
+def format_restamp_carve_out(doc_rel: str, delta: "RestampDelta") -> str:
+    """The I9 audit line: prefix plus the parts present (seal, binding, re-pad),
+    joined by " and "."""
+    parts = []
+    if delta.promoted_seals:
+        parts.append(SEAL_PART.format(ids=", ".join(f"[{s}]" for s in delta.promoted_seals)))
+    if delta.binding_refresh:
+        parts.append(BINDING_PART)
+    if delta.repad:
+        parts.append(REPAD_PART)
+    prefix = RESTAMP_CARVE_OUT_PREFIX.format(
+        doc_rel=display_text(doc_rel, max_len=DISPLAY_ARG_MAX)
+    )
+    return prefix + " and ".join(parts)
 
 
 def _restamp_or_suppress_locked(
@@ -337,6 +391,7 @@ def _restamp_or_suppress_locked(
     content_trimmed: str,
     marker_root: Path,
     doc_rel: str,
+    final_content: Optional[str] = None,
 ) -> None:
     open_entry = read_open_obligation(marker_root=marker_root, doc_rel=doc_rel)
     if open_entry is not None:
@@ -354,6 +409,18 @@ def _restamp_or_suppress_locked(
         stored_hash=stored_hash,
         content_trimmed=content_trimmed,
     ):
+        try:
+            delta = classify_restamp_delta(
+                stored_hash=stored_hash,
+                original_content=original_content,
+                content_trimmed=content_trimmed,
+                final_content=final_content if final_content is not None else content_trimmed,
+            )
+        except Exception:  # noqa: BLE001 — never fail open after the stamp (AD13)
+            delta = None
+        if delta is not None:
+            print(format_restamp_carve_out(doc_rel, delta))
+            return
         anchor = stamped_at_pass_from_content(original_content)
         upsert_pending_entry(
             marker_root,
@@ -373,6 +440,173 @@ def _restamp_or_suppress_locked(
             print(REVERSED_ORDER_CREATE_WARN.format(doc_rel=doc_rel))
     else:
         print(HASH_BASIS_MIGRATION_SUPPRESS_MSG.format(doc_rel=doc_rel))
+
+
+# ----- R2 restamp-delta classifier (Unit C0 AD13) -------------------------------
+
+_SEALED_HEADING = "### Sealed dispositions"
+
+
+@dataclass(frozen=True)
+class RestampDelta:
+    """DM7: what a recognised re-stamp delta consists of."""
+
+    promoted_seals: "Tuple[str, ...]" = ()
+    binding_refresh: bool = False
+    repad: bool = False
+
+
+def _sealed_entries(lines: "List[str]") -> "List[Tuple[int, int, int, str]]":
+    """(line_idx, id, pass, id_text) for each `[SEAL-NN]` entry in the
+    `### Sealed dispositions` section (ends at the next `### `/`## ` heading)."""
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.rstrip() == _SEALED_HEADING)
+    except StopIteration:
+        return []
+    out = []
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith("### ") or lines[i].startswith("## "):
+            break
+        m = SEAL_ENTRY_RE.match(lines[i].rstrip())
+        if m:
+            out.append((i, int(m.group(1)), int(m.group(3)), m.group(1)))
+    return out
+
+
+def _removal_consistent(removed, kept, sealed_by_pass) -> bool:
+    """AD13: only seal lines with matching table evidence may be reversed."""
+    per_pass: "Dict[int, int]" = {}
+    for _idx, _id, p, _t in removed:
+        cell = sealed_by_pass.get(p)
+        if cell is None or not _is_ascii_int(cell):
+            return False
+        per_pass[p] = per_pass.get(p, 0) + 1
+        if per_pass[p] > int(cell):
+            return False
+    top_kept = max((e[1] for e in kept), default=0)
+    ids = sorted(e[1] for e in removed)
+    return ids == list(range(top_kept + 1, top_kept + 1 + len(ids)))
+
+
+def _strip_notes(row: "Dict[str, str]") -> "Dict[str, str]":
+    if "Notes" not in row:
+        return row
+    return dict(row, Notes=strip_upstream_tags(row["Notes"]))
+
+
+def classify_restamp_delta(
+    *,
+    stored_hash: str,
+    original_content: str,
+    content_trimmed: str,
+    final_content: str,
+) -> "Optional[RestampDelta]":
+    """Recognise a re-stamp whose delta is only seal promotion, binding refresh
+    and/or an archive re-pad (AD13). None means unrecognised (create arm). Pure.
+
+    Step 1 — producer check: the transformed content may differ from
+    ``content_trimmed`` only in binding lines. Step 2 — reconstruct the stamped
+    content from ``original_content``: for each cut point K ("no cut", then at
+    most the newest TRAJECTORY_KEEP_DEFAULT distinct integer passes) reverse the
+    `[SEAL-NN]` entries with pass > K when the reversal is table-consistent
+    (both blank-line forms when it empties the section), and try four
+    header/separator candidates built from the on-disk header cell text. The
+    first candidate hashing to ``stored_hash`` wins. Step 3 — recognise seal
+    promotion, binding refresh, or an archive re-pad (on-disk header differs
+    from the match and equals an archive render of the current rows).
+    """
+    if strip_binding_lines(final_content) != strip_binding_lines(content_trimmed):
+        return None
+    binding_refresh = final_content != content_trimmed
+    if not _is_valid_16_hex(stored_hash):
+        return None
+    stored = stored_hash.lower()
+
+    bounds = _trajectory_bounds(original_content)
+    if bounds is None:
+        if binding_refresh and compute_content_hash(original_content) == stored:
+            return RestampDelta(binding_refresh=True)
+        return None
+    lines = original_content.split("\n")
+    h, first, term, _end = bounds
+    header = split_table_row(lines[h])
+    raw_rows = [split_table_row(ln) for ln in lines[first:term]]
+    if "Pass" not in header or any(len(r) != len(header) for r in raw_rows):
+        return None
+    rows = [dict(zip(header, r)) for r in raw_rows]
+    int_passes = sorted(
+        {int(r["Pass"]) for r in rows if _is_ascii_int(r["Pass"])}, reverse=True
+    )
+    cut_points: "List[Optional[int]]" = [None] + int_passes[:TRAJECTORY_KEEP_DEFAULT]
+    sealed_by_pass = {
+        int(r["Pass"]): r.get("Sealed") for r in rows if _is_ascii_int(r["Pass"])
+    }
+    entries = _sealed_entries(lines)
+    ondisk = lines[h:h + 2]
+
+    def _render2(subset) -> "List[str]":
+        return render_table(header, subset)[:2]
+
+    def _candidates(k):
+        subset = [
+            r for r in rows
+            if k is None or not _is_ascii_int(r["Pass"]) or int(r["Pass"]) <= k
+        ]
+        newest = max(
+            (i for i, r in enumerate(subset) if _is_ascii_int(r["Pass"])), default=None
+        )
+        cands = [ondisk, _render2(subset)]
+        if newest is not None:
+            cands.append(_render2(
+                [(_strip_notes(r) if i == newest else r) for i, r in enumerate(subset)]
+            ))
+        cands.append(_render2([_strip_notes(r) for r in subset]))
+        seen, out = set(), []
+        for c in cands:
+            key = tuple(c)
+            if key not in seen:
+                seen.add(key)
+                out.append(c)
+        return out
+
+    for k in cut_points:
+        removed = [] if k is None else [e for e in entries if e[2] > k]
+        if removed and not _removal_consistent(
+            removed, [e for e in entries if e not in removed], sealed_by_pass
+        ):
+            continue
+        drop = {e[0] for e in removed}
+        forms = [drop]
+        if removed and len(removed) == len(entries):
+            before = min(drop) - 1
+            if before >= 0 and not lines[before].strip():
+                forms.append(drop | {before})
+        for form in forms:
+            kept_lines = [ln for i, ln in enumerate(lines) if i not in form]
+            hh = h - sum(1 for i in form if i < h)
+            for cand in _candidates(k):
+                trial = kept_lines[:hh] + list(cand) + kept_lines[hh + 2:]
+                if compute_content_hash("\n".join(trial)) != stored:
+                    continue
+                repad = False
+                if list(cand) != ondisk:
+                    newest_all = max(
+                        (i for i, r in enumerate(rows) if _is_ascii_int(r["Pass"])),
+                        default=None,
+                    )
+                    renders = [_render2(rows)]
+                    if newest_all is not None:
+                        renders.append(_render2(
+                            [(_strip_notes(r) if i == newest_all else r) for i, r in enumerate(rows)]
+                        ))
+                    if ondisk not in renders:
+                        return None
+                    repad = True
+                promoted = tuple(f"SEAL-{e[3]}" for e in sorted(removed, key=lambda e: e[1]))
+                if not (promoted or binding_refresh or repad):
+                    return None
+                return RestampDelta(promoted, binding_refresh, repad)
+    return None
 
 
 def clear_pending_entries_for_prefix(project_root: Path, prefix: str) -> list[str]:
@@ -459,7 +693,10 @@ def _anchor_row_carries_tag(content: str, anchor_pass: int) -> bool:
 
 
 def partition_decline_clear(
-    project_root: Path, path_prefix: str
+    project_root: Path,
+    path_prefix: str,
+    *,
+    keys: "Optional[AbstractSet[str]]" = None,
 ) -> "tuple[list[str], list[str], list[str]]":
     """Selectively clear declinable pending entries under `path_prefix`. [R2/AD3]
 
@@ -484,6 +721,11 @@ def partition_decline_clear(
     via `_persist_or_unlink_marker` only when something was cleared or flagged.
     Iterates a `list(pending)` snapshot (delete-inside-loop safe). Returns
     `(cleared, held_back, flagged)`.
+
+    Set form (Unit C0 AD15): with ``keys``, only pending keys in ``keys`` are
+    considered and ``path_prefix`` is unused — still one strict read and at most
+    one persist, so a caller that partitioned under the same lock clears exactly
+    the set it counted.
     """
     with _marker_lock(project_root):
         data = read_pending_review(project_root, strict=True)
@@ -492,7 +734,10 @@ def partition_decline_clear(
         held_back: "list[str]" = []
         flagged: "list[str]" = []
         for key in list(pending):
-            if not _prefix_in_scope(key, path_prefix):
+            if keys is not None:
+                if key not in keys:
+                    continue
+            elif not _prefix_in_scope(key, path_prefix):
                 continue
             entry = pending[key]
             h = entry.get("hash")
@@ -524,7 +769,13 @@ def partition_decline_clear(
 
 
 def format_decline_output(
-    cleared: "list[str]", held_back: "list[str]", flagged: "list[str]", *, restore_cmd: str
+    cleared: "list[str]",
+    held_back: "list[str]",
+    flagged: "list[str]",
+    *,
+    restore_cmd: str,
+    project_root: Optional[Path] = None,
+    scope: Optional[str] = None,
 ) -> "tuple[str, int]":
     """Build the --decline-pending operator message + exit code. Pure. [R2/AD4/AD5]
 
@@ -534,20 +785,36 @@ def format_decline_output(
     flagged line is surfaced with the anomalous-key WARN. Exit code is 0 only when
     both `held_back` and `flagged` are empty, else EXIT_DECLINE_HELD_BACK (3). The
     all-three-empty no-op case is handled by the caller before this is invoked.
+
+    Unit C0 (AD16): every key echo goes through ``display_text``. With
+    ``project_root``, a flagged key gets the containment-escaping or the
+    malformed message (by ``is_containment_escaping``); without it, the original
+    anomalous message. With ``scope``, the cleared line names it (the
+    ``--decline-key`` success line, AC-1.9).
     """
+    def _dt(k: str) -> str:
+        return display_text(k, max_len=DISPLAY_ARG_MAX)
+
     lines: "list[str]" = []
     if cleared:
         noun = "entry" if len(cleared) == 1 else "entries"
+        where = f" (scope {_dt(scope)})" if scope is not None else ""
         lines.append(
             f"Declined upstream panel re-review; cleared {len(cleared)} pending "
-            f"{noun}: {', '.join(cleared)}"
+            f"{noun}: {', '.join(_dt(k) for k in cleared)}{where}"
         )
     for key in held_back:
         lines.append(
-            DECLINE_UNSATISFIABLE_HELD_BACK_MSG.format(doc_rel=key, restore_cmd=restore_cmd)
+            DECLINE_UNSATISFIABLE_HELD_BACK_MSG.format(doc_rel=_dt(key), restore_cmd=restore_cmd)
         )
     for key in flagged:
-        lines.append(DECLINE_FLAGGED_ANOMALOUS_MSG.format(doc_rel=key))
+        if project_root is None:
+            msg = DECLINE_FLAGGED_ANOMALOUS_MSG
+        elif is_containment_escaping(project_root, key):
+            msg = DECLINE_FLAGGED_ESCAPING_MSG
+        else:
+            msg = DECLINE_FLAGGED_MALFORMED_MSG
+        lines.append(msg.format(doc_rel=_dt(key)))
     code = 0 if (not held_back and not flagged) else EXIT_DECLINE_HELD_BACK
     return "\n".join(lines), code
 
@@ -562,7 +829,9 @@ def _key_is_contained(project_root: Path, key: str) -> bool:
     root = Path(project_root).resolve()
     try:
         candidate = (root / key).resolve()
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
+        # ValueError: an embedded NUL in a hand-edited key; RuntimeError: a
+        # symlink loop (before Python 3.13). Either way the key is not contained.
         return False
     try:
         return os.path.commonpath([str(root), str(candidate)]) == str(root)
@@ -579,6 +848,475 @@ def _prefix_in_scope(key: str, prefix: str) -> bool:
     if prefix in ("", "."):
         return True
     return key == prefix or key.startswith(prefix + "/")
+
+
+# ----- R1 scope and tier model (Unit C0 AD14) --------------------------------
+
+BLUEPRINT_ARTIFACT_NAMES = frozenset({"SCOPE.md", "ARCHITECTURE.md", "PLAN.md"})
+SDD_ARTIFACT_NAMES = frozenset({"spec.md", "design.md", "tasks.md"})
+
+
+def scope_of_key(key: str) -> str:
+    """A key's scope: its raw parent path, ``key.rpartition("/")[0] or "."``.
+
+    Deliberately a raw string split, never ``PurePosixPath(key).parent`` (which
+    collapses ``./`` and ``//``), so the scope string is byte-consistent with the
+    raw ``_prefix_in_scope`` lane the approval gate uses (AD14).
+    """
+    return key.rpartition("/")[0] or "."
+
+
+def _tier_of_name(key: str) -> Optional[str]:
+    name = strip_artifact_prefix(key.rpartition("/")[2])
+    if name in BLUEPRINT_ARTIFACT_NAMES:
+        return "blueprint"
+    if name in SDD_ARTIFACT_NAMES:
+        return "sdd"
+    return None
+
+
+def tier_of_scope(keys: Iterable[str]) -> Optional[str]:
+    """'blueprint' | 'sdd' | None for the keys of one scope.
+
+    Names are read through ``strip_artifact_prefix``; unrecognised names (e.g.
+    ``tasks-python.md``) are ignored. None iff no recognised name, or names from
+    both tiers (R1, AC-1.4).
+    """
+    tiers = {t for t in (_tier_of_name(k) for k in keys) if t is not None}
+    return tiers.pop() if len(tiers) == 1 else None
+
+
+def partition_keys(keys: Iterable[str], target_rel: str) -> "Tuple[List[str], List[str]]":
+    """(in_scope, elsewhere) by the raw ``_prefix_in_scope`` test — the same test
+    the target's ``reconcile_to_result`` gate applies (AC-1.3). Order preserved."""
+    in_scope: "List[str]" = []
+    elsewhere: "List[str]" = []
+    for k in keys:
+        (in_scope if _prefix_in_scope(k, target_rel) else elsewhere).append(k)
+    return in_scope, elsewhere
+
+
+def is_containment_escaping(project_root: Path, key: str) -> bool:
+    """Label only — never chooses a lane (AD14).
+
+    True when the key is absolute, holds a NUL, resolves outside the resolved
+    project root, or ``resolve()`` raises (OSError / ValueError / RuntimeError).
+    Unlike ``_key_is_contained``, an in-project key with a ``..`` part that
+    resolves inside the root is NOT escaping.
+    """
+    if "\x00" in key or os.path.isabs(key):
+        return True
+    try:
+        root = Path(project_root).resolve()
+        candidate = (root / key).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return True
+    try:
+        return os.path.commonpath([str(root), str(candidate)]) != str(root)
+    except ValueError:
+        return True
+
+
+# ----- R1 owning-directory routes (Unit C0 AD16) ------------------------------
+
+ROUTE_USES = ("run-state", "refusal", "stranded", "gate-fail")
+_ROOT_CLAUSE = "(run from the project root)"
+_ESCAPING_SIDE_EFFECT = (
+    "this also clears every other obligation that decline reaches"
+)
+_DISPLAY_REASON_TEXT = {
+    "non-printable": "contains non-printable or unassigned characters",
+    "backtick": "contains a backtick",
+}
+_ANOMALOUS_SEGMENTS_TEXT = "has `.`, `..` or empty path segments"
+_ASCII_ECHO_MAX = 120
+
+
+def _positional(rel: str) -> str:
+    """Positional target as printed: ``./<path>``, except the root ``.``, so a
+    name starting with ``-`` cannot read as a flag."""
+    return "." if rel in ("", ".") else f"./{rel}"
+
+
+def _ascii_echo(key: str) -> str:
+    a = ascii(key)
+    if len(a) > _ASCII_ECHO_MAX:
+        return f"{a[:_ASCII_ECHO_MAX]}… ({len(key)} chars)"
+    return a
+
+
+def _inspect_by_hand(key: str, reason_text: str) -> str:
+    return (
+        f"no command can be printed for {_ascii_echo(key)}: it {reason_text}; "
+        f"inspect .sdd/pending-review.json by hand"
+    )
+
+
+def _has_anomalous_segments(scope: str) -> bool:
+    if scope == ".":
+        return False
+    return any(seg in ("", ".", "..") for seg in scope.split("/"))
+
+
+def _route_cmds(tier: Optional[str], running_tier: str) -> "List[str]":
+    """Validator command(s) for a key: its tier's, or both when untiered."""
+    if tier is None:
+        return [TIER_VALIDATOR_CMD["sdd"], TIER_VALIDATOR_CMD["blueprint"]]
+    return [TIER_VALIDATOR_CMD[tier]]
+
+
+def _cmd_text(cmds: "List[str]", args: str) -> str:
+    return " or ".join(f"`{c} {args}`" for c in cmds)
+
+
+def _key_route_tier(key: str, keys: "List[str]") -> Optional[str]:
+    """The key's own name tier, else its scope's tier (an unrecognised name in
+    a scope that also holds recognised names takes that scope's tier)."""
+    t = _tier_of_name(key)
+    if t is not None:
+        return t
+    scope = scope_of_key(key)
+    return tier_of_scope([k for k in keys if scope_of_key(k) == scope])
+
+
+def _nearest_surviving_ancestor(project_root: Path, scope: str) -> str:
+    rel = scope
+    while rel not in ("", "."):
+        rel = rel.rpartition("/")[0] or "."
+        if rel == "." or (Path(project_root) / rel).is_dir():
+            return rel
+    return "."
+
+
+def owning_dir_route(
+    project_root: Path,
+    key: str,
+    keys: Iterable[str],
+    *,
+    target_rel: str,
+    running_tier: str,
+    use: str,
+) -> str:
+    """The one route builder for an obligation owned by ``key``'s scope (AD16).
+
+    ``use`` selects the template for its call site: 'run-state', 'refusal',
+    'stranded' or 'gate-fail'. ``keys`` are every marker key (used for the
+    vanished-directory ancestor walk). Every interpolated key, scope and target
+    goes through ``display_arg`` (commands) or ``display_text`` (prose); a key
+    that cannot be printed safely gets the inspect-by-hand form, no command.
+    """
+    if use not in ROUTE_USES:
+        raise ValueError(f"unknown route use {use!r}")
+    keys = list(keys)
+    root = Path(project_root)
+    key_txt = display_text(key, max_len=DISPLAY_ARG_MAX)
+    cmds = _route_cmds(_key_route_tier(key, keys), running_tier)
+
+    # A containment-escaping key belongs to no scope: never the ancestor walk.
+    # Its commands are built from the target or the root, never from the key,
+    # so the key need not be quotable — it is echoed through display_text only.
+    if is_containment_escaping(root, key):
+        if _prefix_in_scope(key, target_rel):
+            target_arg = display_arg(_positional(target_rel)).quoted or "."
+            cmds_t = [TIER_VALIDATOR_CMD.get(running_tier, cmds[0])]
+            return (
+                f"containment-escaping key {key_txt} — decline it from here: "
+                f"{_cmd_text(cmds_t, f'{target_arg} --decline-pending')}"
+            )
+        return (
+            f"containment-escaping key {key_txt} belongs to no scope — decline it "
+            f"from the project root: {_cmd_text(cmds, '. --decline-pending')}; "
+            f"{_ESCAPING_SIDE_EFFECT}, so it works once the other scopes' "
+            f"obligations are resolved — {USER_DECISION_NOTE} {_ROOT_CLAUSE}"
+        )
+
+    shown = display_arg(key)
+    if shown.quoted is None:
+        reason = _DISPLAY_REASON_TEXT.get(
+            shown.reason, f"is {len(key)} characters, too long to print as a command"
+        )
+        return _inspect_by_hand(key, reason)
+    scope = scope_of_key(key)
+    if _has_anomalous_segments(scope):
+        return _inspect_by_hand(key, _ANOMALOUS_SEGMENTS_TEXT)
+    scope_txt = display_text(scope, max_len=DISPLAY_ARG_MAX)
+    scope_arg = display_arg(_positional(scope)).quoted
+
+    if scope == "." or (root / scope).is_dir():
+        cmd = _cmd_text(cmds, f"{scope_arg} --decline-pending")
+        if use == "run-state":
+            return (
+                f"owned by {scope_txt} — resolve it from that directory: run its "
+                f"panel, or run the decline there: {cmd}"
+            )
+        if use == "refusal":
+            return cmd
+        if use == "stranded":
+            return (
+                f"for the session or user that owns {scope_txt}: {cmd} — "
+                f"{USER_DECISION_NOTE}"
+            )
+        return f"owned by {scope_txt}: decline it from there: {cmd}"
+
+    # Owning directory vanished: walk up to the nearest surviving ancestor A.
+    ancestor = _nearest_surviving_ancestor(root, scope)
+    anc_arg = display_arg(_positional(ancestor)).quoted
+    in_lane, _ = partition_keys(keys, ancestor)
+    escaping_in_lane = [k for k in in_lane if is_containment_escaping(root, k)]
+    scopes = {scope_of_key(k) for k in in_lane if k not in escaping_in_lane}
+    lead = f"the owning directory {scope_txt} no longer exists on disk"
+    if scopes <= {scope}:
+        text = (
+            f"{lead} — decline it from its nearest surviving ancestor: "
+            f"{_cmd_text(cmds, f'{anc_arg} --decline-pending')}"
+        )
+        if escaping_in_lane:
+            text += f"; {_ESCAPING_SIDE_EFFECT}"
+        return f"{text} {_ROOT_CLAUSE}"
+    return (
+        f"{lead}, and its nearest surviving ancestor {display_text(ancestor)} "
+        f"also holds other scopes' obligations — decline this one key: "
+        f"{_cmd_text(cmds, f'{anc_arg} --decline-pending --decline-key={shown.quoted}')} "
+        f"— {USER_DECISION_NOTE} {_ROOT_CLAUSE}"
+    )
+
+
+# ----- R1 scoped decline (Unit C0 AD15) ---------------------------------------
+
+DECLINE_REFUSAL_REASONS = (
+    "multi-scope", "other-tier", "key-not-in-marker", "key-escaping",
+    "key-not-in-scope", "key-dir-exists", "key-other-tier",
+)
+
+
+@dataclass(frozen=True)
+class DeclineRefusal:
+    """DM8. Why a decline was refused, plus what the refusal message prints."""
+
+    reason: str
+    keys_by_scope: "Dict[str, Tuple[str, ...]]" = field(default_factory=dict)
+    escaping_keys: "Tuple[str, ...]" = ()
+    ancestor_routes: "Dict[str, str]" = field(default_factory=dict)
+    decline_key: Optional[str] = None
+    key_route: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DeclineResult:
+    """DM8. All three tuples are empty when refused."""
+
+    cleared: "Tuple[str, ...]" = ()
+    held_back: "Tuple[str, ...]" = ()
+    flagged: "Tuple[str, ...]" = ()
+    refusal: Optional[DeclineRefusal] = None
+
+
+def _group_by_scope(keys: Iterable[str]) -> "Dict[str, Tuple[str, ...]]":
+    groups: "Dict[str, List[str]]" = {}
+    for k in keys:
+        groups.setdefault(scope_of_key(k), []).append(k)
+    return {s: tuple(v) for s, v in sorted(groups.items())}
+
+
+def decline_pending_scoped(
+    project_root: Path,
+    target_rel: str,
+    *,
+    running_tier: str,
+    decline_key: Optional[str] = None,
+) -> DeclineResult:
+    """The scoped ``--decline-pending`` (AD15), under ONE ``_marker_lock`` hold.
+
+    Strict read (MarkerCorruptError propagates); partition the marker by the raw
+    ``_prefix_in_scope`` lane; group non-escaping in-scope keys by scope
+    (containment-escaping keys belong to no scope and are excluded from the
+    count). Without ``decline_key``: refuse when the in-scope keys span more
+    than one scope, or the single scope is positively of the other tier;
+    otherwise clear exactly the in-scope set with one set-form
+    ``partition_decline_clear``. With ``decline_key`` K, only K is ever
+    cleared (through the same set form, so the held-back floor still applies),
+    and only when K is an exact marker key, not containment-escaping, in scope,
+    its owning directory is gone, and its tier is not positively the other
+    tier. A refusal writes nothing.
+    """
+    root = Path(project_root)
+    with _marker_lock(root):
+        data = read_pending_review(root, strict=True)
+        all_keys = list(data["pending"])
+        in_scope, _ = partition_keys(all_keys, target_rel)
+        escaping = tuple(k for k in in_scope if is_containment_escaping(root, k))
+        groups = _group_by_scope(k for k in in_scope if k not in escaping)
+
+        def _ancestor_routes() -> "Dict[str, str]":
+            out: "Dict[str, str]" = {}
+            for scope, ks in groups.items():
+                if (
+                    scope != "."
+                    and not _has_anomalous_segments(scope)
+                    and not (root / scope).is_dir()
+                ):
+                    for k in ks:
+                        out[k] = owning_dir_route(
+                            root, k, all_keys, target_rel=target_rel,
+                            running_tier=running_tier, use="refusal",
+                        )
+            return out
+
+        if decline_key is None:
+            reason = None
+            if len(groups) > 1:
+                reason = "multi-scope"
+            elif len(groups) == 1:
+                tier = tier_of_scope(next(iter(groups.values())))
+                if tier is not None and tier != running_tier:
+                    reason = "other-tier"
+            if reason is not None:
+                return DeclineResult(refusal=DeclineRefusal(
+                    reason=reason, keys_by_scope=groups, escaping_keys=escaping,
+                    ancestor_routes=_ancestor_routes(),
+                ))
+            cleared, held, flagged = partition_decline_clear(
+                root, target_rel, keys=set(in_scope)
+            )
+            return DeclineResult(tuple(cleared), tuple(held), tuple(flagged))
+
+        k = decline_key
+        reason = None
+        if k not in data["pending"]:
+            reason = "key-not-in-marker"
+        elif is_containment_escaping(root, k):
+            reason = "key-escaping"
+        elif k not in in_scope:
+            reason = "key-not-in-scope"
+        elif scope_of_key(k) == "." or (root / scope_of_key(k)).exists():
+            reason = "key-dir-exists"
+        else:
+            tier = _key_route_tier(k, all_keys)
+            if tier is not None and tier != running_tier:
+                reason = "key-other-tier"
+        if reason is not None:
+            route = None
+            if reason != "key-not-in-marker":
+                route = owning_dir_route(
+                    root, k, all_keys, target_rel=target_rel,
+                    running_tier=running_tier, use="refusal",
+                )
+            return DeclineResult(refusal=DeclineRefusal(
+                reason=reason, decline_key=k, key_route=route,
+            ))
+        cleared, held, flagged = partition_decline_clear(root, target_rel, keys={k})
+        return DeclineResult(tuple(cleared), tuple(held), tuple(flagged))
+
+
+_KEY_REFUSAL_TEXT = {
+    "key-not-in-marker": (
+        "it is not a key in .sdd/pending-review.json (`--decline-key` must equal "
+        "a marker key exactly)"
+    ),
+    "key-escaping": (
+        "it is containment-escaping (its path resolves outside the project); such "
+        "a key belongs to no scope and is cleared only by a prefix decline"
+    ),
+    "key-not-in-scope": "it is not under this run's target",
+    "key-dir-exists": (
+        "its owning directory still exists, so decline it from that directory "
+        "instead"
+    ),
+    "key-other-tier": "it belongs to the other tier than this validator's",
+}
+
+
+def format_decline_refusal(
+    refusal: DeclineRefusal,
+    *,
+    project_root: Path,
+    target_rel: str,
+    running_tier: str,
+) -> str:
+    """The refusal message (AC-1.4 / AC-1.9): names the failed condition, lists
+    every in-scope key grouped by scope (escaping keys after the groups), and
+    states the two routes out with a concrete command each. Every key goes
+    through ``display_text``; commands come from ``owning_dir_route``."""
+    root = Path(project_root)
+    target_txt = display_text(_positional(target_rel), max_len=DISPLAY_ARG_MAX)
+
+    def _dt(k: str) -> str:
+        return display_text(k, max_len=DISPLAY_ARG_MAX)
+
+    def _route(k: str, keys: "List[str]") -> str:
+        return owning_dir_route(
+            root, k, keys, target_rel=target_rel,
+            running_tier=running_tier, use="refusal",
+        )
+
+    if refusal.decline_key is not None:
+        k = refusal.decline_key
+        lines = [
+            f"Refusing --decline-key {_dt(k)} on {target_txt}: "
+            f"{_KEY_REFUSAL_TEXT[refusal.reason]}. Nothing was cleared; "
+            f".sdd/pending-review.json is unchanged."
+        ]
+        if refusal.key_route:
+            lines.append(f"  route: {refusal.key_route}")
+        return "\n".join(lines)
+
+    n = len(refusal.keys_by_scope)
+    if refusal.reason == "multi-scope":
+        why = (
+            f"its in-scope obligations span {n} scopes, and a decline never "
+            f"clears more than one scope's obligations"
+        )
+    else:
+        why = (
+            f"its obligations belong to the other tier than this validator's "
+            f"({running_tier})"
+        )
+    lines = [
+        f"Refusing --decline-pending on {target_txt}: {why}. Nothing was "
+        f"cleared; .sdd/pending-review.json is unchanged.",
+        "In-scope obligations, by scope:",
+    ]
+    all_keys = [k for ks in refusal.keys_by_scope.values() for k in ks]
+    all_keys += list(refusal.escaping_keys)
+    anomalous: "List[str]" = []
+    clean_scope_routes = 0
+    for scope, ks in refusal.keys_by_scope.items():
+        tier = tier_of_scope(ks)
+        tier_label = f"{tier} tier" if tier else "tier undeterminable"
+        lines.append(f"  {_dt(scope)} ({tier_label}):")
+        for k in ks:
+            lines.append(f"    {_dt(k)}")
+        if _has_anomalous_segments(scope):
+            anomalous.extend(ks)
+            lines.append(f"    route: {_route(ks[0], all_keys)}")
+        elif any(k in refusal.ancestor_routes for k in ks):
+            for k in ks:
+                lines.append(f"    route for {_dt(k)}: {refusal.ancestor_routes[k]}")
+        else:
+            rep = next((k for k in ks if _tier_of_name(k) is not None), ks[0])
+            clean_scope_routes += 1
+            lines.append(f"    route: {_route(rep, all_keys)}")
+    if refusal.escaping_keys:
+        lines.append(
+            "  containment-escaping (no scope; cleared by any decline whose "
+            "prefix matches it):"
+        )
+        for k in refusal.escaping_keys:
+            lines.append(f"    {_dt(k)}")
+    lines.append(
+        "Two routes out: (1) run the decline from each owning directory, with "
+        "the command shown under its scope; (2) for an owning directory that no "
+        "longer exists, decline that one key with the per-key opt-in "
+        f"(`--decline-key`) shown under it — {USER_DECISION_NOTE}."
+    )
+    if anomalous and clean_scope_routes:
+        lines.append(
+            "Note: " + ", ".join(_ascii_echo(k) for k in anomalous)
+            + f" {_ANOMALOUS_SEGMENTS_TEXT}, so no printed command can decline "
+            "it; a command above whose directory's lane also holds it stays "
+            "refused until it is resolved by hand in .sdd/pending-review.json."
+        )
+    return "\n".join(lines)
 
 
 def _row_has_tag(row: str, hash_short: str) -> bool:
@@ -773,6 +1511,7 @@ def reconcile_to_result(
     *,
     decline_cmd: str,
     restore_cmd: str = "",
+    running_tier: Optional[str] = None,
 ) -> ValidationResult:
     """Reconcile pending obligations under `path_prefix` and fold the outcome
     into a `ValidationResult` (one `pending-review` FAIL per still-pending doc).
@@ -789,7 +1528,19 @@ def reconcile_to_result(
     on a pass `<= anchor` (unsatisfiable) gets a distinct UNSATISFIABLE-OBLIGATION
     diagnostic naming the content-attested anchor-restoration remedy; every other
     still-pending doc gets the generic pending-review FAIL.
+
+    Unit C0 (AD16): ``running_tier`` (optional; existing callers are unchanged)
+    feeds ``owning_dir_route``. The stranded WARN routes through
+    ``use="stranded"``, and a pending FAIL for an in-scope key owned by another
+    scope (a root or parent target, R1's known limit) through
+    ``use="gate-fail"``; a key in the target's own scope keeps ``decline_cmd``.
+    Every key and ``expected_tag`` echo goes through ``display_text``.
     """
+    tier_arg = running_tier or ""
+
+    def _dt(text: str) -> str:
+        return display_text(text, max_len=DISPLAY_ARG_MAX)
+
     result = ValidationResult()
     try:
         still_pending = reconcile_pending_review(project_root, path_prefix)
@@ -815,20 +1566,25 @@ def reconcile_to_result(
     # directory. Surface it as a WARN (out-of-scope only — an in-scope missing
     # file already surfaces as the FAIL below) so the obligation is never silent.
     root = Path(project_root)
+    all_keys = list(pending)
     for key in pending:
         if _prefix_in_scope(key, path_prefix):
             continue
         if not _key_is_contained(root, key):
             continue  # hostile keys own a separate WARN inside reconcile
         if not (root / key).exists():
+            route = owning_dir_route(
+                root, key, all_keys, target_rel=path_prefix,
+                running_tier=tier_arg, use="stranded",
+            )
             result.add(
                 "pending-review",
                 False,
-                f"{STRANDED_OBLIGATION_TOKEN} pending-review entry for {key} points "
-                f"at a file that no longer exists (likely a renamed or deleted spec "
-                f"directory). The obligation is outside this run's scope, so it can "
-                f"neither reconcile nor be declined from here. Restore the original "
-                f"path, or decline it against its original location.",
+                f"{STRANDED_OBLIGATION_TOKEN} pending-review entry for {_dt(key)} "
+                f"points at a file that no longer exists (likely a renamed or "
+                f"deleted spec directory). The obligation is outside this run's "
+                f"scope, so it can neither reconcile nor be declined from here. "
+                f"To resolve it, restore the original path; otherwise, {route}",
                 warn_only=True,
             )
 
@@ -846,8 +1602,8 @@ def reconcile_to_result(
             result.add(
                 "pending-review",
                 False,
-                f"{UNSATISFIABLE_OBLIGATION_TOKEN} {doc_rel} carries a genuine "
-                f"`{expected_tag}` tag, but only on a Trajectory pass <= the "
+                f"{UNSATISFIABLE_OBLIGATION_TOKEN} {_dt(doc_rel)} carries a genuine "
+                f"`{_dt(expected_tag)}` tag, but only on a Trajectory pass <= the "
                 f"recorded anchor, so the standard reconcile (which clears strictly "
                 f"above the anchor) can never satisfy it. It arose either as a fresh "
                 f"reversed-order re-approval (a panel pass archived before the "
@@ -857,13 +1613,21 @@ def reconcile_to_result(
                 f"`{decline_cmd}` needed.",
             )
         else:
+            own_scope = path_prefix if path_prefix not in ("", ".") else "."
+            if scope_of_key(doc_rel) != own_scope:
+                decline_part = owning_dir_route(
+                    root, doc_rel, all_keys, target_rel=path_prefix,
+                    running_tier=tier_arg, use="gate-fail",
+                )
+            else:
+                decline_part = f"decline: `{decline_cmd}`"
             result.add(
                 "pending-review",
                 False,
-                f"upstream panel re-review pending for {doc_rel}. Expected Trajectory "
-                f"Notes tag: `{expected_tag}`. Resolve by running the panel and "
-                f"stamping that tag per hash-and-cascade.md step 3e (after "
-                f"`archive_pass.py {doc_rel} --phase <N>`), OR decline: `{decline_cmd}`.",
+                f"upstream panel re-review pending for {_dt(doc_rel)}. Expected "
+                f"Trajectory Notes tag: `{_dt(expected_tag)}`. Resolve by running the "
+                f"panel and stamping that tag per hash-and-cascade.md step 3e (after "
+                f"`archive_pass.py {_dt(doc_rel)} --phase <N>`), OR {decline_part}.",
             )
     return result
 

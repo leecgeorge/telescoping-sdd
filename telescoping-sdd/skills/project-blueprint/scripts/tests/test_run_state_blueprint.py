@@ -311,7 +311,12 @@ def test_run_state_byte_level_readonly_subprocess(tmp_path):
         root.mkdir()
         d = root / "blueprint"
         d.mkdir(parents=True)
-        (d / "SCOPE.md").write_text(_doc(checked=False, hash_val="pending", basis=None), encoding="utf-8")
+        from _fixtures import add_converged_closing_row  # Unit C0: gate-passing fixture
+
+        (d / "SCOPE.md").write_text(
+            add_converged_closing_row(_doc(checked=False, hash_val="pending", basis=None)),
+            encoding="utf-8",
+        )
         return d
 
     a_root = tmp_path / "a"
@@ -328,3 +333,19 @@ def test_run_state_byte_level_readonly_subprocess(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- Unit C0 T21: qualified all-clear end to end (AC-4.4) -------------------
+
+
+def test_blueprint_run_state_unbound_chain_prints_qualified_all_clear(tmp_path):
+    d = _bp_dir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    for name in ("SCOPE.md", "ARCHITECTURE.md", "PLAN.md"):
+        _write_matches_v2(d / name)  # approved, no binding lines
+    proc = _run_vb(str(d), "--run-state", "--project-root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines[1].startswith("all clear (upstream binding unverified) — ")
+    unbound = [ln for ln in lines if ln.lstrip().startswith("unbound:")]
+    assert len(unbound) == 1 and unbound[0].startswith("  unbound: ARCHITECTURE.md, PLAN.md — ")

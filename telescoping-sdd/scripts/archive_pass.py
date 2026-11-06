@@ -108,6 +108,33 @@ from blueprint_common import (  # noqa: E402
     _is_ascii_int,
     _is_valid_16_hex,
 )
+# Table helpers, terminal rules and stamp constants live in the trajectory leaf
+# (Unit C0 AD1/AD2); the old names below are aliases of the same objects.
+from trajectory import (  # noqa: E402
+    CONVERGED_STAMPS,
+    SEAL_ENTRY_RE,
+    STAMP_CONVERGED_NO_HIGH,
+    STAMP_CONVERGED_SEALED,
+    STAMP_CROSS_CHECK,
+    STAMP_HALT_DISPOSITION,
+    STAMP_STRICT_BAR,
+    TERMINAL_FILENAMES,
+    TERMINAL_HTML_MARKER,
+    TRAJECTORY_COLS,
+    _NUMERIC_PREFIX_RE,
+    _UNESCAPED_PIPE,
+    _strip_numeric_prefix,
+    is_terminal_artifact,
+    render_table,
+    render_table_row,
+    split_table_row,
+    provenance_token,
+    stamp_provenance,
+)
+from content_hash import compute_content_hash  # noqa: E402
+
+SEAL_PAT = SEAL_ENTRY_RE
+_split_row = split_table_row
 
 
 DISPOSITION_LABELS = {
@@ -152,10 +179,6 @@ H_TRAJECTORY = "### Trajectory"
 H_SEALED = "### Sealed dispositions"
 H_LATEST = "### Latest pass detail"
 
-TRAJECTORY_COLS = [
-    "Pass", "Date", "HIGHs", "Regressions",
-    "Addressed", "Deferred", "Sealed", "Notes",
-]
 LATEST_COLS = ["Severity", "Source", "Concern", "Disposition", "Notes"]
 
 EXIT_OK = 0
@@ -163,31 +186,11 @@ EXIT_FORMAT_VIOLATION = 1
 EXIT_USER_INPUT_NEEDED = 2
 EXIT_OLD_FORMAT_OR_MISSING = 3
 
-SEAL_PAT = re.compile(
-    r"^-\s+`\[SEAL-(\d+)\]`\s+\*\*(.+?)\*\*\s+\(pass\s+(\d+),\s+([^)]+)\)\s+—\s+(.+)$"
-)
 SEPARATOR_PAT = re.compile(r"^\|[\s\-|:]+\|\s*$")
 
 # Deferred-dispositions feature (R1, R2, R5, R7) — see specs/deferred-dispositions/
 H_DEFERRED = "### Deferred dispositions"
 DEFERRED_REDISPOSITION_PREFIX = "Defense: already routed to "
-TERMINAL_FILENAMES = frozenset({"PLAN.md", "tasks.md", "tasks-python.md", "tasks-java.md"})
-TERMINAL_HTML_MARKER = "<!-- terminal-phase: scope -->"
-
-_NUMERIC_PREFIX_RE = re.compile(r"^\d{2}_")
-
-
-def _strip_numeric_prefix(name: str) -> str:
-    """Strip a leading two-digit ``NN_`` ordinal prefix (raw, UNIFORM strip).
-
-    Used before the ``TERMINAL_FILENAMES`` membership tests so a prefixed
-    ``03_PLAN.md`` / ``03_tasks.md`` (and the defensive ``03_tasks-python.md`` /
-    ``03_tasks-java.md``) resolve to the bare registry name. We strip raw rather
-    than via ``blueprint_common.strip_artifact_prefix`` because the terminal
-    registry includes ``tasks-python.md`` / ``tasks-java.md``, which are NOT in
-    ``KNOWN_ARTIFACTS`` — the 4-name frozenset is its own over-match guard.
-    """
-    return _NUMERIC_PREFIX_RE.sub("", name, count=1)
 PANEL_SECTION_ORDER = [H_TRAJECTORY, H_SEALED, H_DEFERRED, H_LATEST]
 
 DEF_PAT = re.compile(
@@ -210,11 +213,7 @@ def _is_terminal(content: str, path: Path, explicit_flag: bool) -> bool:
     """
     if explicit_flag:
         return True
-    if _strip_numeric_prefix(path.name) in TERMINAL_FILENAMES:
-        return True
-    if TERMINAL_HTML_MARKER in content:
-        return True
-    return False
+    return is_terminal_artifact(content, path.name)
 
 
 class FormatViolation(Exception):
@@ -290,36 +289,6 @@ def find_table(lines, start, end):
     return h, sep, first, last
 
 
-# Split a markdown row on unescaped pipes; a literal `\|` is an escaped cell
-# character. Borrowed from compact_table.py's _UNESCAPED_PIPE (AD13); the
-# unescape half in _split_row is new and parse_table-local. Deliberately NOT
-# imported from compact_table: that would couple the archive path to a
-# validator module it does not otherwise use, for one 12-character regex, and
-# the two functions' cell semantics differ.
-_UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
-
-
-def _split_row(line):
-    """Split one markdown table line into stripped, unescaped cell values.
-
-    Splits on unescaped `|` only, drops one leading and one trailing empty
-    boundary fragment, then strips each cell and unescapes `\\|` to `|`.
-    Applied identically to the header line and to every data row, so header
-    and rows can never disagree on cell count (R11 AC-2).
-
-    A malformed line yields a wrong-length list; the caller decides what that
-    means. Nothing is raised here.
-    """
-    parts = _UNESCAPED_PIPE.split(line.strip())
-    # Drop exactly ONE empty boundary fragment at each end — not every one, as
-    # str.strip("|") did. Repeated adjacent boundary pipes therefore survive as
-    # empty cells rather than collapsing (AD13; pinned by
-    # test_parse_table_boundary_empty_cell_preserved).
-    if parts and not parts[0].strip():
-        parts = parts[1:]
-    if parts and not parts[-1].strip():
-        parts = parts[:-1]
-    return [c.strip().replace("\\|", "|") for c in parts]
 
 
 def parse_table(lines, start, end, *, malformed=None, table_name=""):
@@ -720,26 +689,6 @@ def format_halt_notes(halt_rows):
     return f"halt votes (n={len(halt_rows)}: {summaries})"
 
 
-def render_table_row(values, widths):
-    cells = [f" {v.ljust(w)} " for v, w in zip(values, widths)]
-    return "|" + "|".join(cells) + "|"
-
-
-def render_table(headers, rows):
-    if not rows:
-        widths = [len(h) for h in headers]
-    else:
-        widths = [
-            max(len(h), max(len(r.get(h, "")) for r in rows))
-            for h in headers
-        ]
-    out = [
-        render_table_row(headers, widths),
-        "|" + "|".join("-" * (w + 2) for w in widths) + "|",
-    ]
-    for r in rows:
-        out.append(render_table_row([r.get(h, "") for h in headers], widths))
-    return out
 
 
 def replace_block(lines, start, end, new_block):
@@ -1203,20 +1152,28 @@ def main():
         notes = format_halt_notes(halt_rows)
         tag_parts = []
         if args.strict_bar:
-            tag_parts.append("strict-bar pass")
+            tag_parts.append(STAMP_STRICT_BAR)
         elif args.cross_check:
-            tag_parts.append("cross-check pass (excluded from cap)")
+            tag_parts.append(STAMP_CROSS_CHECK)
         if unresolved_highs == 0:
             if sealed_high == 0:
-                tag_parts.append("converged (0 HIGH)")
+                tag_parts.append(STAMP_CONVERGED_NO_HIGH)
             else:
-                tag_parts.append("converged (0 unresolved HIGH)")
+                tag_parts.append(STAMP_CONVERGED_SEALED)
                 tag_parts.append(f"sealed={sealed_high}")
         # Stash tag counts for Phase 2/3 so detect_strict_bar_signal can read
         # them across passes (Latest is cleared after each archive).
         if args.phase in (2, 3):
             tag_counts = count_tags(latest_rows)
             tag_parts.append(f"tags={format_tag_summary(tag_counts)}")
+        # AD4: a fixed whole token whenever any Latest row is disposed Halt and
+        # re-scope (any phase, any severity), written before the halt-vote text
+        # so the gate's tokeniser (cut at the first `halt vote`) still sees it.
+        if any(
+            disposition_base(r.get("Disposition", "")) == "Halt and re-scope"
+            for r in latest_rows
+        ):
+            tag_parts.append(STAMP_HALT_DISPOSITION)
         if tag_parts:
             tag = "; ".join(tag_parts)
             notes = tag if notes == "—" else f"{tag}; {notes}"
@@ -1333,8 +1290,6 @@ def main():
                 next_def += 1
         latest_to_clear = True
 
-    new_traj_block = render_table(TRAJECTORY_COLS, traj_rows + [new_traj_row])
-
     # Format ONLY the NEW entries. When a section already has entries we INSERT
     # these after the last existing one rather than replacing the whole entry
     # span — a span replace rebuilt from matched lines silently deleted any
@@ -1365,43 +1320,65 @@ def main():
     # a --skip / converged-empty pass still yields as few as one edit (Trajectory
     # only). This replaces the previous sequential replace_block/insert calls
     # that used stale pre-edit offsets (corrupting Deferred when Sealed shifted).
-    edits = []
+    base_edits = []
 
     if latest_to_clear:
         if latest_table is not None:
             h, _, _, last = latest_table
-            edits.append((h, last, new_latest_block))
+            base_edits.append((h, last, new_latest_block))
         else:
-            edits.append((l_start + 1, l_start + 1, [""] + new_latest_block))
+            base_edits.append((l_start + 1, l_start + 1, [""] + new_latest_block))
 
     if new_seals:
         if seal_entries:
             # Insert AFTER the last existing entry (start == end), preserving the
             # existing entry span verbatim — no whole-span rewrite (3.5f).
             last_seal = seal_entries[-1]["line_idx"] + 1
-            edits.append((last_seal, last_seal, new_seal_entry_lines))
+            base_edits.append((last_seal, last_seal, new_seal_entry_lines))
         else:
-            edits.append((s_start + 1, s_start + 1, [""] + new_seal_entry_lines))
+            base_edits.append((s_start + 1, s_start + 1, [""] + new_seal_entry_lines))
 
     # T5 (R2): write Deferred-section promotions
     if new_defs and d_start is not None:
         if def_entries:
             last_def = def_entries[-1]["line_idx"] + 1
-            edits.append((last_def, last_def, new_def_entry_lines))
+            base_edits.append((last_def, last_def, new_def_entry_lines))
         else:
-            edits.append((d_start + 1, d_start + 1, [""] + new_def_entry_lines))
+            base_edits.append((d_start + 1, d_start + 1, [""] + new_def_entry_lines))
 
-    if traj_table is not None:
-        h, _, _, last = traj_table
-        edits.append((h, last, new_traj_block))
-    else:
-        edits.append((t_start + 1, t_start + 1, [""] + new_traj_block))
+    # AC-5.11 / AD3: every archived row (normal, mode-stamped and --skip) ends
+    # with a provenance token `prov=<hash>` whose hash is compute_content_hash
+    # of the written file. `build` renders the whole new file for a given token
+    # hex; stamp_provenance renders it with a same-width placeholder, hashes it,
+    # re-renders with that hash and verifies the hash did not move (Trajectory
+    # data rows are hash-excluded, so only the column widths matter).
+    def _with_token(notes: str, prov_hex: str) -> str:
+        token = provenance_token(prov_hex)
+        return token if notes == "—" else f"{notes}; {token}"
 
-    new_lines = _apply_edits(lines, edits)
+    def build(prov_hex: str) -> str:
+        row = dict(new_traj_row, Notes=_with_token(new_traj_row["Notes"], prov_hex))
+        traj_block = render_table(TRAJECTORY_COLS, traj_rows + [row])
+        edits = list(base_edits)
+        if traj_table is not None:
+            h, _, _, last = traj_table
+            edits.append((h, last, traj_block))
+        else:
+            edits.append((t_start + 1, t_start + 1, [""] + traj_block))
+        new_lines = _apply_edits(lines, edits)
+        out = "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
+        # R2: trim the trajectory before writing (gated for committed-v1 artifacts)
+        return _maybe_trim_trajectory(content, out)
 
-    new_content = "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
-    # R2: trim the trajectory before writing (gated for committed-v1 artifacts)
-    new_content = _maybe_trim_trajectory(content, new_content)
+    try:
+        new_content = stamp_provenance(build, compute_content_hash)
+    except RuntimeError as exc:
+        print(f"error: {exc}; nothing was written.", file=sys.stderr)
+        sys.exit(EXIT_FORMAT_VIOLATION)
+    new_traj_row = dict(
+        new_traj_row,
+        Notes=_with_token(new_traj_row["Notes"], compute_content_hash(new_content)),
+    )
     write_or_diff(art, content, new_content, args.dry_run)
 
     # T7 (R7): count rerouted-deferral rows from this pass for trigger refinement

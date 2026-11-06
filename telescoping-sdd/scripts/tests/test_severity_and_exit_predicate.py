@@ -2248,12 +2248,15 @@ def test_cross_check_sealed_exit_tag_order(tmp_path):
 
 
 def test_tags_token_renders_last_on_a_sealed_exit(tmp_path):
-    """Phase 2/3 stashes `tags=dXuYcZ`; it must stay the LAST tag part."""
+    """Phase 2/3 stashes `tags=dXuYcZ`; it must stay the LAST tag part before
+    the provenance token, which every archived row ends with (Unit C0 AC-5.11)."""
     art = _artifact(tmp_path, "| [HIGH] | architect | [contract] c | Sealed | Defense: d |\n")
     _run_archive([str(art), "--phase", "2"])
     notes = _notes_cell(art)
     assert notes.index("converged (0 unresolved HIGH)") < notes.index("tags=")
-    assert notes.rstrip().endswith(notes[notes.index("tags="):].rstrip())
+    tokens = [t.strip() for t in notes.split(";")]
+    assert tokens[-1].startswith("prov=")
+    assert tokens[-2].startswith("tags=")
 
 
 def test_sealed_token_recoverable_by_regex(tmp_path):

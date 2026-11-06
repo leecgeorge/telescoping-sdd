@@ -245,6 +245,7 @@ def _build_synthetic_marketplace(tmp_path: Path) -> Path:
     # blueprint_common imports all three at load time, so a published install
     # ships them in the shared scripts dir and the synthetic layout must too.
     shutil.copy2(src_scripts / "trajectory.py", dst_scripts / "trajectory.py")
+    shutil.copy2(src_scripts / "approval_records.py", dst_scripts / "approval_records.py")
     shutil.copy2(src_scripts / "content_hash.py", dst_scripts / "content_hash.py")
     shutil.copy2(src_scripts / "artifact_resolution.py", dst_scripts / "artifact_resolution.py")
     shutil.copy2(src_scripts / "pending_review.py", dst_scripts / "pending_review.py")

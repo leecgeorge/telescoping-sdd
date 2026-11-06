@@ -635,3 +635,48 @@ def test_sanitize_collapses_embedded_newline_no_extra_line():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Unit C0 T20 — budget with drift obligations and both notice kinds (AD17)
+# ---------------------------------------------------------------------------
+
+
+def _pe(i):
+    return rs.Notice(rs.NOTICE_PENDING_ELSEWHERE, f"s{i:02d}", "1 obligation",
+                     f"owned by s{i:02d} — resolve it from that directory: run its panel, or run the decline there: `validate_spec.py ./s{i:02d} --decline-pending`")
+
+
+def _ub(name):
+    return rs.Notice(rs.NOTICE_UNBOUND, name, "no upstream binding for spec.md", "re-approve top-down")
+
+
+def _obs(n):
+    return [_ob(rs.OBLIGATION_PENDING_REVIEW, f"pending {i}") for i in range(n)]
+
+
+def test_both_collapsed_lines_print_with_thirty_obligations():
+    state = rs.RunState("sdd", "Design", [], _obs(30), "n", [_pe(i) for i in range(30)] + [_ub("design.md"), _ub("tasks.md")])
+    lines = rs.format_run_state(state).splitlines()
+    assert sum(1 for ln in lines if "pending elsewhere" in ln) == 1
+    assert sum(1 for ln in lines if ln.startswith("  unbound:")) == 1
+    assert sum(1 for ln in lines if ln.startswith("  - pending-review")) == 30
+
+
+def test_budget_contention_three_stale_artifacts_print():
+    arts = [_stale("spec.md"), _stale("design.md"), _stale("tasks.md")]
+    state = rs.RunState("sdd", "Design", arts, _obs(10), "n", [_pe(i) for i in range(12)] + [_ub("design.md")])
+    lines = rs.format_run_state(state).splitlines()
+    assert len(lines) <= 24
+    assert all(any(ln.startswith(f"  {a}:") for ln in lines) for a in ("spec.md", "design.md", "tasks.md"))
+    assert sum(1 for ln in lines if "pending elsewhere" in ln) == 1
+
+
+def test_priority_three_fold_with_twenty_obligations():
+    arts = [_stale(f"a{i}.md") for i in range(6)]
+    state = rs.RunState("sdd", "Design", arts, _obs(20), "n", [_pe(i) for i in range(30)] + [_ub("design.md"), _ub("tasks.md")])
+    lines = rs.format_run_state(state).splitlines()
+    assert sum(1 for ln in lines if "pending elsewhere" in ln) == 1
+    assert sum(1 for ln in lines if ln.startswith("  unbound:")) == 1
+    assert [ln for ln in lines if "more — run the full validator" in ln] == ["  +6 more — run the full validator"]
+    assert len(lines) == 25  # the fold line may pass the soft 24-line ceiling ([SEAL-03])

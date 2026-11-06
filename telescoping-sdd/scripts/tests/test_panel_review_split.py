@@ -142,7 +142,9 @@ POST_SPLIT_CONTENT_EDITS: list[tuple[str, str, str]] = [
     (
         '## Lightweight Mode (single-pass panel)',
         'The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.',
-        'The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.\n\n**The priced-edit rule does not apply here** (`panel-review.md § The Loop`, step 8): lightweight mode is not a convergence exit — the loop is switched off after a single pass — so a row disposed `Addressed` on that pass does not make it non-terminal.',
+        'The `STRICT-BAR-SIGNAL:` advisory `archive_pass.py` may emit after the archive is informational only here — do not act on it.\n\n**The priced-edit rule does not apply here** (`panel-review.md § The Loop`, step 8): lightweight mode is not a convergence exit — the loop is switched off after a single pass — so a row disposed `Addressed` on that pass does not make it non-terminal.'
+        # Unit C0 (AC-5.5): the override route after a lightweight exit.
+        '\n\n**Approval after a lightweight exit.** If the single pass did not converge, the artifact\'s first `--approve` is refused by the convergence gate; the route out is the convergence override (`--override-convergence "<reason>"`), a user decision the validator records in the artifact\'s `## Approval` section.',
     ),
     (
         '## When to Skip the Panel',

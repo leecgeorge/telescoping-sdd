@@ -2961,3 +2961,349 @@ def test_r11_concern_bullet_corrected():
     assert _concern_bullet(_PANEL_SDD) == _concern_bullet(_PANEL_BP), (
         "the two tiers' Concern bullets have drifted out of parity"
     )
+
+
+# ---------------------------------------------------------------------------
+# Unit C0 T1 — table helpers, terminal rules and stamp constants live in
+# trajectory.py; archive_pass.py keeps aliases under the old names (AD1, AD2).
+# ---------------------------------------------------------------------------
+
+
+def _load_trajectory():
+    import importlib
+
+    scripts = _REPO_ROOT / "telescoping-sdd" / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    return importlib.import_module("trajectory")
+
+
+def test_archive_pass_aliases_are_trajectory_objects():
+    ap = _load_archive_pass()
+    tr = _load_trajectory()
+    assert ap._split_row is tr.split_table_row
+    assert ap.SEAL_PAT is tr.SEAL_ENTRY_RE
+    assert ap.render_table is tr.render_table
+    assert ap.render_table_row is tr.render_table_row
+    assert ap.TRAJECTORY_COLS is tr.TRAJECTORY_COLS
+    assert ap.TERMINAL_FILENAMES is tr.TERMINAL_FILENAMES
+    assert ap.TERMINAL_HTML_MARKER is tr.TERMINAL_HTML_MARKER
+    assert ap._NUMERIC_PREFIX_RE is tr._NUMERIC_PREFIX_RE
+    assert ap._strip_numeric_prefix is tr._strip_numeric_prefix
+    assert ap._UNESCAPED_PIPE is tr._UNESCAPED_PIPE
+
+
+def test_is_terminal_delegates_to_is_terminal_artifact(monkeypatch):
+    ap = _load_archive_pass()
+    calls = []
+
+    def fake(content, name):
+        calls.append((content, name))
+        return True
+
+    monkeypatch.setattr(ap, "is_terminal_artifact", fake)
+    assert ap._is_terminal("body", Path("spec.md"), False) is True
+    assert calls == [("body", "spec.md")]
+    # The explicit CLI flag short-circuits before the shared rules.
+    calls.clear()
+    assert ap._is_terminal("body", Path("spec.md"), True) is True
+    assert calls == []
+
+
+def test_emitted_stamps_are_shared_constants(tmp_path):
+    tr = _load_trajectory()
+    ap = _load_archive_pass()
+    # Supplementary identity check: the writer exposes the same constants.
+    assert ap.STAMP_STRICT_BAR is tr.STAMP_STRICT_BAR
+    assert ap.STAMP_CROSS_CHECK is tr.STAMP_CROSS_CHECK
+    assert tr.CONVERGED_STAMPS == (tr.STAMP_CONVERGED_NO_HIGH, tr.STAMP_CONVERGED_SEALED)
+
+    def notes_of(text):
+        rows = [ln for ln in text.splitlines() if re.match(r"^\| 1\s+\|", ln)]
+        assert len(rows) == 1, text
+        return rows[0].rstrip().rstrip("|").rsplit("|", 1)[-1]
+
+    # normal, converged with no HIGH
+    a = tmp_path / "n"; a.mkdir()
+    art = _artifact_with_latest(a, "| [MED] | pragmatist | minor | Addressed | fixed |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    assert tr.STAMP_CONVERGED_NO_HIGH in notes_of(art.read_text(encoding="utf-8"))
+    # --strict-bar
+    b = tmp_path / "s"; b.mkdir()
+    art = _artifact_with_latest(b, "")
+    assert _run_archive_pass([str(art), "--strict-bar"]).returncode == 0
+    notes = notes_of(art.read_text(encoding="utf-8"))
+    assert tr.STAMP_STRICT_BAR in notes and tr.STAMP_CONVERGED_NO_HIGH in notes
+    # --cross-check
+    c = tmp_path / "c"; c.mkdir()
+    art = _artifact_with_latest(c, "")
+    assert _run_archive_pass([str(art), "--cross-check"]).returncode == 0
+    notes = notes_of(art.read_text(encoding="utf-8"))
+    assert tr.STAMP_CROSS_CHECK in notes and tr.STAMP_CONVERGED_NO_HIGH in notes
+    # converged with a sealed HIGH
+    d = tmp_path / "d"; d.mkdir()
+    art = _artifact_with_latest(
+        d, "| [HIGH] | critic | a sealed thing | Sealed | Defense: reasons |\n"
+    )
+    assert _run_archive_pass([str(art)]).returncode == 0
+    notes = notes_of(art.read_text(encoding="utf-8"))
+    assert tr.STAMP_CONVERGED_SEALED in notes
+
+
+def test_trajectory_numeric_prefix_matches_artifact_resolution_pattern():
+    tr = _load_trajectory()
+    import artifact_resolution
+
+    assert tr._NUMERIC_PREFIX_RE.pattern == artifact_resolution._ARTIFACT_PREFIX_RE.pattern
+
+
+def test_is_terminal_artifact_matches_archive_rules():
+    tr = _load_trajectory()
+    assert tr.is_terminal_artifact("", "tasks.md") is True
+    assert tr.is_terminal_artifact("", "03_tasks.md") is True
+    assert tr.is_terminal_artifact("", "PLAN.md") is True
+    assert tr.is_terminal_artifact("", "03_PLAN.md") is True
+    assert tr.is_terminal_artifact("", "tasks-python.md") is True
+    assert tr.is_terminal_artifact("", "spec.md") is False
+    assert tr.is_terminal_artifact("", "SCOPE.md") is False
+    assert tr.is_terminal_artifact(tr.TERMINAL_HTML_MARKER + "\n", "SCOPE.md") is True
+    assert tr.is_terminal_artifact("", "plan.md") is False  # case-sensitive registry
+
+
+# ---------------------------------------------------------------------------
+# Unit C0 T7 — provenance token and halt-disposition stamp on archived rows
+# ---------------------------------------------------------------------------
+
+
+def _last_row_notes(text: str) -> str:
+    tr = _load_trajectory()
+    rows = [ln for ln in text.splitlines() if re.match(r"^\| \d+\s+\|", ln)]
+    return tr.split_table_row(rows[-1])[-1]
+
+
+def _content_hash(text: str) -> str:
+    import content_hash
+
+    return content_hash.compute_content_hash(text)
+
+
+def test_archive_appends_provenance_token_last_on_normal_row(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    notes = _last_row_notes(text)
+    assert notes.startswith("converged (0 HIGH); prov=")
+    assert tr.notes_tokens(notes)[-1] == f"prov={_content_hash(text)}"
+    assert tr.read_provenance_hash(notes) == _content_hash(text)
+
+
+def test_archive_appends_provenance_token_on_skip_row_keeps_skipped_prefix(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "")
+    assert _run_archive_pass([str(art), "--skip", "typo fix"]).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    notes = _last_row_notes(text)
+    assert notes.startswith("skipped (mechanical: typo fix); prov=")
+    assert tr.read_provenance_hash(notes) == _content_hash(text)
+
+
+def test_archive_appends_provenance_token_on_strict_bar_and_cross_check_rows(tmp_path):
+    tr = _load_trajectory()
+    for flag, stamp in (("--strict-bar", tr.STAMP_STRICT_BAR), ("--cross-check", tr.STAMP_CROSS_CHECK)):
+        d = tmp_path / flag.strip("-")
+        d.mkdir()
+        art = _artifact_with_latest(d, "")
+        assert _run_archive_pass([str(art), flag]).returncode == 0
+        text = art.read_text(encoding="utf-8")
+        notes = _last_row_notes(text)
+        assert notes.startswith(stamp + "; converged (0 HIGH); prov=")
+        assert tr.read_provenance_hash(notes) == _content_hash(text)
+
+
+def test_provenance_token_replaces_bare_dash_notes(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "| [HIGH] | critic | real | Addressed | fixed |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    notes = _last_row_notes(text)
+    assert notes == f"prov={_content_hash(text)}"
+    assert tr.read_provenance_hash(notes) is not None
+
+
+def test_archive_widening_notes_is_hash_neutral(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    h = tr.read_provenance_hash(_last_row_notes(text))
+    # The placeholder render has the same widths, so it hashes identically.
+    placeholder = text.replace(f"prov={h}", "prov=" + "0" * 16)
+    assert _content_hash(placeholder) == h == _content_hash(text)
+
+
+def test_provenance_golden_hand_computed_literal(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    # Data rows are hash-excluded and the Date cell is fixed-width, so this
+    # literal is independent of the archive date.
+    assert tr.read_provenance_hash(_last_row_notes(text)) == "b9d3c048042f12dd"
+
+
+def test_halt_and_rescope_disposition_appends_halt_stamp(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | out of scope | Halt and re-scope | stop |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    notes = _last_row_notes(art.read_text(encoding="utf-8"))
+    assert tr.STAMP_HALT_DISPOSITION in tr.notes_tokens(notes)
+    assert "halt vote" in notes
+
+
+def test_upstream_routed_halt_vote_has_no_halt_stamp(tmp_path):
+    tr = _load_trajectory()
+    art = _artifact_with_latest(
+        tmp_path, "| [HIGH] | architect | [upstream] spec gap | Sealed | Defense: ok |\n"
+    )
+    assert _run_archive_pass([str(art), "--phase", "2"]).returncode == 0
+    notes = _last_row_notes(art.read_text(encoding="utf-8"))
+    assert "halt vote" in notes
+    assert tr.STAMP_HALT_DISPOSITION not in notes
+
+
+def test_format_halt_notes_output_unchanged():
+    ap = _load_archive_pass()
+    one = [{"Source": "critic", "Concern": "a concern", "Disposition": "Halt and re-scope"}]
+    assert ap.format_halt_notes(one) == "halt vote (critic: a concern)"
+    four = [dict(one[0], Source=f"s{i}") for i in range(4)]
+    assert ap.format_halt_notes(four) == (
+        "halt votes (n=4: s0: a concern; s1: a concern; s2: a concern; ...)"
+    )
+    assert ap.format_halt_notes([]) == "—"
+
+
+def test_halt_trigger_read_unaffected_by_new_tokens():
+    tr = _load_trajectory()
+    assert "halt vote" not in tr.STAMP_HALT_DISPOSITION.lower()
+    assert "halt vote" not in tr.provenance_token("0" * 16).lower()
+
+
+def test_strict_bar_signal_reads_tags_before_provenance_token():
+    ap = _load_archive_pass()
+    notes = "tags=d2u0c1; prov=0123456789abcdef"
+    assert ap.parse_tag_summary(notes) == ap.parse_tag_summary("tags=d2u0c1")
+    assert ap.parse_tag_summary(notes) is not None
+
+
+def test_dry_run_diff_shows_final_token(tmp_path):
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    before = art.read_text(encoding="utf-8")
+    proc = _run_archive_pass([str(art), "--dry-run"])
+    assert proc.returncode == 0
+    assert art.read_text(encoding="utf-8") == before
+    m = re.search(r"prov=([0-9a-f]{16})", proc.stdout)
+    assert m and m.group(1) != "0" * 16
+    # The dry-run token is the one a real archive writes.
+    assert _run_archive_pass([str(art)]).returncode == 0
+    assert f"prov={m.group(1)}" in art.read_text(encoding="utf-8")
+
+
+def test_check_mode_shows_no_token(tmp_path):
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    proc = _run_archive_pass([str(art), "--check"])
+    assert proc.returncode == 0
+    assert "prov=" not in proc.stdout + proc.stderr
+    assert "prov=" not in art.read_text(encoding="utf-8")
+
+
+def test_stamp_provenance_mismatch_exits_1_no_write(tmp_path, monkeypatch):
+    ap = _load_archive_pass()
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    before = art.read_bytes()
+
+    def boom(build, hasher):
+        raise RuntimeError("divergent render")
+
+    monkeypatch.setattr(ap, "stamp_provenance", boom)
+    monkeypatch.setattr(sys, "argv", ["archive_pass.py", str(art), "--phase", "1"])
+    with __import__("pytest").raises(SystemExit) as exc:
+        ap.main()
+    assert exc.value.code == 1
+    assert art.read_bytes() == before
+
+
+def test_provenance_hex_width_equals_content_hash_width():
+    tr = _load_trajectory()
+    import content_hash
+
+    assert tr.PROVENANCE_HEX_WIDTH == content_hash.CONTENT_HASH_WIDTH
+
+
+# ---------------------------------------------------------------------------
+# Unit C0 T8 — converged-closing-row fixture helper (production render path)
+# ---------------------------------------------------------------------------
+
+
+def _load_fixtures():
+    import importlib
+
+    tests_dir = str(_REPO_ROOT / "telescoping-sdd" / "scripts" / "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    return importlib.import_module("_fixtures")
+
+
+def test_add_converged_closing_row_matches_production_archive_row(tmp_path):
+    from datetime import date
+
+    fx = _load_fixtures()
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "")
+    before = art.read_text(encoding="utf-8")
+    assert _run_archive_pass([str(art), "--cross-check"]).returncode == 0
+    produced = art.read_text(encoding="utf-8")
+    helped = fx.add_converged_closing_row(
+        before,
+        notes=f"{tr.STAMP_CROSS_CHECK}; {tr.STAMP_CONVERGED_NO_HIGH}",
+        date=date.today().isoformat(),
+    )
+    assert helped == produced
+
+
+def test_add_converged_closing_row_inserts_panel_review_when_absent():
+    fx = _load_fixtures()
+    tr = _load_trajectory()
+    doc = "# Spec\n\n## Objective\n\nx\n\n## Approval\n\n- [ ] Approved to proceed\n- **Content Hash:** `pending`\n"
+    out = fx.add_converged_closing_row(doc)
+    for h in ("## Panel Review", "### Trajectory", "### Sealed dispositions", "### Latest pass detail"):
+        assert h in out
+    assert out.index("## Panel Review") < out.index("## Approval")
+    rows = [ln for ln in out.splitlines() if re.match(r"^\| \d+\s+\|", ln)]
+    assert len(rows) == 1
+    notes = tr.split_table_row(rows[0])[-1]
+    assert notes.startswith(tr.STAMP_CONVERGED_NO_HIGH + "; prov=")
+    assert tr.read_provenance_hash(notes) == _content_hash(out)
+    # A second call appends pass 2 and keeps the hash current.
+    out2 = fx.add_converged_closing_row(out)
+    rows2 = [ln for ln in out2.splitlines() if re.match(r"^\| \d+\s+\|", ln)]
+    assert [tr.split_table_row(r)[0] for r in rows2] == ["1", "2"]
+    assert tr.read_provenance_hash(tr.split_table_row(rows2[-1])[-1]) == _content_hash(out2)
+
+
+def test_restamp_provenance_recomputes_newest_token():
+    fx = _load_fixtures()
+    tr = _load_trajectory()
+    doc = "# Spec\n\n## Objective\n\nx\n\n## Approval\n\n- [ ] Approved to proceed\n- **Content Hash:** `pending`\n"
+    out = fx.add_converged_closing_row(doc)
+    edited = out.replace("## Objective\n\nx\n", "## Objective\n\nedited body\n")
+    stale = tr.read_provenance_hash(
+        tr.split_table_row([ln for ln in edited.splitlines() if ln.startswith("| 1 ")][0])[-1]
+    )
+    assert stale != _content_hash(edited)
+    fixed = fx.restamp_provenance(edited)
+    row = [ln for ln in fixed.splitlines() if ln.startswith("| 1 ")][0]
+    assert tr.read_provenance_hash(tr.split_table_row(row)[-1]) == _content_hash(fixed)
+    assert fixed.replace(row, "") == edited.replace(
+        [ln for ln in edited.splitlines() if ln.startswith("| 1 ")][0], ""
+    )

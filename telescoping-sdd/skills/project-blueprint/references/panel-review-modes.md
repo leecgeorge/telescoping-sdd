@@ -21,6 +21,8 @@ For those cases the user may opt into **lightweight mode**: one panel pass, then
 
 **The priced-edit rule does not apply here** (`panel-review.md § The Loop`, step 8): lightweight mode is not a convergence exit — the loop is switched off after a single pass — so a row disposed `Addressed` on that pass does not make it non-terminal.
 
+**Approval after a lightweight exit.** If the single pass did not converge, the artifact's first `--approve` is refused by the convergence gate; the route out is the convergence override (`--override-convergence "<reason>"`), a user decision the validator records in the artifact's `## Approval` section.
+
 **What it keeps:** the drafting subagent and its self-review, your own re-review and any cross-doc consistency check, the full disposition vocabulary, the Synthesizer Self-Check, the format contract for `## Panel Review`, validation, and the human approval gate. The halt-and-rescope *disposition* is still available on the single pass — if the one pass surfaces a fundamentally-wrong scope (or an `[upstream]` tag in Phase 2/3), present the halt summary from `## Halt and Re-scope Exit` rather than waving it through; a project too big to review lightly is exactly the signal lightweight mode must not suppress.
 
 **Mid-stream and re-approval interaction:** lightweight mode governs only the *fresh-artifact* panel. Re-Approval After Edits and mid-stream entry (their upstream panel re-review step) are governed by their own flow in `references/hash-and-cascade.md` and are unaffected; a small artifact's later edits still route through that flow normally.
