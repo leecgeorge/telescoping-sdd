@@ -13,6 +13,10 @@ import sys
 from pathlib import Path
 
 _SCRIPTS = Path(__file__).resolve().parents[1]
+_TESTS = Path(__file__).resolve().parent
+if str(_TESTS) not in sys.path:
+    sys.path.insert(0, str(_TESTS))
+from _fixtures import add_converged_closing_row  # noqa: E402  (Unit C0 gate fixtures)
 _VS = _SCRIPTS.parent / "skills" / "spec-driven-dev" / "scripts" / "validate_spec.py"
 
 
@@ -28,13 +32,15 @@ def _broken_spec_dir(root: Path, name: str = "F1-demo") -> Path:
     d = root / "specs" / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "spec.md").write_text(
-        "# F1: Demo\n\n"
-        "**PLAN feature identifier:** `F1`\n\n"
-        "## Objective\n\n"
-        "Do a thing. [TBD — needs input]\n\n"
-        "## Approval\n\n"
-        "- [ ] Approved to proceed to next phase\n"
-        "- **Content Hash:** `pending`\n",
+        add_converged_closing_row(
+            "# F1: Demo\n\n"
+            "**PLAN feature identifier:** `F1`\n\n"
+            "## Objective\n\n"
+            "Do a thing. [TBD — needs input]\n\n"
+            "## Approval\n\n"
+            "- [ ] Approved to proceed to next phase\n"
+            "- **Content Hash:** `pending`\n"
+        ),
         encoding="utf-8",
     )
     return d
@@ -73,7 +79,9 @@ def test_approve_no_approval_section_exits_nonzero(tmp_path):
     not a false 'Approved:' on exit 0 (audit R1.5)."""
     d = tmp_path / "specs" / "F1-demo"
     d.mkdir(parents=True)
-    body = "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n"
+    body = add_converged_closing_row(
+        "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n"
+    )
     (d / "spec.md").write_text(body, encoding="utf-8")
     r = _run_vs(str(d), "--approve", "spec", "--force", "--project-root", str(tmp_path))
     assert r.returncode == 1, (r.stdout, r.stderr)
@@ -88,7 +96,7 @@ def test_approve_malformed_approval_section_exits_nonzero(tmp_path):
     no-op; approval must fail (nothing stamped) rather than print a false success."""
     d = tmp_path / "specs" / "F1-demo"
     d.mkdir(parents=True)
-    body = (
+    body = add_converged_closing_row(
         "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n\n"
         "## Approval\n\n- [ ] Approved to proceed to next phase\n"  # no Content Hash line
     )
@@ -106,7 +114,7 @@ def test_bom_artifact_approves_and_revalidates_clean(tmp_path):
     reads BOM-tolerantly and rewrites without the BOM; re-validation matches."""
     d = tmp_path / "specs" / "F1-demo"
     d.mkdir(parents=True)
-    body = (
+    body = add_converged_closing_row(
         "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nx\n\n"
         "## Approval\n\n- [ ] Approved to proceed to next phase\n"
         "- **Content Hash:** `pending`\n"
@@ -159,9 +167,11 @@ def test_approve_corrupt_marker_on_restamp_exits_nonzero(tmp_path):
     d.mkdir(parents=True)
     spec = d / "spec.md"
     spec.write_text(
-        "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nfirst\n\n"
-        "## Approval\n\n- [ ] Approved to proceed to next phase\n"
-        "- **Content Hash:** `pending`\n",
+        add_converged_closing_row(
+            "# F1: Demo\n\n**PLAN feature identifier:** `F1`\n\n## Objective\n\nfirst\n\n"
+            "## Approval\n\n- [ ] Approved to proceed to next phase\n"
+            "- **Content Hash:** `pending`\n"
+        ),
         encoding="utf-8",
     )
     # 1) Clean first approval (no marker yet).

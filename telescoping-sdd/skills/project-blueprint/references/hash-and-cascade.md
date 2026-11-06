@@ -136,7 +136,7 @@ When an approved document changes, run this flow against it:
 
    For each approved downstream:
    - Skip downstreams that are unapproved-in-progress (the in-progress work absorbs the change naturally).
-   - If the check finds nothing, note it ("ARCHITECTURE.md still consistent with re-approved SCOPE.md") and continue. Do not re-stamp — the downstream's content didn't change.
+   - If the check finds nothing, note it ("ARCHITECTURE.md still consistent with re-approved SCOPE.md") and continue. Then re-approve the downstream (`--approve <phase>`) so its upstream binding records the re-approved upstream; its content didn't change, so the re-stamp opens no pending-review obligation. Walk the chain top-down — each re-approval supersedes the bindings below it.
    - If it finds substantive divergence, **halt** and quote the specific divergence by checklist item ("Goal coverage: G3 in revised SCOPE.md has no addressable component in ARCHITECTURE.md"). Do not cascade further down the chain until this link is resolved.
 
 Resolution has two paths:
@@ -158,7 +158,7 @@ Resolution has two paths:
 4. **If yes, run the panel-review loop** on the revised downstream — follow `panel-review.md` exactly, using the panelist set already defined for the downstream's phase (listed in SKILL.md § "Phase N" and the corresponding `phase-<name>.md`). If panel auto-fixes modify the downstream during the loop, re-stamp it a final time. Then re-enter this flow at step 1 (cascading further downstream if applicable).
 5. **If no, skip the panel** and re-enter this flow at step 1 (cascading further downstream if applicable).
 
-**Net effect.** Cosmetic edits ripple silently — one re-stamp note, one consistency-verified note per downstream. Substantive edits halt exactly where they matter. Downstreams never get re-stamped just because an upstream changed.
+**Net effect.** Cosmetic edits ripple without a panel — one re-stamp note, then one consistency-verified binding re-approval per downstream, top-down. Substantive edits halt exactly where they matter. A downstream is re-stamped after an upstream change only to refresh its upstream binding, top-down, and that re-stamp opens no review obligation.
 
 ### Close-Path Selection Guidance
 
@@ -167,7 +167,7 @@ A pending-review obligation (the `upstream-panel [0-9a-f]{8}` marker) has exactl
 1. **Run the panel and stamp the tag** (the doctrine-correct close, step 3e): run the upstream panel, let `archive_pass.py` append the pass, then stamp `upstream-panel <pre-panel-hash-short>` on that Trajectory row. The next validation reconciles and clears the obligation.
 2. **`--decline-pending`**: `python <script-path>/validate_blueprint.py blueprint/ --decline-pending` — an explicit, auditable USER decision to waive a genuinely-owed re-review.
 
-**Narrowed `--decline-pending` meaning.** `--decline-pending` signals *consciously waiving a genuinely-owed re-review* — it is NEVER used to clear mechanical convergence churn. Recording a converged panel pass no longer moves the approval hash (the `### Trajectory` table and the `- **Hash basis:** v2` line are excluded from it), so a convergence-only re-approval writes no marker at all — there is nothing to decline. Reserve `--decline-pending` for the case it audits: a real, owed panel re-review the user chooses to skip.
+**Narrowed `--decline-pending` meaning.** `--decline-pending` signals *consciously waiving a genuinely-owed re-review* — it is NEVER used to clear mechanical convergence churn. Recording a converged panel pass no longer moves the approval hash (the `### Trajectory` table and the `- **Hash basis:** v2` line are excluded from it), and a re-approval whose only other change is `archive_pass.py` promoting `[SEAL-NN]` entries into `### Sealed dispositions` is recognised as seal promotion, so a convergence-only or seal-promotion-only re-approval writes no marker at all — there is nothing to decline. Reserve `--decline-pending` for the case it audits: a real, owed panel re-review the user chooses to skip. The orchestrator declines only obligations for the artifact it is driving; an obligation reported for another artifact is surfaced to the user as information, and the orchestrator never declines it, or proposes declining it, on its own. The per-key decline opt-in (`--decline-key`) and the convergence override (`--override-convergence`) are user decisions: the orchestrator surfaces one only where a validator message routes to it, while already stopped for the user (a decline refusal or the phase-boundary approval gate), never runs either on its own, and never offers either as a substitute for a panel pass the loop still requires.
 
 **Hash-basis migration.** An artifact approved under the old basis validates with a distinct `HASH-BASIS-MIGRATION:` FAIL (NOT the generic `Pending-review: FAILED`). Resolve it by re-approving once: `--approve <phase>`. A pure basis migration writes no pending-review marker; a concurrent substantive edit (or un-re-approved `### Trajectory` growth) writes one clearable marker. Discover every affected artifact with `grep -rlE '^### Trajectory' blueprint/ --include='*.md'` and re-approve each.
 

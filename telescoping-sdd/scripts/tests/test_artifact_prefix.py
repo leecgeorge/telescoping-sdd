@@ -167,6 +167,7 @@ _REPO = Path(__file__).resolve().parents[3]
 _CONVERTED_SOURCES = [
     _REPO / "telescoping-sdd/scripts/blueprint_common.py",
     _REPO / "telescoping-sdd/scripts/archive_pass.py",
+    _REPO / "telescoping-sdd/scripts/trajectory.py",
     _REPO / "telescoping-sdd/scripts/reconcile.py",
     _REPO / "telescoping-sdd/skills/spec-driven-dev/scripts/validate_spec.py",
     _REPO / "telescoping-sdd/skills/project-blueprint/scripts/validate_blueprint.py",

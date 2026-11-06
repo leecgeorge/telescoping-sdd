@@ -143,6 +143,7 @@ def test_run_state_output_categories_present(tmp_path, capsys):
         ["--completion-gate"],
         ["--restore-anchor"],
         ["--decline-pending"],
+        ["--decline-key", "specs/x/spec.md"],
     ],
 )
 def test_run_state_mutual_exclusion_all_sdd_mode_flags_exit2(tmp_path, monkeypatch, extra):
@@ -322,7 +323,9 @@ def test_run_state_byte_level_readonly_subprocess(tmp_path):
     # then --approve both, and assert the approved artifact is byte-identical.
     # Standalone dir name "feature" + a `n/a` PLAN identifier so the spec-dir
     # cross-check passes; --force stamps despite other structural FAILs.
-    approvable = (
+    from _fixtures import add_converged_closing_row  # Unit C0: gate-passing fixture
+
+    approvable = add_converged_closing_row(
         "# Doc\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n"
         "## Approval\n\n- [ ] Approved to proceed\n- **Content Hash:** `pending`\n"
     )
@@ -348,3 +351,24 @@ def test_run_state_byte_level_readonly_subprocess(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- Unit C0 T21: qualified all-clear end to end (AC-4.4) -------------------
+
+
+def test_sdd_run_state_unbound_chain_prints_qualified_all_clear(tmp_path):
+    spec_dir = tmp_path / "specs" / "feature"
+    spec_dir.mkdir(parents=True)
+    (tmp_path / ".git").mkdir()
+    for name in ("spec.md", "design.md", "tasks.md"):
+        _write_matches_v2(spec_dir / name)  # approved, no binding lines
+    vs_path = Path(__file__).resolve().parents[1] / "validate_spec.py"
+    proc = subprocess.run(
+        [sys.executable, str(vs_path), str(spec_dir), "--run-state", "--project-root", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines[1].startswith("all clear (upstream binding unverified) — ")
+    unbound = [ln for ln in lines if ln.lstrip().startswith("unbound:")]
+    assert len(unbound) == 1 and unbound[0].startswith("  unbound: design.md, tasks.md — ")

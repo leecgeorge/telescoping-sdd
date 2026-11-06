@@ -1434,3 +1434,62 @@ def test_marker_lock_excludes_other_process(tmp_path):
         [sys.executable, "-c", child], capture_output=True, text=True
     ).stdout.strip()
     assert out2 == "GOT", out2
+
+
+# ---------------------------------------------------------------------------
+# Unit C0 T4 — approval_records / trajectory names wired through
+# blueprint_common; import order smoke tests (AD1 layering).
+# ---------------------------------------------------------------------------
+
+_C0_SCRIPTS = Path(__file__).resolve().parents[1]
+
+
+def _fresh_import(first: str) -> "subprocess.CompletedProcess[str]":
+    import subprocess
+
+    code = (
+        "import sys; sys.path.insert(0, %r); import %s; "
+        "from blueprint_common import read_bindings, render_table, EXIT_DECLINE_REFUSED; "
+        "print('ok')" % (str(_C0_SCRIPTS), first)
+    )
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+
+def test_import_blueprint_common_first_fresh_interpreter():
+    proc = _fresh_import("blueprint_common")
+    assert proc.returncode == 0 and proc.stdout.strip() == "ok", proc.stderr
+
+
+def test_import_run_state_first_fresh_interpreter():
+    proc = _fresh_import("run_state")
+    assert proc.returncode == 0 and proc.stdout.strip() == "ok", proc.stderr
+
+
+def test_blueprint_common_reexports_leaf_names():
+    import approval_records as ar
+    import trajectory as tr
+
+    for name in (
+        "UpstreamBinding", "BINDING_LINE_RE", "read_bindings", "strip_binding_lines",
+        "upsert_binding_lines", "OverrideRecord", "OVERRIDE_LINE_RE",
+        "read_override_record", "append_override_record", "sanitize_override_reason",
+        "DisplayArg", "display_arg", "display_text", "DISPLAY_ARG_MAX",
+        "GLOSS_BINDING", "GLOSS_SUPERSEDED", "GLOSS_UNBOUND", "GLOSS_LEGACY",
+        "USER_DECISION_NOTE", "RESTAMP_CARVE_OUT_PREFIX", "SEAL_PART",
+        "BINDING_PART", "REPAD_PART", "TIER_VALIDATOR_CMD",
+    ):
+        assert getattr(bc, name) is getattr(ar, name), name
+    for name in (
+        "TRAJECTORY_COLS", "split_table_row", "render_table", "render_table_row",
+        "SEAL_ENTRY_RE", "TERMINAL_FILENAMES", "TERMINAL_HTML_MARKER",
+        "is_terminal_artifact", "STAMP_STRICT_BAR", "STAMP_CROSS_CHECK",
+        "STAMP_CONVERGED_NO_HIGH", "STAMP_CONVERGED_SEALED", "CONVERGED_STAMPS",
+        "STAMP_HALT_DISPOSITION",
+    ):
+        assert getattr(bc, name) is getattr(tr, name), name
+
+
+def test_exit_decline_refused_is_4_and_distinct_from_held_back():
+    assert bc.EXIT_DECLINE_REFUSED == 4
+    assert bc.EXIT_DECLINE_REFUSED != bc.EXIT_DECLINE_HELD_BACK
+    assert bc.EXIT_DECLINE_HELD_BACK == 3

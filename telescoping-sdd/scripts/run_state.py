@@ -23,6 +23,7 @@ broad backstop. `--run-state` writes nothing (R5).
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from dataclasses import fields as _dc_fields
@@ -34,7 +35,16 @@ from typing import List, Optional, Tuple
 # imported before pending_review (pending_review layers over it). The
 # import-guard test asserts no validator name appears here.
 from artifact_resolution import ArtifactAmbiguityError, resolve_artifact
-from blueprint_common import read_file, trim_trajectory_table
+from approval_records import (
+    DISPLAY_ARG_MAX,
+    GLOSS_UNBOUND,
+    TIER_VALIDATOR_CMD,
+    _ANSI_RE,
+    _CONTROL_RE,
+    display_arg,
+    display_text,
+)
+from blueprint_common import UPSTREAM_SETS, binding_report, read_file, trim_trajectory_table
 from content_hash import (
     changed_since_stamp,
     compute_content_hash,
@@ -42,7 +52,15 @@ from content_hash import (
     is_basis_migration_only,
     read_stored_hash,
 )
-from pending_review import MarkerCorruptError, read_pending_review
+from pending_review import (
+    MarkerCorruptError,
+    is_containment_escaping,
+    owning_dir_route,
+    partition_keys,
+    read_pending_review,
+    scope_of_key,
+    tier_of_scope,
+)
 
 
 class HashStatus(str, Enum):
@@ -66,6 +84,16 @@ class HashStatus(str, Enum):
 OBLIGATION_PENDING_REVIEW = "pending-review"
 OBLIGATION_MARKER_UNREADABLE = "marker-unreadable"
 OBLIGATION_DEGRADED_READ = "degraded-read"
+# Unit C0 (AD17): a superseded upstream binding — a blocking obligation, so it
+# is never dropped and it prevents "all clear" (AC-4.3).
+OBLIGATION_UPSTREAM_DRIFT = "upstream-drift"
+
+# --- Notice kinds (Unit C0 AD17): informational, never obligations ----------
+NOTICE_PENDING_ELSEWHERE = "pending-elsewhere"
+NOTICE_UNBOUND = "unbound"
+# The out-of-lane containment-escaping keys' group subject; sorts last.
+NO_SCOPE_SUBJECT = "(no scope)"
+PENDING_ELSEWHERE_LABEL = "pending elsewhere — not resolvable from here"
 
 
 @dataclass
@@ -99,6 +127,22 @@ class Obligation:
 
 
 @dataclass
+class Notice:
+    """One informational line (Unit C0 AD17) — never blocks "all clear".
+
+    `kind` is NOTICE_PENDING_ELSEWHERE (subject = the owning scope) or
+    NOTICE_UNBOUND (subject = the artifact). For pending-elsewhere, `detail`
+    begins with the obligation count (``"<n> obligation(s)"``), which the
+    collapsed form reads back. `route` is the plain-language way out.
+    """
+
+    kind: str
+    subject: str
+    detail: str
+    route: str
+
+
+@dataclass
 class RunState:
     """The whole rehydration summary (AD1) — in-memory only, never persisted."""
 
@@ -107,6 +151,7 @@ class RunState:
     artifacts: "List[ArtifactState]" = field(default_factory=list)
     obligations: "List[Obligation]" = field(default_factory=list)
     next_step: str = ""
+    notices: "List[Notice]" = field(default_factory=list)
 
 
 # --- Shared field-name constants (the parity contract, R6 AC4) --------------
@@ -115,15 +160,19 @@ class RunState:
 # test tautological and give no protection). A field added/reordered without
 # updating the matching constant fails the parity test loudly, so the two tiers'
 # summaries cannot silently drift.
-CORE_RUN_STATE_FIELDS = ("tier", "current_phase", "artifacts", "obligations", "next_step")
+CORE_RUN_STATE_FIELDS = (
+    "tier", "current_phase", "artifacts", "obligations", "next_step", "notices",
+)
 ARTIFACT_FIELDS = ("name", "exists", "approved", "hash_status", "tick_hint")
 OBLIGATION_FIELDS = ("kind", "detail", "next_action")
+NOTICE_FIELDS = ("kind", "subject", "detail", "route")
 
 # Fail LOUDLY at import time (not only in the test suite) if a dataclass field
 # is added/renamed/reordered without updating the matching tuple above.
 assert tuple(f.name for f in _dc_fields(RunState)) == CORE_RUN_STATE_FIELDS
 assert tuple(f.name for f in _dc_fields(ArtifactState)) == ARTIFACT_FIELDS
 assert tuple(f.name for f in _dc_fields(Obligation)) == OBLIGATION_FIELDS
+assert tuple(f.name for f in _dc_fields(Notice)) == NOTICE_FIELDS
 
 # Blueprint's all-approved current-phase label (its terminal_phase_label is None,
 # since the blueprint tier has no Phase-4/Implement altitude — AD3).
@@ -248,11 +297,14 @@ def _classify_hash(text: str) -> HashStatus:
 
 def _derive_artifact_state(
     artifact_dir: Path, bare_name: str, obligations: "List[Obligation]"
-) -> ArtifactState:
+) -> "Tuple[ArtifactState, Optional[str]]":
     """Resolve + read one artifact into an `ArtifactState`, appending any
     degraded / ambiguity `Obligation` to `obligations`. Layer-1 per-primitive
     catches (AD11) — the three distinct states (absent / degraded / ambiguous)
-    are kept separate so the AD3 phase suffix stays truthful."""
+    are kept separate so the AD3 phase suffix stays truthful.
+
+    Returns ``(state, text)``; ``text`` is the content read (None when absent,
+    degraded or ambiguous) so the binding report can reuse it (Unit C0 C5)."""
     try:
         path = resolve_artifact(artifact_dir, bare_name)
     except ArtifactAmbiguityError:
@@ -267,13 +319,13 @@ def _derive_artifact_state(
         )
         return ArtifactState(
             name=bare_name, exists=False, approved=False, hash_status=HashStatus.DEGRADED
-        )
+        ), None
 
     outcome, text = _read_artifact_text(path)
     if outcome == _READ_ABSENT:
         return ArtifactState(
             name=bare_name, exists=False, approved=False, hash_status=HashStatus.NA
-        )
+        ), None
     if outcome == _READ_DEGRADED:
         obligations.append(
             Obligation(
@@ -284,27 +336,85 @@ def _derive_artifact_state(
         )
         return ArtifactState(
             name=bare_name, exists=True, approved=False, hash_status=HashStatus.DEGRADED
-        )
+        ), None
 
     # Readable content.
     if not has_approval(text):
         return ArtifactState(
             name=bare_name, exists=True, approved=False, hash_status=HashStatus.NA
-        )
+        ), text
     return ArtifactState(
         name=bare_name, exists=True, approved=True, hash_status=_classify_hash(text)
-    )
+    ), text
+
+
+_UNBOUND_ROUTE = (
+    "run each one's consistency check against its current upstream, then "
+    "re-approve it top-down (`--approve <phase>`) to record its binding — "
+    + GLOSS_UNBOUND
+)
+
+
+def _append_binding_state(
+    states: "List[Tuple[ArtifactState, Optional[str]]]",
+    obligations: "List[Obligation]",
+    notices: "List[Notice]",
+) -> None:
+    """Per approved downstream, the shared ``binding_report`` (AD11): each
+    superseded binding is an upstream-drift obligation; each unbound downstream
+    an informational ``unbound`` notice (AD17). Same wording in both tiers."""
+    texts = {st.name: text for st, text in states}
+    for st, text in states:
+        if st.name not in UPSTREAM_SETS or not st.approved or text is None:
+            continue
+        rep = binding_report(
+            st.name, text, {up: texts.get(up) for up in UPSTREAM_SETS[st.name]}
+        )
+        for b in rep.superseded:
+            rec = ", ".join(v[:8] for v in b.recorded)
+            obligations.append(
+                Obligation(
+                    kind=OBLIGATION_UPSTREAM_DRIFT,
+                    detail=(
+                        f"{st.name} was approved against {b.upstream} @ {rec}, but "
+                        f"{b.upstream} is now {display_text(b.current[:16])[:8]} ({b.reason})"
+                    ),
+                    next_action=f"run the consistency check, then re-approve {st.name}, top-down",
+                )
+            )
+        if rep.unbound:
+            notices.append(
+                Notice(
+                    kind=NOTICE_UNBOUND,
+                    subject=st.name,
+                    detail=f"no upstream binding for {', '.join(rep.unbound)}",
+                    route=_UNBOUND_ROUTE,
+                )
+            )
 
 
 def _append_marker_obligations(
-    project_root: Path, obligations: "List[Obligation]"
+    project_root: Path,
+    target_rel: str,
+    obligations: "List[Obligation]",
+    notices: "List[Notice]",
+    *,
+    running_tier: str,
 ) -> None:
-    """Read the pending-review marker via the STRICT path and append obligations.
+    """Read the pending-review marker via the STRICT path; partition it (R1).
 
     The first catch-and-continue caller of the strict path (every existing strict
     caller aborts): a `MarkerCorruptError` becomes a `marker-unreadable`
     obligation and is NEVER laundered into "no obligations" by falling back to the
     non-strict reader. An absent marker reads as empty-pending (no obligation).
+
+    Unit C0 (AD14/AD17): keys are partitioned by the raw ``_prefix_in_scope``
+    test the target's approval gate applies. In-scope keys are obligations; an
+    in-scope key owned by another scope (a root or parent target, R1's known
+    limit) gets the AD16 "owned by ..." next action. Every other key becomes a
+    ``pending-elsewhere`` notice grouped by scope (out-of-lane
+    containment-escaping keys form one ``(no scope)`` group), never an
+    obligation and never a decline from the current target.
     """
     try:
         data = read_pending_review(project_root, strict=True)
@@ -317,12 +427,40 @@ def _append_marker_obligations(
             )
         )
         return
-    for doc_rel in data.get("pending", {}):
+    keys = list(data.get("pending", {}))
+    in_scope, elsewhere = partition_keys(keys, target_rel)
+    own_scope = target_rel if target_rel not in ("", ".") else "."
+    for doc_rel in in_scope:
+        if scope_of_key(doc_rel) == own_scope:
+            next_action = "run the panel + stamp the tag, or decline with --decline-pending"
+        else:
+            next_action = owning_dir_route(
+                project_root, doc_rel, keys, target_rel=target_rel,
+                running_tier=running_tier, use="run-state",
+            )
         obligations.append(
             Obligation(
                 kind=OBLIGATION_PENDING_REVIEW,
-                detail=f"upstream panel re-review pending for {doc_rel}",
-                next_action="run the panel + stamp the tag, or decline with --decline-pending",
+                detail=f"upstream panel re-review pending for {display_text(doc_rel, max_len=DISPLAY_ARG_MAX)}",
+                next_action=next_action,
+            )
+        )
+    groups: "dict[str, List[str]]" = {}
+    for k in elsewhere:
+        subject = NO_SCOPE_SUBJECT if is_containment_escaping(project_root, k) else scope_of_key(k)
+        groups.setdefault(subject, []).append(k)
+    for subject in sorted(groups, key=lambda s_: (s_ == NO_SCOPE_SUBJECT, s_)):
+        ks = groups[subject]
+        n = len(ks)
+        notices.append(
+            Notice(
+                kind=NOTICE_PENDING_ELSEWHERE,
+                subject=subject,
+                detail=f"{n} obligation{'s' if n != 1 else ''}",
+                route=owning_dir_route(
+                    project_root, ks[0], keys, target_rel=target_rel,
+                    running_tier=running_tier, use="run-state",
+                ),
             )
         )
 
@@ -348,10 +486,11 @@ def derive_run_state(
     `_handle_run_state` guards anything this layer misses.
     """
     obligations: "List[Obligation]" = []
-    artifacts = [
+    states = [
         _derive_artifact_state(artifact_dir, bare_name, obligations)
         for _label, bare_name in phases
     ]
+    artifacts = [st for st, _text in states]
 
     pairs = [(label, state) for (label, _bare), state in zip(phases, artifacts)]
     current_phase, next_step = _derive_current_phase(pairs, terminal_phase_label)
@@ -369,7 +508,17 @@ def derive_run_state(
             if a.name == tick_hint_artifact and a.hash_status == HashStatus.STALE:
                 a.tick_hint = True
 
-    _append_marker_obligations(project_root, obligations)
+    notices: "List[Notice]" = []
+    try:
+        target_rel = Path(
+            os.path.relpath(Path(artifact_dir).resolve(), Path(project_root).resolve())
+        ).as_posix()
+    except (OSError, ValueError):
+        target_rel = "."
+    _append_marker_obligations(
+        project_root, target_rel, obligations, notices, running_tier=tier
+    )
+    _append_binding_state(states, obligations, notices)
 
     return RunState(
         tier=tier,
@@ -377,6 +526,7 @@ def derive_run_state(
         artifacts=artifacts,
         obligations=obligations,
         next_step=next_step,
+        notices=notices,
     )
 
 
@@ -387,18 +537,16 @@ def derive_run_state(
 _MAX_LINES = 24
 # Per-line length cap (AD14). Bounds one oversized field to one screen width.
 _LINE_CAP = 200
-# ANSI CSI escape sequences (color/cursor control) — stripped before render.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-# Control chars EXCEPT tab/newline/CR (those are handled by the newline collapse
-# below); includes DEL (0x7f) and lone ESC (0x1b).
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# _ANSI_RE (CSI escapes) and _CONTROL_RE (control chars except tab/newline/CR,
+# which the newline collapse below handles) are the approval_records objects,
+# imported at the top (Unit C0 AD1).
 
 # Integrity obligation kinds — never dropped at the ceiling, ordered first so
 # they are never the first thing truncated (AD13).
 _INTEGRITY_KINDS = (OBLIGATION_MARKER_UNREADABLE, OBLIGATION_DEGRADED_READ)
 
 
-def _sanitize(text: str) -> str:
+def _sanitize(text: str, cap: bool = True) -> str:
     """Neutralize a rendered field before it reaches stdout. [AD14]
 
     Collapses `\\n` / `\\r` / `\\t` to a single space FIRST (so no field can
@@ -413,12 +561,15 @@ def _sanitize(text: str) -> str:
     has no length cap; this renderer needs multi-field lines collapsed to
     exactly one physical line each AND length-capped, which unicode_escape
     alone doesn't give.
+
+    ``cap=False`` (Unit C0 AD16) exempts a line that carries a route command or
+    a gloss from the per-line cap, so a command is never cut mid-argument.
     """
     text = str(text)
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     text = _ANSI_RE.sub("", text)
     text = _CONTROL_RE.sub("", text)
-    if len(text) > _LINE_CAP:
+    if cap and len(text) > _LINE_CAP:
         text = text[: _LINE_CAP - 1] + "…"
     return text
 
@@ -459,26 +610,129 @@ def _artifact_line(a: ArtifactState) -> str:
 
 
 def _obligation_line(o: Obligation) -> str:
-    return _sanitize(f"  - {_sanitize(o.kind)}: {_sanitize(o.detail)} → {_sanitize(o.next_action)}")
+    # The next action may carry a route command: exempt it (and the outer line)
+    # from the per-line cap; the detail keeps it (AD16).
+    return _sanitize(
+        f"  - {_sanitize(o.kind)}: {_sanitize(o.detail)} → {_sanitize(o.next_action, cap=False)}",
+        cap=False,
+    )
+
+
+
+_RUN_STATE_ROUTE_EXISTS_PREFIX = "owned by "
+_BACKTICKED_RE = re.compile(r"`([^`]*)`")
+
+
+def _notice_count(n: Notice) -> int:
+    head = n.detail.split(" ", 1)[0]
+    return int(head) if head.isdigit() else 1
+
+
+def _expanded_notice_line(n: Notice) -> str:
+    if n.kind == NOTICE_PENDING_ELSEWHERE:
+        text = (
+            f"  {PENDING_ELSEWHERE_LABEL}: {_sanitize(n.subject)} — "
+            f"{_sanitize(n.detail)} — {_sanitize(n.route, cap=False)}"
+        )
+    else:
+        text = f"  {_sanitize(n.kind)}: {_sanitize(n.subject)} — {_sanitize(n.detail)} — {_sanitize(n.route, cap=False)}"
+    return _sanitize(text, cap=False)
+
+
+def _collapsed_pending_elsewhere_route(group: "List[Notice]") -> str:
+    """Route for the collapsed line: start from the first listed scope whose
+    directory exists (its run-state route is the 'owned by' template), printed
+    as that scope's ``--run-state`` command; AD16's project-root template when
+    ``(no scope)`` is the only group."""
+    for n in group:
+        if n.subject != NO_SCOPE_SUBJECT and n.route.startswith(_RUN_STATE_ROUTE_EXISTS_PREFIX):
+            cmds = [
+                c.replace("--decline-pending", "--run-state")
+                for c in _BACKTICKED_RE.findall(n.route)
+            ]
+            if cmds:
+                shown = " or ".join(f"`{c}`" for c in cmds)
+                return f"resolve each from its own directory, starting with {shown}"
+    return group[0].route
+
+
+def _collapsed_notice_line(kind: str, group: "List[Notice]") -> str:
+    if kind == NOTICE_PENDING_ELSEWHERE:
+        listed = ", ".join(
+            f"{_sanitize(n.subject)} ({_notice_count(n)})" for n in group[:3]
+        )
+        more = f" and {len(group) - 3} more" if len(group) > 3 else ""
+        route = _collapsed_pending_elsewhere_route(group)
+        return _sanitize(
+            f"  {PENDING_ELSEWHERE_LABEL}: {listed}{more} — {_sanitize(route, cap=False)}",
+            cap=False,
+        )
+    subjects = ", ".join(_sanitize(n.subject) for n in group)
+    return _sanitize(
+        f"  {_sanitize(kind)}: {subjects} — {_sanitize(group[0].route, cap=False)}",
+        cap=False,
+    )
+
+
+def _notice_groups(state: RunState) -> "List[Tuple[str, List[Notice]]]":
+    order = [NOTICE_PENDING_ELSEWHERE, NOTICE_UNBOUND]
+    out = []
+    for kind in order + sorted({n.kind for n in state.notices} - set(order)):
+        group = [n for n in state.notices if n.kind == kind]
+        if group:
+            out.append((kind, group))
+    return out
+
+
+def _render_notices(state: RunState, remaining: int) -> "List[str]":
+    """Notice lines within ``remaining`` slots (AD17 budget step 4, AC-1.2):
+    every notice prints expanded only if all of them fit; otherwise each kind
+    collapses to one summary line."""
+    groups = _notice_groups(state)
+    expanded = []
+    for kind, group in groups:
+        if kind == NOTICE_UNBOUND:
+            # AC-4.4 / AD17: always ONE unbound line naming every unbound artifact.
+            expanded.append(_collapsed_notice_line(kind, group))
+        else:
+            expanded.extend(_expanded_notice_line(n) for n in group)
+    if len(expanded) <= remaining:
+        return expanded
+    return [_collapsed_notice_line(kind, group) for kind, group in groups]
 
 
 def format_run_state(state: RunState) -> str:
     """Render the compact, sanitized one-screen summary. [I2; AD13/AD14]
 
-    Fully-clean directory -> a <=2-line all-clear pointing at the next step.
-    Otherwise, in fixed order: (1) header/phase line, (2) non-clean artifact
-    lines (clean artifacts collapse), (3) obligations block. Integrity
-    obligations (marker-unreadable / degraded-read) and open pending-review
-    obligations are NEVER dropped, even past the soft <=24-line ceiling; residual
-    non-clean artifact lines beyond the ceiling collapse into a "+N more" line.
-    Every field is routed through `_sanitize`. Pure function (no I/O).
+    Fully-clean directory -> a <=2-line all-clear pointing at the next step
+    (plus any informational notices). Otherwise, in fixed order: (1)
+    header/phase line, (2) non-clean artifact lines (clean artifacts collapse),
+    (3) obligations block, (4) notices. Integrity obligations (marker-unreadable
+    / degraded-read) and open pending-review obligations are NEVER dropped, even
+    past the soft <=24-line ceiling.
+
+    Budget (Unit C0 AD17), in priority order: (1) header and obligations, never
+    dropped; (2) one collapsed line per notice kind present, reserved; (3)
+    non-clean artifact lines in what remains, with "+N more" only if even they
+    do not fit; (4) notices expanded instead of collapsed only if the expanded
+    form fits in what is left. Every field is routed through `_sanitize`. Pure
+    function (no I/O).
     """
+    n_kinds = len(_notice_groups(state))
     fully_clean = not state.obligations and all(
         _artifact_is_clean(a) for a in state.artifacts
     )
     if fully_clean:
         header = _sanitize(f"run-state [{state.tier}] — current phase: {state.current_phase}")
-        return header + "\n" + _sanitize(f"all clear — {state.next_step}")
+        # AC-4.4: an unbound approved downstream qualifies the all-clear.
+        clear = (
+            "all clear (upstream binding unverified)"
+            if any(n.kind == NOTICE_UNBOUND for n in state.notices)
+            else "all clear"
+        )
+        lines = [header, _sanitize(f"{clear} — {state.next_step}")]
+        lines += _render_notices(state, max(_MAX_LINES - len(lines), n_kinds))
+        return "\n".join(lines)
 
     header = [_sanitize(f"run-state [{state.tier}] — current phase: {state.current_phase} · next: {state.next_step}")]
 
@@ -491,10 +745,11 @@ def format_run_state(state: RunState) -> str:
     ]
     obligation_lines = ["obligations:"] + [_obligation_line(o) for o in ordered_obs] if ordered_obs else []
 
-    # Obligations + header consume the budget first (they win over the ceiling);
-    # residual non-clean artifact lines beyond the remaining budget collapse into
-    # a single "+N more" overflow line rather than being silently dropped.
-    reserved = len(header) + len(obligation_lines)
+    # Header, obligations and one collapsed line per notice kind consume the
+    # budget first; residual non-clean artifact lines beyond the remaining
+    # budget collapse into a single "+N more" overflow line rather than being
+    # silently dropped.
+    reserved = len(header) + len(obligation_lines) + n_kinds
     budget = _MAX_LINES - reserved
     if budget < 0:
         budget = 0
@@ -507,7 +762,9 @@ def format_run_state(state: RunState) -> str:
             _sanitize(f"  +{dropped} more — run the full validator")
         ]
 
-    return "\n".join(header + artifact_lines + obligation_lines)
+    used = len(header) + len(artifact_lines) + len(obligation_lines)
+    notice_lines = _render_notices(state, max(_MAX_LINES - used, n_kinds))
+    return "\n".join(header + artifact_lines + obligation_lines + notice_lines)
 
 
 def safe_print(text: str) -> None:

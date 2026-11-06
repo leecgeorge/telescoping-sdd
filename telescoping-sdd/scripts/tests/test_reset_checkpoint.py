@@ -30,6 +30,11 @@ from pathlib import Path
 
 import pytest
 
+_TESTS_DIR = Path(__file__).resolve().parent
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+from _fixtures import add_converged_closing_row  # noqa: E402  (Unit C0 gate fixtures)
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCRIPTS = _REPO_ROOT / "telescoping-sdd" / "scripts"
 _VS_DIR = _SCRIPTS.parent / "skills" / "spec-driven-dev" / "scripts"
@@ -424,12 +429,17 @@ In scope: the thing. Out of scope: everything else.
 
 # A minimal spec.md — just enough to satisfy the dir↔identifier cross-check that
 # runs on every SDD approve (it reads spec.md's identifier), for design/tasks.
-_SPEC_STUB_MD = "# Spec\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n"
+_SPEC_STUB_MD = (
+    "# Spec\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n"
+    "## Approval\n\n- [x] Approved to proceed to next phase\n"
+    "- **Content Hash:** `00112233aabbccdd`\n"
+)
 
 
 def _approvable_doc(title: str) -> str:
-    """A minimal --force-approvable doc (Approval section + standalone id)."""
-    return (
+    """A minimal --force-approvable doc (Approval section + standalone id) with
+    a converged closing row, so the Unit C0 convergence gate passes."""
+    return add_converged_closing_row(
         f"# {title}\n\n**PLAN feature identifier:** `n/a`\n\n"
         "## Approval\n\n- [ ] Approved to proceed to next phase\n"
         "- **Content Hash:** `pending`\n"
@@ -540,6 +550,8 @@ def test_task_tick_restamp_emits_no_reset_checkpoint(tmp_path):
     d = _spec_dir(tmp_path)
     (d / "spec.md").write_text(_SPEC_STUB_MD, encoding="utf-8")
     (d / "tasks.md").write_text(_approvable_doc("Tasks"), encoding="utf-8")
+    # A --task-tick is a re-stamp: tasks.md carries a prior stamp (AC-5.8).
+    assert _load_validate_spec().approve_document(d / "tasks.md", project_root=tmp_path)
     out, _e, code = _spawn_validator(
         _VS, str(d), "--approve", "tasks", "--task-tick", "--project-root", str(tmp_path)
     )
@@ -577,9 +589,11 @@ def test_forced_past_fail_approve_still_emits_reset_checkpoint(tmp_path):
     d = _spec_dir(tmp_path)
     # Invalid spec (would FAIL the gate) but --force stamps anyway → still emits.
     (d / "spec.md").write_text(
-        "# Spec\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n"
-        "## Approval\n\n- [ ] Approved to proceed to next phase\n"
-        "- **Content Hash:** `pending`\n",
+        add_converged_closing_row(
+            "# Spec\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n"
+            "## Approval\n\n- [ ] Approved to proceed to next phase\n"
+            "- **Content Hash:** `pending`\n"
+        ),
         encoding="utf-8",
     )
     out, _e, code = _spawn_validator(
@@ -628,11 +642,20 @@ def _bp_dir(tmp_path: Path) -> Path:
 
 
 def _bp_doc(title: str) -> str:
-    return (
+    return add_converged_closing_row(
         f"# {title}\n\n## Approval\n\n"
         "- [ ] Approved to proceed to next phase\n"
         "- **Content Hash:** `pending`\n"
     )
+
+
+def _stamped_bp_upstreams(d: Path, root: Path) -> None:
+    """SCOPE.md and ARCHITECTURE.md finalised and stamped in-process (the
+    wrapper never meets the gate, AD7), so a PLAN approval can bind (AC-3.8)."""
+    vb = _load_validate_blueprint()
+    for name in ("SCOPE.md", "ARCHITECTURE.md"):
+        (d / name).write_text(_bp_doc(name[:-3]), encoding="utf-8")
+        assert vb.approve_document(d / name, project_root=root)
 
 
 def test_blueprint_approve_scope_arch_plan_emit_reset_checkpoint(tmp_path):
@@ -681,6 +704,7 @@ def test_blueprint_forced_past_fail_still_emits(tmp_path):
 
 def test_blueprint_plan_approval_emits_terminal_framing_with_list(tmp_path):
     d = _bp_dir(tmp_path)
+    _stamped_bp_upstreams(d, tmp_path)
     (d / "PLAN.md").write_text(_bp_doc("PLAN"), encoding="utf-8")
     out, _e, code = _spawn_validator(
         _VB, str(d), "--approve", "plan", "--force", "--project-root", str(tmp_path)
@@ -858,7 +882,8 @@ def test_cfc_baseline_identical_live_vs_stubbed_on_blueprint_plan(
     live_tree = tmp_path / "live"
     live_bp = live_tree / "blueprint"
     live_bp.mkdir(parents=True)
-    (live_bp / "PLAN.md").write_text(_CFC_PLAN, encoding="utf-8")
+    _stamped_bp_upstreams(live_bp, live_tree)
+    (live_bp / "PLAN.md").write_text(add_converged_closing_row(_CFC_PLAN), encoding="utf-8")
     rc_live = vb._handle_approve(args, live_bp, live_tree)
     out_live = capsys.readouterr().out
     assert rc_live == 0
@@ -868,7 +893,8 @@ def test_cfc_baseline_identical_live_vs_stubbed_on_blueprint_plan(
     stub_tree = tmp_path / "stub"
     stub_bp = stub_tree / "blueprint"
     stub_bp.mkdir(parents=True)
-    (stub_bp / "PLAN.md").write_text(_CFC_PLAN, encoding="utf-8")
+    _stamped_bp_upstreams(stub_bp, stub_tree)
+    (stub_bp / "PLAN.md").write_text(add_converged_closing_row(_CFC_PLAN), encoding="utf-8")
     rc_stub = vb._handle_approve(args, stub_bp, stub_tree)
     out_stub = capsys.readouterr().out
     assert rc_stub == 0

@@ -708,3 +708,55 @@ def test_hash_and_cascade_r3_asymmetries_allowlisted() -> None:
         "(design C5 scopes the phase-file read-delegation to SDD only)"
     )
     assert CONSISTENCY_READER not in _read(_PB_PHASE_PLAN)
+
+
+
+# --- Unit C0 T33: doctrine edits (design C8), byte-identical in both copies ---
+
+C0_AC_1_8 = 'The orchestrator declines only obligations for the artifact it is driving; an obligation reported for another artifact is surfaced to the user as information, and the orchestrator never declines it, or proposes declining it, on its own. The per-key decline opt-in (`--decline-key`) and the convergence override (`--override-convergence`) are user decisions: the orchestrator surfaces one only where a validator message routes to it, while already stopped for the user (a decline refusal or the phase-boundary approval gate), never runs either on its own, and never offers either as a substitute for a panel pass the loop still requires.'
+C0_AC_2_7 = 'and a re-approval whose only other change is `archive_pass.py` promoting `[SEAL-NN]` entries into `### Sealed dispositions` is recognised as seal promotion, so a convergence-only or seal-promotion-only re-approval writes no marker at all — there is nothing to decline.'
+C0_AC_4_5_BRANCH = "Then re-approve the downstream (`--approve <phase>`) so its upstream binding records the re-approved upstream; its content didn't change, so the re-stamp opens no pending-review obligation. Walk the chain top-down — each re-approval supersedes the bindings below it."
+C0_NET_LEAD = 'Cosmetic edits ripple without a panel — one re-stamp note, then one consistency-verified binding re-approval per downstream, top-down.'
+C0_NET_TAIL = 'A downstream is re-stamped after an upstream change only to refresh its upstream binding, top-down, and that re-stamp opens no review obligation.'
+C0_REPLACED = (
+    "Do not re-stamp — the downstream's content didn't change.",
+    "Cosmetic edits ripple silently — one re-stamp note, one consistency-verified note per downstream.",
+    "Downstreams never get re-stamped just because an upstream changed.",
+    "so a convergence-only re-approval writes no marker at all — there is nothing to decline.",
+)
+
+
+def _c0_narrowed_paragraph(text: str) -> str:
+    start = text.index("**Narrowed `--decline-pending` meaning.**")
+    return text[start: text.index("\n", start)]
+
+
+@pytest.mark.parametrize("path", [SDD_PATH, PB_PATH], ids=["sdd", "blueprint"])
+def test_ac_1_8_sentences_in_both_copies(path):
+    assert C0_AC_1_8 in _c0_narrowed_paragraph(_read(path))
+
+
+@pytest.mark.parametrize("path", [SDD_PATH, PB_PATH], ids=["sdd", "blueprint"])
+def test_ac_2_7_premise_names_seal_promotion_in_both_copies(path):
+    assert C0_AC_2_7 in _c0_narrowed_paragraph(_read(path))
+
+
+@pytest.mark.parametrize("path", [SDD_PATH, PB_PATH], ids=["sdd", "blueprint"])
+def test_ac_4_5_clean_check_branch_in_both_copies(path):
+    text = _read(path)
+    line = next(ln for ln in text.splitlines() if "If the check finds nothing, note it" in ln)
+    assert line.endswith(C0_AC_4_5_BRANCH)
+
+
+@pytest.mark.parametrize("path", [SDD_PATH, PB_PATH], ids=["sdd", "blueprint"])
+def test_net_effect_sentences_in_both_copies(path):
+    line = next(ln for ln in _read(path).splitlines() if ln.startswith("**Net effect.**"))
+    assert line.startswith("**Net effect.** " + C0_NET_LEAD)
+    assert C0_NET_TAIL in line
+
+
+@pytest.mark.parametrize("path", [SDD_PATH, PB_PATH], ids=["sdd", "blueprint"])
+def test_replaced_cascade_sentences_absent(path):
+    text = _read(path)
+    for s in C0_REPLACED:
+        assert s not in text, s

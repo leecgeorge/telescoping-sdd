@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import unicodedata
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
@@ -48,7 +49,17 @@ from blueprint_common import (  # noqa: E402
     UnresolvedMarker,
     ValidationResult,
     approval_hash,
+    ApprovalWrites,
+    apply_approval_writes,
     approve_document as _approve_document_core,
+    check_upstream_bindings,
+    ApprovalRaceError,
+    audit_directory,
+    format_audit_report,
+    plan_approval,
+    sanitize_override_reason,
+    compose_content_transforms,
+    verify_judged_transform,
     _atomic_write,
     mixed_state_warning,
     resolve_artifact,
@@ -62,7 +73,11 @@ from blueprint_common import (  # noqa: E402
     clear_pending_entries_for_prefix,
     compute_content_hash,
     content_for_hashing,
+    EXIT_DECLINE_REFUSED,
+    decline_pending_scoped,
     format_decline_output,
+    format_decline_refusal,
+    scope_of_key,
     partition_decline_clear,
     extract_panel_section,
     has_approval,
@@ -1376,7 +1391,12 @@ def _plan_cfc_hash_refresh(content: str, file_path: Path) -> str:
     return _write_cfc_hash_block(content, cfc_entries)
 
 
-def approve_document(file_path: Path, *, project_root: Optional[Path] = None) -> bool:
+def approve_document(
+    file_path: Path,
+    *,
+    project_root: Optional[Path] = None,
+    approval_writes: Optional[ApprovalWrites] = None,
+) -> bool:
     """Mark a document as approved (thin wrapper over the shared core, audit 3.5a).
 
     Delegates to ``blueprint_common.approve_document``, passing the blueprint-only
@@ -1385,11 +1405,22 @@ def approve_document(file_path: Path, *, project_root: Optional[Path] = None) ->
     carve-out here — blueprint has no Phase 4. Signature is preserved so all
     in-process callers and tests keep working; see the core for the full contract
     (R1.5 / R2.6 / re-stamp handling).
+
+    Unit C0 (AD12): with ``approval_writes`` the transform is the composed
+    chain race check -> CFC refresh -> approval writes; without it, exactly the
+    CFC refresh as before.
     """
+    transform = _plan_cfc_hash_refresh
+    if approval_writes is not None:
+        transform = compose_content_transforms(
+            partial(verify_judged_transform, writes=approval_writes),
+            _plan_cfc_hash_refresh,
+            partial(apply_approval_writes, writes=approval_writes),
+        )
     return _approve_document_core(
         file_path,
         project_root=project_root,
-        content_transform=_plan_cfc_hash_refresh,
+        content_transform=transform,
     )
 
 
@@ -1418,8 +1449,13 @@ def _write_cfc_hash_block(plan_content: str, cfc_entries: list[CFCEntry]) -> str
     # `- **CFC Content Hashes:**` and continues through CFC-hash-shaped
     # indented entries — *not* arbitrary indented bullets — so adjacent
     # user-added metadata (`- **Reviewer:** Alice`) is preserved.
+    # Line-local `[ \t]*` (not `\s*`): a leading `\s*` under (?m) absorbed the
+    # blank line the first insertion leaves before the block, so the second
+    # approval rewrote it away — a one-time producer delta that defeated the
+    # Unit C0 R2 seal-promotion carve-out on PLAN.md. The refresh is now
+    # idempotent from the first approval on.
     existing = re.search(
-        r"(?ms)^\s*-\s*\*\*CFC Content Hashes:\*\*\s*$"
+        r"(?m)^[ \t]*-[ \t]*\*\*CFC Content Hashes:\*\*[ \t]*$"
         r"(?:\n[ \t]+-[ \t]+CFC-\d+:[ \t]+`[0-9a-fA-F]+`[ \t]*)*",
         approval_body,
     )
@@ -1579,7 +1615,9 @@ def validate_scope(blueprint_dir: Path) -> ValidationResult:
     return result
 
 
-def validate_architecture(blueprint_dir: Path) -> ValidationResult:
+def validate_architecture(
+    blueprint_dir: Path, *, exempt_own_binding: bool = False
+) -> ValidationResult:
     """Validate ARCHITECTURE.md for required sections and resolved questions."""
     result = ValidationResult()
 
@@ -1591,6 +1629,11 @@ def validate_architecture(blueprint_dir: Path) -> ValidationResult:
     result.add("ARCHITECTURE.md exists", content is not None, str(arch_path))
     if content is None:
         return result
+
+    check_upstream_bindings(
+        blueprint_dir, "ARCHITECTURE.md", content, result,
+        exempt_own_binding=exempt_own_binding,
+    )
 
     # Check all required sections exist
     for section in ARCHITECTURE_REQUIRED_SECTIONS:
@@ -1768,7 +1811,10 @@ def _validate_plan_cfc_coverage(
 
 
 def validate_plan(
-    blueprint_dir: Path, project_root: Optional[Path] = None
+    blueprint_dir: Path,
+    project_root: Optional[Path] = None,
+    *,
+    exempt_own_binding: bool = False,
 ) -> ValidationResult:
     """Validate PLAN.md for required sections and resolved questions."""
     result = ValidationResult()
@@ -1781,6 +1827,10 @@ def validate_plan(
     result.add("PLAN.md exists", content is not None, str(plan_path))
     if content is None:
         return result
+
+    check_upstream_bindings(
+        blueprint_dir, "PLAN.md", content, result, exempt_own_binding=exempt_own_binding
+    )
 
     # Deferred-dispositions prohibition. PLAN.md is the terminal Phase-3 artifact
     # and must not carry a ### Deferred dispositions sub-section. Use line-anchored
@@ -1958,26 +2008,44 @@ def validate_plan(
 # Main
 # ---------------------------------------------------------------------------
 
-def _handle_decline_pending(blueprint_dir: Path, project_root: Optional[Path]) -> int:
+def _handle_decline_pending(
+    blueprint_dir: Path, project_root: Optional[Path], decline_key: Optional[str] = None
+) -> int:
     """`--decline-pending` mode (audit R3.2 — extracted from main).
 
     Clear this blueprint's pending-review obligations — an auditable user decision
     (logged to stdout), validator-owned marker lifecycle. Returns an exit code.
+
+    Unit C0 (R1): routed through the shared ``decline_pending_scoped`` with the
+    blueprint tier — a decline spanning more than one scope, or aimed at the
+    other tier's scope, is refused (exit 4, nothing written); ``decline_key`` is
+    the per-key opt-in for a vanished directory (AC-1.9).
     """
     root, bp_rel = _resolve_marker_root_and_key(blueprint_dir, project_root)
     restore_cmd = f"validate_blueprint.py {blueprint_dir} --restore-anchor"
     try:
-        cleared, held_back, flagged = partition_decline_clear(root, bp_rel)
+        res = decline_pending_scoped(
+            root, bp_rel, running_tier="blueprint", decline_key=decline_key
+        )
     except MarkerCorruptError as exc:
         print(
             f"Cannot decline: {exc}. The marker is corrupt; inspect or delete "
             f".sdd/pending-review.json manually."
         )
         return 1
+    if res.refusal is not None:
+        print(format_decline_refusal(
+            res.refusal, project_root=root, target_rel=bp_rel, running_tier="blueprint"
+        ))
+        return EXIT_DECLINE_REFUSED
+    cleared, held_back, flagged = list(res.cleared), list(res.held_back), list(res.flagged)
     if not cleared and not held_back and not flagged:
         print(f"No pending-review entries found for {blueprint_dir}.")
         return 0
-    msg, code = format_decline_output(cleared, held_back, flagged, restore_cmd=restore_cmd)
+    msg, code = format_decline_output(
+        cleared, held_back, flagged, restore_cmd=restore_cmd, project_root=root,
+        scope=scope_of_key(decline_key) if decline_key is not None else None,
+    )
     print(msg)
     return code
 
@@ -2112,10 +2180,12 @@ def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
         print(f"Error: {target} does not exist")
         return 2
 
+    # The approve is about to rebind the target, so its own superseded binding
+    # is exempt (AD11); SCOPE.md has no upstream and takes no such keyword.
     validators = {
         "scope": validate_scope,
-        "architecture": validate_architecture,
-        "plan": lambda d: validate_plan(d, project_root),
+        "architecture": lambda d: validate_architecture(d, exempt_own_binding=True),
+        "plan": lambda d: validate_plan(d, project_root, exempt_own_binding=True),
     }
     # Compute the pre-approval result once: it drives both the Decision-E
     # gate and the CFC-drift surfacing below.
@@ -2126,15 +2196,38 @@ def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
     # "approved, but next validate FAILs" 3am scenario. Refuse to stamp
     # unless validation passes. --force overrides after the user has
     # read the FAIL items.
-    if not args.force and not pre_result.passed:
-        print(f"Refusing to approve {target.name}: validation FAILed.")
-        print(pre_result.summary())
-        print(
-            f"\nFix the FAIL items above, OR re-run with --force to "
-            f"approve anyway (you take responsibility for the "
-            f"approved-but-invalid state)."
+    # Unit C0 (AD7): the shared approval plan (AC-3.8 upstream-stamp refusal,
+    # and at first approval the convergence gate or its override). Its rows
+    # block under ANY flags; --force skips only the phase-FAIL refusal (AC-5.9).
+    plan = plan_approval(
+        target,
+        directory=blueprint_dir,
+        bare_name=file_map[args.approve],
+        task_tick=False,
+        override_reason=getattr(args, "override_convergence", None),
+    )
+    phase_failed = not args.force and not pre_result.passed
+    if phase_failed or not plan.result.passed:
+        combined = ValidationResult()
+        combined.checks = (list(pre_result.checks) if phase_failed else []) + list(
+            plan.result.checks
         )
+        print(f"Refusing to approve {target.name}: validation FAILed.")
+        print(combined.summary())
+        if phase_failed and plan.result.passed:
+            print(
+                f"\nFix the FAIL items above, OR re-run with --force to "
+                f"approve anyway (you take responsibility for the "
+                f"approved-but-invalid state)."
+            )
+        else:
+            print(
+                "\nThe approval-plan FAILs above (upstream stamp, convergence "
+                "gate) block under any flags; --force does not bypass them."
+            )
         return 1
+    if plan.result.has_warnings:
+        print(plan.result.summary())
 
     # Surface CFC drift / coverage WARNs BEFORE approve_document refreshes
     # the per-CFC content-hash baseline (which overwrites the prior state
@@ -2157,7 +2250,12 @@ def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
         print()
 
     try:
-        stamped = approve_document(target, project_root=project_root)
+        stamped = approve_document(
+            target, project_root=project_root, approval_writes=plan.writes
+        )
+    except ApprovalRaceError as exc:
+        print(f"Refusing to approve {target.name}: {exc} — changed during approval; re-run.")
+        return 1
     except MarkerCorruptError as exc:
         # The document was stamped (atomic) before restamp_or_suppress hit the
         # corrupt marker — surface it cleanly instead of a traceback, and exit
@@ -2175,8 +2273,39 @@ def _handle_approve(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
     # --task-tick on this tier. Terminal --approve plan carries the highest-
     # value framing + handoff list via the builder's H02 special case.
     if stamped:
+        for line in plan.post_lines:
+            print(line)
         emit_reset_checkpoint("blueprint", args.approve)
     return 0 if stamped else 1
+
+
+def _handle_audit(blueprint_dir: Path) -> int:
+    """`--audit-convergence` (AD9): SCOPE.md, ARCHITECTURE.md and PLAN.md. Pure read."""
+    entries = audit_directory(
+        blueprint_dir, ("SCOPE.md", "ARCHITECTURE.md", "PLAN.md"), label=blueprint_dir.name
+    )
+    text, code = format_audit_report(entries)
+    print(text)
+    return code
+
+
+def _guard_override_convergence(args) -> None:
+    """AC-6.2 / AD8: `--override-convergence` is a modifier of `--approve`, and a
+    blank reason, or one that sanitises to empty, exits 2 before any read."""
+    reason = getattr(args, "override_convergence", None)
+    if reason is None:
+        return
+    if not args.approve:
+        print("Error: --override-convergence is only valid with --approve")
+        sys.exit(2)
+    try:
+        sanitize_override_reason(reason)
+    except ValueError:
+        print(
+            'Error: --override-convergence needs a non-empty reason: '
+            '--override-convergence "<reason>"'
+        )
+        sys.exit(2)
 
 
 def _run_validation(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
@@ -2255,6 +2384,7 @@ def _run_validation(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
         scan_prefix,
         decline_cmd=f"validate_blueprint.py {blueprint_dir} --decline-pending",
         restore_cmd=f"validate_blueprint.py {blueprint_dir} --restore-anchor",
+        running_tier="blueprint",
     )
     if pending_result.checks:
         if use_json:
@@ -2357,6 +2487,31 @@ def main():
         "performed) is refused and routed to --restore-anchor, never mis-recorded "
         "as skipped; exit 3 if any obligation is held back or flagged.",
     )
+    parser.add_argument(
+        "--override-convergence",
+        metavar="REASON",
+        default=None,
+        help="With --approve: stamp a first approval even though its panel loop did "
+        "not converge, recording REASON in ## Approval. This is a user decision; "
+        "confirm before running.",
+    )
+    parser.add_argument(
+        "--decline-key",
+        metavar="KEY",
+        default=None,
+        help="With --decline-pending: decline ONLY this one marker key (it must "
+        "equal a key in .sdd/pending-review.json exactly) — for an obligation whose "
+        "owning directory no longer exists. This is a user decision; confirm "
+        "before running. One key per run.",
+    )
+    mode_group.add_argument(
+        "--audit-convergence",
+        action="store_true",
+        help="Read-only: report every approved artifact's convergence state "
+        "(converged / overridden / unconverged / no converged panel pass recorded, "
+        "plus a legacy label) and a summary line; writes nothing. Exit 0 iff every "
+        "non-legacy artifact is converged or overridden.",
+    )
     mode_group.add_argument(
         "--restore-anchor",
         action="store_true",
@@ -2384,6 +2539,15 @@ def main():
     if project_root is not None and not project_root.is_dir():
         print(f"Error: --project-root {project_root} is not a directory")
         sys.exit(2)
+    if args.decline_key is not None and not args.decline_pending:
+        print("Error: --decline-key is only valid with --decline-pending")
+        sys.exit(2)
+    _guard_override_convergence(args)
+
+    # Unit C0 (AC-6.5): the audit is dispatched BEFORE the atexit registration
+    # below, so the cruft sweep never runs and the audit writes nothing.
+    if args.audit_convergence:
+        sys.exit(_handle_audit(blueprint_dir))
 
     # Best-effort .sdd/ cruft cleanup at process exit.
     # Registered AFTER the arg-validation sys.exit(2) guards above and before the
@@ -2402,7 +2566,7 @@ def main():
     # so at most one of these is set; each handler returns a process exit code.
     # The default (no mode flag) runs validation.
     if args.decline_pending:
-        sys.exit(_handle_decline_pending(blueprint_dir, project_root))
+        sys.exit(_handle_decline_pending(blueprint_dir, project_root, args.decline_key))
     if args.restore_anchor:
         sys.exit(_handle_restore_anchor(blueprint_dir, project_root))
     if args.write_arch_config:

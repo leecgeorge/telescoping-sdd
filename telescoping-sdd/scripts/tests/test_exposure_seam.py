@@ -22,6 +22,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # --- Target files ---
@@ -58,8 +60,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.27.0"
-CHANGELOG_FIRST_ENTRY = "## 2.27.0 — A free fix is free, and the documented pipe escape finally works"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.27.1"
+CHANGELOG_FIRST_ENTRY = "## 2.27.1 — The approval gates now hold the lines they claimed"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
@@ -228,3 +230,64 @@ def test_changelog_em_dash_entry():
 def test_security_reviewer_crosscheck():
     body = extract_section(_read(SECURITY_REVIEWER), "## Exposure Doctrine Cross-Check", SECURITY_REVIEWER)
     assert A7_CROSSCHECK in body
+
+
+# --- Unit C0 T35: AC-8.4 troubleshooting entries ------------------------------
+
+_PLUGIN = _REPO_ROOT / "telescoping-sdd"
+
+_AC_8_4_HEADINGS = (
+    "## Decline refused: obligations span more than one scope",
+    "## Pending elsewhere — not resolvable from here",
+    "## Upstream binding superseded or unbound",
+    "## Convergence gate refused a first approval",
+)
+
+
+@pytest.mark.parametrize("tier", ["spec-driven-dev", "project-blueprint"])
+def test_troubleshooting_ac_8_4_headings_present(tier):
+    text = (_PLUGIN / "skills" / tier / "references" / "troubleshooting.md").read_text(encoding="utf-8")
+    for h in _AC_8_4_HEADINGS:
+        assert h in text.splitlines(), (tier, h)
+    for term in ("--decline-key", "--override-convergence", "--audit-convergence",
+                 "pending elsewhere", "unbound", "superseded binding", "legacy"):
+        assert term in text, (tier, term)
+
+
+def test_sdd_troubleshooting_dangling_ac_label_entry():
+    text = (_PLUGIN / "skills" / "spec-driven-dev" / "references" / "troubleshooting.md").read_text(encoding="utf-8")
+    assert "## Dangling AC label" in text.splitlines()
+    entry = text[text.index("## Dangling AC label"):]
+    assert "`- **AC-1.2**`" in entry and "code span" in entry and "## Panel Review" in entry
+    bp = (_PLUGIN / "skills" / "project-blueprint" / "references" / "troubleshooting.md").read_text(encoding="utf-8")
+    assert "## Dangling AC label" not in bp
+
+
+
+# --- Unit C0 T37: the 2.27.1 entry names each AC-8.2 item ---------------------
+
+_AC_8_2_PINS = (
+    "No content-hash basis changed",                       # AC-8.1/8.2: no hash basis change
+    "Decline refused",                                     # AC-1.4
+    "--decline-key",                                       # AC-1.9
+    "upstream binding superseded",                         # AC-4.1
+    "re-approve the downstream top-down",                  # AC-4.5
+    "seal-promotion re-stamp also supersedes",             # AC-4.1 seal-promotion supersession
+    "dangling AC label",                                   # AC-7.3
+    "no converged panel pass recorded",                    # AC-5.6
+    "edited after its closing pass",                       # AC-5.11
+    "first approval only",                                 # R5 scope
+    "--task-tick` on an unstamped tasks.md",               # AC-5.8
+    "--audit-convergence",                                 # legacy WARN + AC-6.5 audit
+    "one-time unbound backlog",                            # AC-3.6 / AC-4.4
+    "records only that the approve ran against that upstream hash",  # AC-8.2
+    "--override-convergence",                              # R6
+)
+
+
+def test_changelog_2_27_1_entry_names_each_ac_8_2_item():
+    text = CHANGELOG.read_text(encoding="utf-8")
+    start = text.index("## 2.27.1 — ")
+    entry = text[start: text.index("\n## ", start + 1)]
+    for pin in _AC_8_2_PINS:
+        assert pin in entry, pin
