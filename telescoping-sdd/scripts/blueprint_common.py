@@ -94,9 +94,11 @@ from content_hash import (  # noqa: E402,F401
     changed_since_stamp,
     compute_content_hash,
     compute_content_hash_v1,
+    compute_content_hash_v2,
     content_for_hashing,
     has_approval,
     is_basis_migration_only,
+    is_pure_basis_migration,
     read_hash_basis,
     read_stored_hash,
     verify_content_hash,
@@ -106,6 +108,7 @@ from content_hash import (  # noqa: E402,F401
     _HASH_BASIS_REMOVAL_RE,
     _approval_checkbox_checked,
     _content_for_hashing_v1_frozen,
+    _content_for_hashing_v2_frozen,
     _is_valid_16_hex,
     _upsert_basis_line,
 )
@@ -136,6 +139,7 @@ from artifact_resolution import (  # noqa: E402,F401
 # Layering: {trajectory, artifact_resolution} <- content_hash <- approval_records
 # <- blueprint_common <- pending_review.
 from approval_records import (  # noqa: E402,F401
+    BASIS_LABEL_MAX,
     BINDING_LINE_RE,
     BINDING_PART,
     DISPLAY_ARG_MAX,
@@ -154,7 +158,9 @@ from approval_records import (  # noqa: E402,F401
     UpstreamBinding,
     append_override_record,
     display_arg,
+    display_refusal_text,
     display_text,
+    positional_arg,
     read_bindings,
     read_override_record,
     sanitize_override_reason,
@@ -434,10 +440,24 @@ def read_file(path: Path) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def check_approval(content: str, filename: str, result: "ValidationResult") -> bool:
+def check_approval(
+    content: str,
+    filename: str,
+    result: "ValidationResult",
+    *,
+    approve_phase: "Optional[str]" = None,
+    artifact_dir: "Optional[Path]" = None,
+    validator_cmd: "Optional[str]" = None,
+) -> bool:
     """Check if a document is approved and the approval is still valid.
 
-    Returns True if the document is approved and its stored hash matches.
+    Returns True if the document is approved and its stored hash matches under
+    the current basis. A PURE basis migration (`is_pure_basis_migration`: the
+    stored hash verifies under the basis its stamp names, not under the current
+    one) gets the distinct `<filename> hash basis is current` FAIL, rendered
+    with the three keyword-only inputs (Unit F AD7; a None input prints its
+    placeholder); any other mismatch gets the generic stale FAIL with both
+    hashes labelled by basis (`stale_hash_detail`). Check names are unchanged.
     """
     # The checkbox and Content-Hash lines are read ONLY inside the ## Approval
     # section (audit 3.5c) — matching the scoped write path — so a body-prose
@@ -465,27 +485,41 @@ def check_approval(content: str, filename: str, result: "ValidationResult") -> b
 
     stored_hash = hash_match.group(1)
     hashes_match = stored_hash != "pending" and verify_content_hash(content, stored_hash)
+    stamped_basis = read_hash_basis(content)
     if (
         not hashes_match
         and stored_hash != "pending"
-        and read_hash_basis(content) == "v1"
-        and is_basis_migration_only(
+        and is_pure_basis_migration(
             original_content=content,
             stored_hash=stored_hash,
             content_trimmed=trim_trajectory_table(content),
         )
     ):
-        # R4: a v1-basis artifact whose ONLY change is the basis (no substantive
-        # edit) is a MIGRATION — emit the distinguishable HASH-BASIS-MIGRATION FAIL.
-        # A genuine edit to a v1 artifact falls through to the normal stale FAIL
-        # below (its --approve WILL create a marker, so the migration message —
-        # which promises none — must not fire for it).
-        result.add(f"{filename} hash basis is current", False, HASH_BASIS_MIGRATION_MSG)
+        # R3: an artifact whose ONLY change since its stamp is the hash basis (no
+        # edit) is a MIGRATION — emit the distinguishable HASH-BASIS-MIGRATION
+        # FAIL. A genuine edit (or a v2 re-pad / seal promotion, AC-3.4) falls
+        # through to the generic stale FAIL below, since the migration message
+        # promises a re-approval with no new obligation.
+        result.add(
+            f"{filename} hash basis is current",
+            False,
+            format_hash_basis_migration_fail(
+                artifact=filename,
+                stamped_basis=stamped_basis,
+                artifact_dir=artifact_dir,
+                approve_phase=approve_phase,
+                validator_cmd=validator_cmd,
+            ),
+        )
         return False
     result.add(
         f"{filename} has not been modified since approval",
         hashes_match,
-        f"Stored: {stored_hash}, Current: {compute_content_hash(content)}"
+        stale_hash_detail(
+            stored_hash=stored_hash,
+            stamped_basis=stamped_basis,
+            current_hash=compute_content_hash(content),
+        )
         if not hashes_match
         else "",
     )
@@ -544,7 +578,14 @@ def check_previous_phase_approved(
         result.add(f"Previous phase ({prev_file}) exists", False)
         return
 
-    approved = check_approval(prev_content, f"previous phase ({prev_file})", result)
+    approved = check_approval(
+        prev_content,
+        f"previous phase ({prev_file})",
+        result,
+        approve_phase=_APPROVE_PHASE_FLAG.get(prev_file),
+        artifact_dir=target_dir,
+        validator_cmd=_ARTIFACT_VALIDATOR_CMD.get(prev_file),
+    )
     if not approved:
         result.add(
             f"Previous phase ({prev_file}) approved before this phase",
@@ -946,7 +987,17 @@ def check_convergence_gate(
         )
         return v
 
-    if v.freshness_hash is not None and v.freshness_hash != compute_content_hash(content):
+    # Unit F AD8 (R4): accept a prov= stamped under the current basis (v3) OR
+    # frozen v2 — an in-flight pass archived before the upgrade wrote a v2 hash,
+    # and a v2 match still proves the content is unedited since that archive.
+    # The token grammar is unchanged. One of four basis -> hasher dispatch sites
+    # (DRK8): also content_hash.is_pure_basis_migration,
+    # content_hash.verify_content_hash_any_basis and
+    # pending_review._classifier_hasher; each site's policy legitimately differs
+    # (here: no v1 acceptance — prov= postdates v1).
+    if v.freshness_hash is not None and v.freshness_hash not in (
+        compute_content_hash(content), compute_content_hash_v2(content)
+    ):
         failed.append("edited-after-pass")
 
     if not failed:
@@ -1231,7 +1282,7 @@ def approve_document(
 
     content_hash = compute_content_hash(content)
 
-    # Checkbox + Content-Hash + `- **Hash basis:** v2`, scoped to the `## Approval`
+    # Checkbox + Content-Hash + the current `- **Hash basis:**` line, scoped to the `## Approval`
     # slice via the shared approval_section_bounds (R8/AD10) — a document-wide
     # re.sub would rewrite a body-prose example of those lines.
     approval = approval_section_bounds(content)
@@ -1451,19 +1502,114 @@ MARKER_SCHEMA_VERSION = 1
 
 # Tag the agent stamps into a Trajectory Notes cell after the upstream panel
 # (hash-and-cascade.md step 3e); the R2 clear matches it.
+# Unit F (AD9): the BLOCKING check-time FAIL detail for a PURE basis migration
+# (`is_pure_basis_migration`). A format TEMPLATE, rendered only through
+# `format_hash_basis_migration_fail` (single-stage: field VALUES are never
+# re-formatted, so braces in a path or label are data). Leads with the outcome.
 HASH_BASIS_MIGRATION_MSG = (
-    "HASH-BASIS-MIGRATION: this artifact was stamped under hash basis v1 "
-    "(### Trajectory rows included in hash). Run `--approve <phase>` to migrate "
-    "to basis v2 (### Trajectory rows excluded). No pending-review obligation is "
-    "created by a basis-only migration re-stamp."
+    "HASH-BASIS-MIGRATION: one re-approval clears this, with no new panel review. "
+    "A hash basis is the rule for which parts of a file the approval hash covers. "
+    "{artifact} was stamped under basis {stamped} and the current basis is "
+    "{current}, so its stored hash no longer matches, though no edit you made "
+    "caused it. {reapprove} The re-stamp creates no new pending-review obligation; "
+    "an obligation already open stays open. To find every artifact that needs "
+    "this, run `--run-state` per artifact directory (each shows STALE_MIGRATION). "
+    "Migrate upstream artifacts first, then each downstream whose upstream's stamp "
+    "moved: it reports `<name> upstream binding current` FAIL (reason newer-stamp) "
+    "and an upstream-drift obligation in --run-state until it is re-approved. See "
+    "references/hash-and-cascade.md, section Hash-basis migration."
 )
+# The two forms of the FAIL's re-approve sentence: a printed command, or — when
+# display_arg refuses the artifact directory — the flag and the reason, and no
+# command (the deliberate AC-3.1 deviation, design SEAL-03 / Unit C0 AD16).
+MIGRATION_REAPPROVE_CMD = (
+    "Re-approve it once: `{validator} {artifact_dir} --approve {phase}`."
+)
+MIGRATION_REAPPROVE_REFUSED = (
+    "Re-approve it once with `--approve {phase}`; no command can be printed "
+    "because its artifact directory {reason}."
+)
+# Appended to the generic stale FAIL for a v2 stamp only (AC-3.3).
+STALE_V2_RESTAMP_NOTE = (
+    "If the only hashed changes since approval are a re-padded `### Trajectory` "
+    "table and/or promoted `[SEAL-NN]` entries, `--approve` may re-stamp without "
+    "a new review obligation."
+)
+# The validator each previous-phase artifact's tier prints (AD7).
+_ARTIFACT_VALIDATOR_CMD = {
+    **{n: TIER_VALIDATOR_CMD["sdd"] for n in ("spec.md", "design.md", "tasks.md")},
+    **{n: TIER_VALIDATOR_CMD["blueprint"] for n in ("SCOPE.md", "ARCHITECTURE.md", "PLAN.md")},
+}
+
+
+def format_hash_basis_migration_fail(
+    *,
+    artifact: str,
+    stamped_basis: str,
+    artifact_dir: "Optional[Path]",
+    approve_phase: "Optional[str]",
+    validator_cmd: "Optional[str]",
+) -> str:
+    """Render HASH_BASIS_MIGRATION_MSG (AD7/AD9). Pure; never raises.
+
+    `artifact` is check_approval's `filename` label (e.g. 'previous phase
+    (spec.md)'). The stamped label prints through display_text (truncated to
+    BASIS_LABEL_MAX). The directory prints through display_arg, prefixed
+    `./` (positional_arg) only when relative, so a dir named `-x` cannot read as
+    a flag and an absolute dir is never `.//`; when display_arg refuses it, the
+    re-approve sentence is MIGRATION_REAPPROVE_REFUSED and no command is
+    printed. A None input renders its placeholder (`<artifact-dir>`,
+    `<phase>`, `<validator>`).
+    """
+    phase = display_text(approve_phase, max_len=DISPLAY_ARG_MAX) if approve_phase is not None else "<phase>"
+    validator = (
+        display_text(validator_cmd, max_len=DISPLAY_ARG_MAX) if validator_cmd is not None else "<validator>"
+    )
+    if artifact_dir is None:
+        reapprove = MIGRATION_REAPPROVE_CMD.format(
+            validator=validator, artifact_dir="<artifact-dir>", phase=phase
+        )
+    else:
+        raw = str(artifact_dir)
+        arg = raw if Path(raw).is_absolute() else positional_arg(raw)
+        shown = display_arg(arg)
+        if shown.quoted is None:
+            reapprove = MIGRATION_REAPPROVE_REFUSED.format(
+                phase=phase, reason=display_refusal_text(arg, shown.reason)
+            )
+        else:
+            reapprove = MIGRATION_REAPPROVE_CMD.format(
+                validator=validator, artifact_dir=shown.quoted, phase=phase
+            )
+    return HASH_BASIS_MIGRATION_MSG.format(
+        artifact=display_text(artifact, max_len=DISPLAY_ARG_MAX),
+        stamped=display_text(stamped_basis, max_len=BASIS_LABEL_MAX),
+        current=HASH_BASIS_CURRENT,
+        reapprove=reapprove,
+    )
+
+
+def stale_hash_detail(*, stored_hash: str, stamped_basis: str, current_hash: str) -> str:
+    """The generic stale FAIL's detail (AC-3.3): both hashes labelled with their
+    basis, plus STALE_V2_RESTAMP_NOTE for a v2 stamp only. Pure; never raises."""
+    stamped = display_text(stamped_basis, max_len=BASIS_LABEL_MAX)
+    detail = (
+        f"Stored: {stored_hash} (basis {stamped}), "
+        f"Current: {current_hash} (basis {HASH_BASIS_CURRENT})"
+    )
+    if stamped_basis == "v2":
+        detail += " " + STALE_V2_RESTAMP_NOTE
+    return detail
 # HASH_BASIS_MIGRATION_SUPPRESS_MSG: the NON-blocking approve-time audit line
-# printed by restamp_or_suppress's R4 migrate-suppress branch (a v1 artifact's
-# basis-only migration re-stamp wrote no marker). DISTINCT from the blocking FAIL
-# above; carries a {doc_rel} format field; begins with `hash-basis-migrated:`.
+# printed by restamp_or_suppress's migrate-suppress arm (a pure basis
+# migration's re-stamp wrote no marker). DISTINCT from the blocking FAIL above;
+# begins with `hash-basis-migrated:`. A format TEMPLATE rendered only through
+# `pending_review.format_hash_basis_migrated` (Unit F AD9). {refresh} is "" or
+# " with " + BINDING_PART / PRODUCER_REFRESH_PART.
 HASH_BASIS_MIGRATION_SUPPRESS_MSG = (
-    "hash-basis-migrated: {doc_rel} re-stamped to basis v2; no pending-review "
-    "obligation written (basis-only migration, content otherwise unchanged)."
+    "hash-basis-migrated: {doc_rel} re-stamped from basis {from_basis} to basis "
+    "{to_basis}; no pending-review obligation written (basis-only "
+    "migration{refresh}; content otherwise unchanged)."
 )
 
 # R10 orphaned-Trajectory-row diagnostic token (FAIL when load-bearing, WARN

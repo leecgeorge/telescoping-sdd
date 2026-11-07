@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -45,7 +46,10 @@ except ImportError:  # pragma: no cover - non-Windows
 # approval_records is a leaf over content_hash (Unit C0 AD1): display safety
 # and the operator text this module prints.
 from approval_records import (  # noqa: E402
+    BASIS_CHANGE_PART,
+    BASIS_LABEL_MAX,
     BINDING_PART,
+    PRODUCER_REFRESH_PART,
     DISPLAY_ARG_MAX,
     REPAD_PART,
     RESTAMP_CARVE_OUT_PREFIX,
@@ -53,7 +57,9 @@ from approval_records import (  # noqa: E402
     TIER_VALIDATOR_CMD,
     USER_DECISION_NOTE,
     display_arg,
+    display_refusal_text,
     display_text,
+    positional_arg,
     strip_binding_lines,
 )
 from trajectory import (  # noqa: E402
@@ -70,6 +76,7 @@ from blueprint_common import (  # noqa: E402
     DECLINE_FLAGGED_MALFORMED_MSG,
     DECLINE_UNSATISFIABLE_HELD_BACK_MSG,
     EXIT_DECLINE_HELD_BACK,
+    HASH_BASIS_CURRENT,
     HASH_BASIS_MIGRATION_SUPPRESS_MSG,
     MARKER_RELPATH,
     MARKER_SCHEMA_VERSION,
@@ -87,10 +94,12 @@ from blueprint_common import (  # noqa: E402
     _trajectory_row_notes,
     changed_since_stamp,
     compute_content_hash,
+    compute_content_hash_v2,
     content_for_hashing,
     find_orphaned_trajectory_rows,
-    is_basis_migration_only,
+    is_pure_basis_migration,
     now_iso_utc,
+    read_hash_basis,
     stamped_at_pass_from_content,
     strip_artifact_prefix,
 )
@@ -367,9 +376,16 @@ def restamp_or_suppress(
         )
 
 
-def format_restamp_carve_out(doc_rel: str, delta: "RestampDelta") -> str:
+_BASIS_LABEL_RE = re.compile(r"v\d+")
+
+
+def format_restamp_carve_out(
+    doc_rel: str, delta: "RestampDelta", *, from_basis: "Optional[str]" = None
+) -> str:
     """The I9 audit line: prefix plus the parts present (seal, binding, re-pad),
-    joined by " and "."""
+    joined by " and ". Unit F: when the stamp's basis `from_basis` is a `v<digits>`
+    label other than the current one, the re-stamp also changes the basis, so
+    `; hash basis <from> → <current>` (BASIS_CHANGE_PART) is appended."""
     parts = []
     if delta.promoted_seals:
         parts.append(SEAL_PART.format(ids=", ".join(f"[{s}]" for s in delta.promoted_seals)))
@@ -380,7 +396,40 @@ def format_restamp_carve_out(doc_rel: str, delta: "RestampDelta") -> str:
     prefix = RESTAMP_CARVE_OUT_PREFIX.format(
         doc_rel=display_text(doc_rel, max_len=DISPLAY_ARG_MAX)
     )
-    return prefix + " and ".join(parts)
+    line = prefix + " and ".join(parts)
+    if (
+        from_basis is not None
+        and _BASIS_LABEL_RE.fullmatch(from_basis)
+        and from_basis != HASH_BASIS_CURRENT
+    ):
+        line += "; " + BASIS_CHANGE_PART.format(
+            old=display_text(from_basis, max_len=BASIS_LABEL_MAX), new=HASH_BASIS_CURRENT
+        )
+    return line
+
+
+def format_hash_basis_migrated(
+    doc_rel: str, *, from_basis: str, binding_refresh: bool, producer_refresh: bool
+) -> str:
+    """The `hash-basis-migrated:` audit line (Unit F AD9). Pure.
+
+    `doc_rel` prints through display_text (as format_restamp_carve_out does);
+    `from_basis` through display_text truncated to BASIS_LABEL_MAX. The refresh
+    clause names a producer refresh (PLAN.md's CFC sub-block changed more than
+    the binding lines) over a binding-lines-only refresh.
+    """
+    if producer_refresh:
+        refresh = " with " + PRODUCER_REFRESH_PART
+    elif binding_refresh:
+        refresh = " with " + BINDING_PART
+    else:
+        refresh = ""
+    return HASH_BASIS_MIGRATION_SUPPRESS_MSG.format(
+        doc_rel=display_text(doc_rel, max_len=DISPLAY_ARG_MAX),
+        from_basis=display_text(from_basis, max_len=BASIS_LABEL_MAX),
+        to_basis=HASH_BASIS_CURRENT,
+        refresh=refresh,
+    )
 
 
 def _restamp_or_suppress_locked(
@@ -404,22 +453,54 @@ def _restamp_or_suppress_locked(
             f"{open_entry.get('stamped_at_pass', 0)}; differs by design from the "
             f"just-stamped Content-Hash — see hash-and-cascade.md)"
         )
-    elif not is_basis_migration_only(
-        original_content=original_content,
-        stored_hash=stored_hash,
-        content_trimmed=content_trimmed,
-    ):
+    else:
+        # Unit F (C4): a PURE basis migration (v1 or v2 stamp, unedited since) is
+        # marker-free. The predicate AND its line are evaluated in one try: any
+        # exception means "not a migration", so a failure after the stamp can
+        # never skip the create arm (fail closed). A line prints only once built.
+        migrated_line = None
+        transformed = final_content if final_content is not None else content_trimmed
+        try:
+            if is_pure_basis_migration(
+                original_content=original_content,
+                stored_hash=stored_hash,
+                content_trimmed=content_trimmed,
+            ):
+                # Name what the approve's producer hook changed beyond the stamp,
+                # with the classifier's own binding-lines test: only binding lines
+                # -> an upstream binding refresh; anything more -> a producer
+                # refresh (PLAN.md's per-CFC sub-block).
+                producer_refresh = strip_binding_lines(transformed) != strip_binding_lines(
+                    content_trimmed
+                )
+                binding_refresh = not producer_refresh and transformed != content_trimmed
+                migrated_line = format_hash_basis_migrated(
+                    doc_rel,
+                    from_basis=read_hash_basis(original_content),
+                    binding_refresh=binding_refresh,
+                    producer_refresh=producer_refresh,
+                )
+        except Exception:  # noqa: BLE001 — never fail open after the stamp
+            migrated_line = None
+        if migrated_line is not None:
+            print(migrated_line)
+            return
+        carve_out_line = None
         try:
             delta = classify_restamp_delta(
                 stored_hash=stored_hash,
                 original_content=original_content,
                 content_trimmed=content_trimmed,
-                final_content=final_content if final_content is not None else content_trimmed,
+                final_content=transformed,
             )
+            if delta is not None:
+                carve_out_line = format_restamp_carve_out(
+                    doc_rel, delta, from_basis=read_hash_basis(original_content)
+                )
         except Exception:  # noqa: BLE001 — never fail open after the stamp (AD13)
-            delta = None
-        if delta is not None:
-            print(format_restamp_carve_out(doc_rel, delta))
+            carve_out_line = None
+        if carve_out_line is not None:
+            print(carve_out_line)
             return
         anchor = stamped_at_pass_from_content(original_content)
         upsert_pending_entry(
@@ -438,8 +519,6 @@ def _restamp_or_suppress_locked(
         # UNSATISFIABLE-OBLIGATION diagnostic (RK-D2).
         if _anchor_row_carries_tag(original_content, anchor):
             print(REVERSED_ORDER_CREATE_WARN.format(doc_rel=doc_rel))
-    else:
-        print(HASH_BASIS_MIGRATION_SUPPRESS_MSG.format(doc_rel=doc_rel))
 
 
 # ----- R2 restamp-delta classifier (Unit C0 AD13) -------------------------------
@@ -494,6 +573,33 @@ def _strip_notes(row: "Dict[str, str]") -> "Dict[str, str]":
     return dict(row, Notes=strip_upstream_tags(row["Notes"]))
 
 
+# Unit F AD5: the bases whose stamps predate header/separator canonicalisation.
+# For any OTHER recognised basis the classifier's candidate set is the on-disk
+# header only, so a re-pad of a table the basis does not canonicalise falls to
+# the create arm. Keyed to the property, not the label, so a later basis
+# inherits the rule without an edit here.
+_PRE_CANONICAL_BASES = frozenset({"v1", "v2"})
+
+
+def _classifier_hasher(basis: str):
+    """The hasher a stamp of `basis` was made with, or None (unrecognised label).
+
+    `v3` -> compute_content_hash (current), `v2` -> compute_content_hash_v2
+    (frozen), `v1` -> compute_content_hash (the current basis, as before Unit F).
+    Any other label (`v4`, `v03`, `v10`, ...) -> None, so the classifier returns
+    None (the create-marker arm, AC-3.8). One of four basis -> hasher dispatch
+    sites (DRK8): also `content_hash.is_pure_basis_migration`,
+    `content_hash.verify_content_hash_any_basis` and
+    `blueprint_common.check_convergence_gate`'s `prov=` dual-accept; each site's
+    policy for v1 and unknown labels legitimately differs.
+    """
+    return {
+        "v3": compute_content_hash,
+        "v2": compute_content_hash_v2,
+        "v1": compute_content_hash,
+    }.get(basis)
+
+
 def classify_restamp_delta(
     *,
     stored_hash: str,
@@ -521,10 +627,15 @@ def classify_restamp_delta(
     if not _is_valid_16_hex(stored_hash):
         return None
     stored = stored_hash.lower()
+    basis = read_hash_basis(original_content)
+    hasher = _classifier_hasher(basis)
+    if hasher is None:
+        return None
+    ondisk_only = basis not in _PRE_CANONICAL_BASES
 
     bounds = _trajectory_bounds(original_content)
     if bounds is None:
-        if binding_refresh and compute_content_hash(original_content) == stored:
+        if binding_refresh and hasher(original_content) == stored:
             return RestampDelta(binding_refresh=True)
         return None
     lines = original_content.split("\n")
@@ -548,6 +659,8 @@ def classify_restamp_delta(
         return render_table(header, subset)[:2]
 
     def _candidates(k):
+        if ondisk_only:
+            return [ondisk]
         subset = [
             r for r in rows
             if k is None or not _is_ascii_int(r["Pass"]) or int(r["Pass"]) <= k
@@ -586,7 +699,7 @@ def classify_restamp_delta(
             hh = h - sum(1 for i in form if i < h)
             for cand in _candidates(k):
                 trial = kept_lines[:hh] + list(cand) + kept_lines[hh + 2:]
-                if compute_content_hash("\n".join(trial)) != stored:
+                if hasher("\n".join(trial)) != stored:
                     continue
                 repad = False
                 if list(cand) != ondisk:
@@ -669,7 +782,7 @@ def _anchor_row_carries_tag(content: str, anchor_pass: int) -> bool:
     OR across every row matching anchor_pass (a hand-edited table may duplicate a
     pass), mirroring `_doc_has_qualifying_tag`'s per-row scan. anchor_pass <= 0 ->
     False (a first-approval anchor has no archived row to tag). RAW content only
-    (never content_for_hashing output — the v2 strip removes every tag;
+    (never content_for_hashing output — the current basis strips every data row, tag included;
     H4-security). Pure read.
 
     COVERAGE (AD2): fires on Variant A (tag stamped on the anchor row BEFORE the
@@ -924,18 +1037,8 @@ _ROOT_CLAUSE = "(run from the project root)"
 _ESCAPING_SIDE_EFFECT = (
     "this also clears every other obligation that decline reaches"
 )
-_DISPLAY_REASON_TEXT = {
-    "non-printable": "contains non-printable or unassigned characters",
-    "backtick": "contains a backtick",
-}
 _ANOMALOUS_SEGMENTS_TEXT = "has `.`, `..` or empty path segments"
 _ASCII_ECHO_MAX = 120
-
-
-def _positional(rel: str) -> str:
-    """Positional target as printed: ``./<path>``, except the root ``.``, so a
-    name starting with ``-`` cannot read as a flag."""
-    return "." if rel in ("", ".") else f"./{rel}"
 
 
 def _ascii_echo(key: str) -> str:
@@ -1017,7 +1120,7 @@ def owning_dir_route(
     # so the key need not be quotable — it is echoed through display_text only.
     if is_containment_escaping(root, key):
         if _prefix_in_scope(key, target_rel):
-            target_arg = display_arg(_positional(target_rel)).quoted or "."
+            target_arg = display_arg(positional_arg(target_rel)).quoted or "."
             cmds_t = [TIER_VALIDATOR_CMD.get(running_tier, cmds[0])]
             return (
                 f"containment-escaping key {key_txt} — decline it from here: "
@@ -1032,15 +1135,13 @@ def owning_dir_route(
 
     shown = display_arg(key)
     if shown.quoted is None:
-        reason = _DISPLAY_REASON_TEXT.get(
-            shown.reason, f"is {len(key)} characters, too long to print as a command"
-        )
+        reason = display_refusal_text(key, shown.reason)
         return _inspect_by_hand(key, reason)
     scope = scope_of_key(key)
     if _has_anomalous_segments(scope):
         return _inspect_by_hand(key, _ANOMALOUS_SEGMENTS_TEXT)
     scope_txt = display_text(scope, max_len=DISPLAY_ARG_MAX)
-    scope_arg = display_arg(_positional(scope)).quoted
+    scope_arg = display_arg(positional_arg(scope)).quoted
 
     if scope == "." or (root / scope).is_dir():
         cmd = _cmd_text(cmds, f"{scope_arg} --decline-pending")
@@ -1060,7 +1161,7 @@ def owning_dir_route(
 
     # Owning directory vanished: walk up to the nearest surviving ancestor A.
     ancestor = _nearest_surviving_ancestor(root, scope)
-    anc_arg = display_arg(_positional(ancestor)).quoted
+    anc_arg = display_arg(positional_arg(ancestor)).quoted
     in_lane, _ = partition_keys(keys, ancestor)
     escaping_in_lane = [k for k in in_lane if is_containment_escaping(root, k)]
     scopes = {scope_of_key(k) for k in in_lane if k not in escaping_in_lane}
@@ -1238,7 +1339,7 @@ def format_decline_refusal(
     states the two routes out with a concrete command each. Every key goes
     through ``display_text``; commands come from ``owning_dir_route``."""
     root = Path(project_root)
-    target_txt = display_text(_positional(target_rel), max_len=DISPLAY_ARG_MAX)
+    target_txt = display_text(positional_arg(target_rel), max_len=DISPLAY_ARG_MAX)
 
     def _dt(k: str) -> str:
         return display_text(k, max_len=DISPLAY_ARG_MAX)
@@ -1325,7 +1426,7 @@ def _row_has_tag(row: str, hash_short: str) -> bool:
     The single per-row tag-scan shared by `_doc_has_qualifying_tag` (which adds
     the `> anchor` filter) and `_doc_has_any_qualifying_tag` (which does not), so
     the two cannot drift in how they match the tag. RAW row text only — never
-    content_for_hashing() output (the v2 strip removes every tag — H4-security).
+    content_for_hashing() output (the current basis strips every data row, tag included — H4-security).
     """
     notes = _trajectory_row_notes(row)
     return any(m.group(1) == hash_short for m in UPSTREAM_PANEL_TAG_RE.finditer(notes))

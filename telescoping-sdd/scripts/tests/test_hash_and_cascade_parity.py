@@ -582,7 +582,7 @@ R9_OBLIGATION_SURVIVAL_FRAGMENT = (
 R9_UNSATISFIABLE_TOKEN = "UNSATISFIABLE-OBLIGATION:"
 R9_RESTORE_ANCHOR_FLAG = "--restore-anchor"
 R10_ORPHAN_TOKEN = "ORPHANED-TRAJECTORY-ROW:"
-HASH_BASIS_V2_LINE = "- **Hash basis:** v2"
+HASH_BASIS_V3_LINE = "- **Hash basis:** v3"
 HASH_BASIS_MIGRATION_TOKEN = "HASH-BASIS-MIGRATION:"
 
 # order-independent-anchor (T4 / R3): the M-guard doctrine added to the
@@ -602,7 +602,7 @@ CLOSE_PATH_SHARED_ANCHORS = [
     R9_UNSATISFIABLE_TOKEN,
     R9_RESTORE_ANCHOR_FLAG,
     R10_ORPHAN_TOKEN,
-    HASH_BASIS_V2_LINE,
+    HASH_BASIS_V3_LINE,
     HASH_BASIS_MIGRATION_TOKEN,
     REVERSED_ORDER_ANTIPATTERN_FRAGMENT,
     RESTAMP_FIRST_FRAGMENT,
@@ -632,6 +632,9 @@ def test_close_path_guidance_subsection_body_parity() -> None:
     sdd_body = _extract_subsection(_read(SDD_PATH), CLOSE_PATH_GUIDANCE_HEADING)
     pb_body = _extract_subsection(_read(PB_PATH), CLOSE_PATH_GUIDANCE_HEADING)
     assert sdd_body is not None and pb_body is not None
+    # Unit F AD12: each copy's own discovery span is the one allowed difference.
+    sdd_body = sdd_body.replace(DISCOVERY_SPAN["sdd"], "<discovery>")
+    pb_body = pb_body.replace(DISCOVERY_SPAN["pb"], "<discovery>")
     assert _apply_swap(sdd_body, extended).strip() == pb_body.strip(), (
         "Close-Path Selection Guidance bodies diverge beyond the vocabulary swap"
     )
@@ -760,3 +763,158 @@ def test_replaced_cascade_sentences_absent(path):
     text = _read(path)
     for s in C0_REPLACED:
         assert s not in text, s
+
+
+
+# ============================================================================
+# Unit F (T21, AC-6.1 / AD11 / AD12): the v3 hash-basis migration doctrine
+# ============================================================================
+
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+DISCOVERY_SPAN = {
+    "sdd": '`for d in specs/*/; do python <script-path>/validate_spec.py "$d" --run-state; done`',
+    "pb": "`python <script-path>/validate_blueprint.py blueprint/ --run-state`",
+}
+MIGRATION_HEADING = "**Hash-basis migration.**"
+V3_EXCLUSIONS = (
+    "`### Trajectory` data rows",
+    "padding of the `### Trajectory` column-header and separator rows",
+)
+MIGRATION_NOTE_FORM = (
+    '`<file> re-stamped for hash-basis migration (<old> → v3): hash <old> → <new>; '
+    'tool: "<hash-basis-migrated: line>"`'
+)
+MIGRATION_NOTE_PRECONDITION = (
+    "Write this note only when the validator reported `HASH-BASIS-MIGRATION:` for the artifact or "
+    "`--run-state` read it as `STALE_MIGRATION`, **and** its `--approve` printed `hash-basis-migrated:`, "
+    "which the note must quote"
+)
+MIGRATION_NOTE_GLOSS = (
+    "For a migration re-stamp, step 3 (upstream panel re-review) and step 4's consistency check are "
+    "skipped; skipping them does not skip the downstream re-approvals of **Hash-basis migration** (b), "
+    "which still follow."
+)
+MIGRATION_OBLIGATIONS = {
+    "a": ("`--run-state` is the only supported discovery route", "runs per artifact directory",
+          "`STALE_MIGRATION`", "reads `STALE`"),
+    "b": ("migrate upstream artifacts first", "`<name> upstream binding current` FAIL (reason `newer-stamp`)",
+          "`upstream-drift` obligation"),
+    "c": ("shows the generic stale-hash FAIL, not `HASH-BASIS-MIGRATION:`", "`hash basis v2 → v3`"),
+    "d": ("do not mix 2.29.0 with an earlier plugin version", "re-stamps v2, opens a pending-review obligation "
+          "and forces a panel re-review"),
+    "e": ("the migration re-stamp creates no new pending-review obligation, and an obligation already open "
+          "stays open",),
+}
+
+
+_MIDSTREAM_BULLET = "   - `HASH-BASIS-MIGRATION:` FAIL (or `STALE_MIGRATION` in `--run-state`)"
+
+
+def _paragraph(text: str, start: str) -> str:
+    """The paragraph starting at `start` — or, for a list bullet, that one line."""
+    i = text.index(start)
+    j = text.find("\n" if start.lstrip().startswith("- ") else "\n\n", i)
+    return text[i:] if j == -1 else text[i:j]
+
+
+def _migration_paragraph(path: Path) -> str:
+    return _paragraph(_read(path), MIGRATION_HEADING)
+
+
+def test_hash_basis_line_is_v3_in_both_copies() -> None:
+    for path in (SDD_PATH, PB_PATH):
+        text = _read(path)
+        assert HASH_BASIS_V3_LINE in text
+        assert "writes a `- **Hash basis:** v2` line" not in text
+
+
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_v3_exclusions_named_in_restamp_and_decline_pending(path: Path, _name: str) -> None:
+    text = _read(path)
+    restamp = _paragraph(text, "   The re-stamp also writes a `- **Hash basis:** v3` line")
+    decline = _paragraph(text, "**Narrowed `--decline-pending` meaning.**")
+    for para in (restamp, decline, _migration_paragraph(path)):
+        assert "v3" in para
+        for frag in V3_EXCLUSIONS:
+            assert frag in para, (frag, para[:80])
+
+
+def test_migration_paragraph_covers_v2_and_v1_to_v3() -> None:
+    for path in (SDD_PATH, PB_PATH):
+        para = _migration_paragraph(path)
+        assert "v2→v3" in para and "v1→v3" in para
+
+
+@pytest.mark.parametrize("item", sorted(MIGRATION_OBLIGATIONS))
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_migration_paragraph_obligation(path: Path, _name: str, item: str) -> None:
+    para = _migration_paragraph(path)
+    assert f"({item})" in para
+    for frag in MIGRATION_OBLIGATIONS[item]:
+        assert frag in para, (item, frag)
+
+
+@pytest.mark.parametrize("location", ["re_approval_step_2", "mid_stream_route"])
+@pytest.mark.parametrize("path,_name", BOTH_FILES)
+def test_migration_note_skips_steps_3_and_4_with_precondition_and_gloss(path: Path, _name: str, location: str) -> None:
+    text = _read(path)
+    if location == "re_approval_step_2":
+        block = _paragraph(text, "   **Migration re-stamp note.**")
+    else:
+        block = _paragraph(text, _MIDSTREAM_BULLET)
+    for frag in (MIGRATION_NOTE_FORM, MIGRATION_NOTE_PRECONDITION, MIGRATION_NOTE_GLOSS):
+        assert frag in block, (location, frag[:60])
+
+
+def _normalise(text: str, tier: str) -> str:
+    text = text.replace(DISCOVERY_SPAN[tier], "<discovery>")
+    text = text.replace("specs/", "<dir>/").replace("blueprint/", "<dir>/")
+    return text.replace("validate_spec.py", "<validator>").replace("validate_blueprint.py", "<validator>")
+
+
+def test_edited_paragraphs_parity_modulo_discovery_form() -> None:
+    """AD12: the edited text is byte-identical in both copies apart from each
+    copy's own discovery form."""
+    starts = (
+        "   The re-stamp also writes a `- **Hash basis:** v3` line",
+        "   **Migration re-stamp note.**",
+        _MIDSTREAM_BULLET,
+        "**Narrowed `--decline-pending` meaning.**",
+        MIGRATION_HEADING,
+    )
+    for start in starts:
+        sdd = _normalise(_paragraph(_read(SDD_PATH), start), "sdd")
+        pb = _normalise(_paragraph(_read(PB_PATH), start), "pb")
+        assert sdd == pb, start
+
+
+@pytest.mark.parametrize("path,tier", [pytest.param(SDD_PATH, "sdd", id="sdd"), pytest.param(PB_PATH, "pb", id="pb")])
+def test_discovery_span_exact_per_copy(path: Path, tier: str) -> None:
+    para = _migration_paragraph(path)
+    assert DISCOVERY_SPAN[tier] in para
+    other = DISCOVERY_SPAN["pb" if tier == "sdd" else "sdd"]
+    assert other not in para
+    assert "grep -rlE" not in _read(path)
+
+
+@pytest.mark.parametrize("tier", ["sdd", "pb"])
+def test_discovery_command_runs_on_tmp_tree(tmp_path: Path, tier: str) -> None:
+    """Design SEAL-12: the doctrine's discovery command, made runnable here
+    (`<script-path>` -> that copy's scripts dir; bare `python` -> sys.executable,
+    since python is not on PATH), prints STALE_MIGRATION on a v2-coherent tree."""
+    scripts_dir = _REPO_ROOT / "telescoping-sdd" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    sys.path.insert(0, str(scripts_dir / "tests"))
+    import _fixtures as fx
+
+    fx.write_v2_chain(tmp_path, "sdd" if tier == "sdd" else "blueprint")
+    skill = "spec-driven-dev" if tier == "sdd" else "project-blueprint"
+    cmd = DISCOVERY_SPAN[tier].strip("`")
+    cmd = cmd.replace("<script-path>", str(_REPO_ROOT / "telescoping-sdd" / "skills" / skill / "scripts"))
+    cmd = cmd.replace("python ", f'"{sys.executable}" ', 1)
+    proc = subprocess.run(["bash", "-c", cmd], cwd=tmp_path, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "STALE_MIGRATION" in proc.stdout

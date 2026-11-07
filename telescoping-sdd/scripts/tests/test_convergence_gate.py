@@ -1436,3 +1436,43 @@ def test_no_evidence_message_names_no_override():
     d = _gate(doc)[1][0][2]
     assert "no converged panel pass recorded" in d
     assert "--override-convergence" not in d and bc.USER_DECISION_NOTE not in d
+
+
+# --- Unit F T13 (R4): the gate accepts a frozen-v2 prov= ----------------------
+
+
+def _v2_prov_doc(edit_after: bool = False) -> str:
+    """A never-approved artifact whose converged closing row carries a prov=
+    computed under FROZEN v2 (as an archive_pass.py from before Unit F wrote it)."""
+    from content_hash import compute_content_hash_v2
+
+    doc = _tdoc(_row(1, f"{CNH}; PROV"))
+    h2 = compute_content_hash_v2(doc)
+    assert h2 != compute_content_hash(doc)  # the padded table: v2 and v3 really differ
+    doc = doc.replace("PROV", f"prov={h2}")
+    if edit_after:
+        doc = doc.replace("## Objective\n\nx\n", "## Objective\n\nedited after the pass\n")
+    return doc
+
+
+def test_gate_accepts_v2_prov_on_unedited_padded_artifact():
+    """AC-4.1: an in-flight v2 prov= on content unedited since that archive does
+    not report edited-after-pass at the first --approve after the upgrade."""
+    _v, rows = _gate(_v2_prov_doc())
+    assert all("edited-after-pass" not in r[2] for r in rows)
+    assert _sev(rows) == "PASS" and "closing pass 1 converged" in rows[0][2]
+
+
+def test_gate_rejects_v2_prov_after_substantive_edit():
+    """AC-4.2: the same artifact plus a substantive edit still reports
+    edited-after-pass, as in v2.28.0."""
+    _v, rows = _gate(_v2_prov_doc(edit_after=True))
+    assert "edited-after-pass" in rows[0][2]
+
+
+def test_gate_rejects_prov_matching_neither_basis():
+    doc = _v2_prov_doc()
+    m = re.search(r"prov=([0-9a-f]{16})", doc)
+    flipped = ("0" if m.group(1)[0] != "0" else "1") + m.group(1)[1:]
+    _v, rows = _gate(doc.replace(m.group(0), f"prov={flipped}"))
+    assert "edited-after-pass" in rows[0][2]

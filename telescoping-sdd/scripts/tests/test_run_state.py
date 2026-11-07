@@ -537,12 +537,14 @@ def test_format_stale_vs_stale_migration_distinct_next_action():
         next_step="x",
     )
     out = rs.format_run_state(state)
-    assert "re-approval + panel re-review" in out
-    assert "re-stamp only" in out
     spec_line = next(l for l in out.splitlines() if "spec.md" in l)
     design_line = next(l for l in out.splitlines() if "design.md" in l)
-    assert "re-stamp only" not in spec_line
-    assert "re-approval" not in design_line
+    # Unit F (AC-3.7, spec SEAL-18): STALE's next action no longer promises a
+    # review is owed in every case; the two stale labels still differ.
+    stale = "run --approve; a panel re-review is owed unless --approve reports otherwise"
+    assert stale in spec_line and "re-stamp only" not in spec_line
+    assert "re-stamp only" in design_line and stale not in design_line
+    assert spec_line.split(" — ", 1)[1] != design_line.split(" — ", 1)[1]
 
 
 def test_format_tick_hint_suffix_wording():
@@ -680,3 +682,64 @@ def test_priority_three_fold_with_twenty_obligations():
     assert sum(1 for ln in lines if ln.startswith("  unbound:")) == 1
     assert [ln for ln in lines if "more — run the full validator" in ln] == ["  +6 more — run the full validator"]
     assert len(lines) == 25  # the fold line may pass the soft 24-line ceiling ([SEAL-03])
+
+
+# --- Unit F T16 (C5): STALE_MIGRATION for a v2 pure migration ---------------
+
+_STALE_TEXT = "run --approve; a panel re-review is owed unless --approve reports otherwise"
+
+
+def _write_v2_coherent(path: Path, body="Do a thing.") -> str:
+    """A v2-stamped artifact whose padded Trajectory header makes v2 != v3: a
+    pure v2 -> v3 basis migration."""
+    content = _doc(body=body, checked=True, hash_val="pending", basis="v2", with_traj=True)
+    h2 = ch.compute_content_hash_v2(ch.trim_trajectory_table(content))
+    assert h2 != ch.compute_content_hash(content)
+    path.write_text(content.replace("`pending`", f"`{h2}`"), encoding="utf-8")
+    return h2
+
+
+def _classify(path: Path):
+    return rs._classify_hash(path.read_text(encoding="utf-8"))
+
+
+def test_classify_hash_v2_pure_migration_reads_stale_migration(tmp_path):
+    p = tmp_path / "spec.md"
+    _write_v2_coherent(p)
+    assert _classify(p) == rs.HashStatus.STALE_MIGRATION  # AC-3.7
+
+
+def test_classify_hash_edit_and_v2_repad_read_stale(tmp_path):
+    edited = tmp_path / "edited.md"
+    _write_v2_coherent(edited)
+    edited.write_text(edited.read_text(encoding="utf-8").replace("Do a thing.", "Do another thing."),
+                      encoding="utf-8")
+    repadded = tmp_path / "repadded.md"
+    _write_v2_coherent(repadded)
+    text = repadded.read_text(encoding="utf-8")
+    wide = ("| Pass   | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes      |\n"
+            "|--------|------------|-------|-------------|-----------|----------|--------|------------|\n")
+    narrow = ("| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+              "|------|------|-------|-------------|-----------|----------|--------|-------|\n")
+    assert narrow in text
+    repadded.write_text(text.replace(narrow, wide), encoding="utf-8")
+    assert _classify(edited) == rs.HashStatus.STALE
+    assert _classify(repadded) == rs.HashStatus.STALE  # AC-3.4's artifact is not a migration
+
+
+@pytest.mark.parametrize("basis", ["v2", "v1"])
+def test_classify_hash_v3_verifying_stamps_read_matches(tmp_path, basis):
+    """AC-3.13: an older-basis stamp whose hash also verifies under v3 reads MATCHES."""
+    content = _doc(checked=True, hash_val="pending", basis=basis if basis == "v2" else None)
+    h = (ch.compute_content_hash_v2 if basis == "v2" else ch.compute_content_hash_v1)(content)
+    assert h == ch.compute_content_hash(content)
+    p = tmp_path / "spec.md"
+    p.write_text(content.replace("`pending`", f"`{h}`"), encoding="utf-8")
+    assert _classify(p) == rs.HashStatus.MATCHES
+
+
+def test_stale_next_action_with_tick_hint_not_truncated():
+    line = rs._artifact_line(_st("tasks.md", exists=True, approved=True,
+                                 hash_status=rs.HashStatus.STALE, tick_hint=True))
+    assert _STALE_TEXT in line and not line.endswith("…")
+    assert len(line) <= rs._LINE_CAP

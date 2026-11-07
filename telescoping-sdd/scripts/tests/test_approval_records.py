@@ -332,3 +332,45 @@ def test_tier_validator_cmd_names_both_validators():
         assert isinstance(getattr(ar, name), str) and getattr(ar, name)
     assert "{doc_rel}" in ar.RESTAMP_CARVE_OUT_PREFIX
     assert "{ids}" in ar.SEAL_PART
+
+
+# --- Unit F T11 (C9): display helpers moved here; new audit parts -----------
+
+
+def test_positional_arg_root_and_relative():
+    assert ar.positional_arg("") == "."
+    assert ar.positional_arg(".") == "."
+    assert ar.positional_arg("-x") == "./-x"
+    assert ar.positional_arg("specs/F1-a") == "./specs/F1-a"
+
+
+def test_display_refusal_text_known_reason_and_fallback():
+    assert ar.display_refusal_text("a`b", "backtick") == "contains a backtick"
+    assert ar.display_refusal_text("x\x01", "non-printable") == (
+        "contains non-printable or unassigned characters")
+    assert ar.display_refusal_text("y" * 2000, "too-long") == (
+        "is 2000 characters, too long to print as a command")
+
+
+def test_display_reason_text_entries_unchanged():
+    assert ar.DISPLAY_REASON_TEXT == {
+        "non-printable": "contains non-printable or unassigned characters",
+        "backtick": "contains a backtick",
+    }
+
+
+def test_basis_change_and_producer_refresh_parts():
+    assert ar.BASIS_CHANGE_PART.format(old="v2", new="v3") == "hash basis v2 → v3"
+    assert ar.PRODUCER_REFRESH_PART == "producer refresh"
+
+
+def test_basis_label_max_is_16():
+    assert ar.BASIS_LABEL_MAX == 16
+
+
+def test_pending_review_imports_moved_helpers():
+    import pending_review as pr
+
+    assert not hasattr(pr, "_positional")
+    assert not hasattr(pr, "_DISPLAY_REASON_TEXT")
+    assert pr.positional_arg is ar.positional_arg

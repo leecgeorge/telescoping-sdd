@@ -868,7 +868,7 @@ def test_read_write_bounds_identical():
     body_start, body_end = bounds
     new_body = bc._upsert_basis_line(content[body_start:body_end])
     written = content[:body_start] + new_body + content[body_end:]
-    assert bc.read_hash_basis(written) == "v2"
+    assert bc.read_hash_basis(written) == "v3"
 
 
 # --- _strip_trajectory_rows -----------------------------------------------
@@ -1033,6 +1033,27 @@ def test_content_for_hashing_v1_frozen_does_not_strip_trajectory():
     assert "| 1 |" in out and "| 2 |" in out  # v1 keeps Trajectory rows
 
 
+# --- Unit F (T1, AC-2.1): frozen v2 golden ----------------------------------
+
+
+def test_content_for_hashing_v2_frozen_golden_string():
+    """AC-2.1: the frozen v2 copy reproduces, byte-for-byte, what the 2.28.0
+    content_for_hashing produced — captured before any Unit F edit (padded
+    header and separator rows kept, data rows stripped)."""
+    from _fixtures import AC_2_1_FIXTURE, AC_2_1_GOLDEN
+
+    assert bc._content_for_hashing_v2_frozen(AC_2_1_FIXTURE) == AC_2_1_GOLDEN
+
+
+def test_compute_content_hash_v2_is_sha256_of_golden():
+    import hashlib
+
+    from _fixtures import AC_2_1_FIXTURE, AC_2_1_GOLDEN
+
+    expected = hashlib.sha256(AC_2_1_GOLDEN.encode("utf-8")).hexdigest()[:16]
+    assert bc.compute_content_hash_v2(AC_2_1_FIXTURE) == expected
+
+
 # --- basis-line upsert + hash invariance ----------------------------------
 
 
@@ -1054,8 +1075,8 @@ def test_basis_line_no_duplication_on_restamp():
 def test_basis_line_insert_on_first_stamp():
     body = "\n\n- [x] Approved to proceed\n- **Content Hash:** `h`\n"
     out = bc._upsert_basis_line(body)
-    assert out.count("- **Hash basis:** v2") == 1
-    assert "**Content Hash:** `h`\n- **Hash basis:** v2" in out
+    assert out.count("- **Hash basis:** v3") == 1
+    assert "**Content Hash:** `h`\n- **Hash basis:** v3" in out
 
 
 # --- is_basis_migration_only / compute_content_hash_v1 --------------------

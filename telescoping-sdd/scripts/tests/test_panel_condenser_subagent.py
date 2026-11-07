@@ -539,3 +539,25 @@ def test_t10_doctrine_blocks_byte_identical_across_copies() -> None:
         _panel_token_paragraph(_read(SDD), SDD),
         "panel= token paragraph",
     )
+
+
+# --- Unit F (T22, AC-6.2): the panel= paragraph under hash basis v3 ----------
+
+
+@pytest.mark.parametrize("path", BOTH)
+def test_panel_token_paragraph_states_v3_hash_neutral(path: Path) -> None:
+    para = _panel_token_paragraph(_read(path), path)
+    assert "hash-neutral under basis v3, even when it widens the Notes column" in para, path
+    assert "For an artifact still stamped v2" in para and "re-pad recognition still applies" in para, path
+    assert "pre-existing leak" not in para and "re-padded header moves the hash" not in para, path
+
+
+def test_panel_token_paragraph_byte_identical_across_tiers() -> None:
+    assert _panel_token_paragraph(_read(SDD), SDD) == _panel_token_paragraph(_read(PB), PB)
+
+
+@pytest.mark.parametrize("path", BOTH)
+def test_trim_paragraph_does_not_imply_v2_is_current(path: Path) -> None:
+    text = _read(path)
+    assert "for every v2-approved artifact" not in text, path
+    assert "for every v2- or v3-approved artifact" in text, path
