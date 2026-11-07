@@ -60,8 +60,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.28.0"
-CHANGELOG_FIRST_ENTRY = "## 2.28.0 — Trust the instrument first"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.29.0"
+CHANGELOG_FIRST_ENTRY = "## 2.29.0 — Recording a panel pass no longer moves an approved hash"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):
@@ -290,4 +290,34 @@ def test_changelog_2_27_1_entry_names_each_ac_8_2_item():
     start = text.index("## 2.27.1 — ")
     entry = text[start: text.index("\n## ", start + 1)]
     for pin in _AC_8_2_PINS:
+        assert pin in entry, pin
+
+
+
+# --- Unit F T23: the 2.29.0 entry names each AC-6.3 item ----------------------
+
+_AC_6_3_PINS = (
+    "one `--approve` per artifact",                         # action-first Impact: one per artifact
+    "no bulk command",
+    "upstream first",
+    "every v2- or v1-stamped artifact whose hash does not verify under v3",
+    "`spec.md`, `design.md`, `SCOPE.md` or `ARCHITECTURE.md`",  # the four that FAIL validation / CI (R3)
+    "a `tasks.md` or `PLAN.md` shows only in `--run-state`",
+    "`STALE_MIGRATION`",                                    # list item 1
+    "re-approves without a marker",
+    "already verifies under v3 needs no action",            # AC-3.13
+    "generic stale FAIL",                                   # AC-3.4 case
+    "mixing 2.29.0 with an earlier plugin version",         # AC-6.1(d)
+    "The content-hash basis changed",                       # Scope line
+    "unlike 2.27.1 and 2.28.0",
+)
+
+
+def test_changelog_2_29_0_entry_names_each_ac_6_3_item():
+    text = CHANGELOG.read_text(encoding="utf-8")
+    start = text.index("## 2.29.0 — ")
+    entry = text[start: text.index("\n## ", start + 1)]
+    impact = next(line for line in entry.splitlines() if line.startswith("**Impact:**"))
+    assert impact.startswith("**Impact:** re-approve"), impact  # leads with the action
+    for pin in _AC_6_3_PINS:
         assert pin in entry, pin

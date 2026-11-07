@@ -58,7 +58,7 @@ def _skeleton(name: str, *, deferred: bool = True, body: str = "x") -> str:
 
 
 def _approved(root: Path, name: str = "spec.md", *, passes: int = 1, deferred: bool = True,
-              row_notes=None) -> Path:
+              row_notes=None, basis=None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / ".git").mkdir(exist_ok=True)
     text = _skeleton(name, deferred=deferred)
@@ -68,7 +68,19 @@ def _approved(root: Path, name: str = "spec.md", *, passes: int = 1, deferred: b
     p = root / name
     p.write_text(text, encoding="utf-8")
     assert bc.approve_document(p, project_root=root)
+    if basis is not None:
+        # Unit F (T9): re-stamp under a named basis. Tests whose premise is that
+        # archive re-padding MOVES the hash (the v2 re-pad recognition AC-3.4
+        # keeps alive) stamp under frozen v2, where padding is still hashed.
+        fx.stamp_under_basis(p, basis)
     return p
+
+
+def _reapprove(p: Path, root: Path, basis=None) -> None:
+    """approve_document, then (optionally) re-stamp under `basis` again."""
+    assert bc.approve_document(p, project_root=root)
+    if basis is not None:
+        fx.stamp_under_basis(p, basis)
 
 
 def _add_latest(p: Path, *rows: str) -> None:
@@ -136,14 +148,14 @@ def test_classifier_recognises_binding_refresh_only(tmp_path):
 
 
 def test_classifier_recognises_pure_archive_repad(tmp_path):
-    p = _approved(tmp_path)
+    p = _approved(tmp_path, basis="v2")
     _archive(p, "--strict-bar")  # empty Latest; the wider strict-bar Notes re-pads
     d = _classify(p)
     assert d == pr.RestampDelta(promoted_seals=(), binding_refresh=False, repad=True)
 
 
 def test_classifier_repad_plus_newest_row_hand_tag(tmp_path):
-    p = _approved(tmp_path)
+    p = _approved(tmp_path, basis="v2")
     _archive(p, "--strict-bar")
     _hand_tag(p, 2)
     d = _classify(p)
@@ -151,7 +163,7 @@ def test_classifier_repad_plus_newest_row_hand_tag(tmp_path):
 
 
 def test_classifier_hand_tag_semicolon_delimiter_spec(tmp_path):
-    p = _approved(tmp_path, "spec.md")
+    p = _approved(tmp_path, "spec.md", basis="v2")
     _hand_tag(p, 1, "; ")
     _add_latest(p, _seal())
     _archive(p)
@@ -160,7 +172,7 @@ def test_classifier_hand_tag_semicolon_delimiter_spec(tmp_path):
 
 
 def test_classifier_hand_tag_space_delimiter_plan(tmp_path):
-    p = _approved(tmp_path, "PLAN.md")
+    p = _approved(tmp_path, "PLAN.md", basis="v2")
     _hand_tag(p, 1, " ")
     _add_latest(p, _seal())
     _archive(p)
@@ -170,11 +182,11 @@ def test_classifier_hand_tag_space_delimiter_plan(tmp_path):
 
 def test_classifier_candidate_iv_matches_older_row_tag_only(tmp_path):
     root = tmp_path
-    p = _approved(root, passes=2)
+    p = _approved(root, passes=2, basis="v2")
     # Tag the OLDER row after the last archive, then re-approve (stamp keeps
     # the untagged widths), then archive a sealing pass that re-renders.
     _hand_tag(p, 1)
-    assert bc.approve_document(p, project_root=root)
+    _reapprove(p, root, basis="v2")
     _add_latest(p, _seal())
     _archive(p)
     d = _classify(p)
@@ -183,9 +195,9 @@ def test_classifier_candidate_iv_matches_older_row_tag_only(tmp_path):
 
 def test_classifier_candidate_iii_matches_newest_row_tag(tmp_path):
     root = tmp_path
-    p = _approved(root, passes=2)
+    p = _approved(root, passes=2, basis="v2")
     _hand_tag(p, 2)
-    assert bc.approve_document(p, project_root=root)
+    _reapprove(p, root, basis="v2")
     _add_latest(p, _seal())
     _archive(p)
     d = _classify(p)
@@ -239,7 +251,7 @@ def test_classifier_reworded_header_plus_seal_unrecognised(tmp_path):
 
 @pytest.mark.parametrize("with_seal", [False, True])
 def test_classifier_hand_padded_header_unrecognised(tmp_path, with_seal):
-    p = _approved(tmp_path)
+    p = _approved(tmp_path, basis="v2")
     if with_seal:
         _add_latest(p, _seal())
         _archive(p)
@@ -287,7 +299,7 @@ def test_classifier_deferred_auto_insert_unrecognised(tmp_path):
 
 def test_classifier_trim_elision_fails_safe(tmp_path):
     long = "converged (0 HIGH); " + "a very long hand note " * 4
-    p = _approved(tmp_path, passes=16, row_notes={1: long.strip()})
+    p = _approved(tmp_path, passes=16, row_notes={1: long.strip()}, basis="v2")
     assert "earlier passes elided" in p.read_text(encoding="utf-8")
     _add_latest(p, _seal())
     _archive(p)
@@ -295,7 +307,7 @@ def test_classifier_trim_elision_fails_safe(tmp_path):
 
 
 def test_classifier_escaped_pipe_repad_fails_safe(tmp_path):
-    p = _approved(tmp_path, row_notes={1: "a \\| b converged (0 HIGH) widest note here"})
+    p = _approved(tmp_path, row_notes={1: "a \\| b converged (0 HIGH) widest note here"}, basis="v2")
     _archive(p, "--strict-bar")
     assert _classify(p) is None
 
@@ -479,23 +491,26 @@ def _approve_out(p: Path, root: Path, capsys) -> str:
 
 def test_i9_line_exact_seal_only_repad_only_and_seal_plus_repad(tmp_path, capsys):
     prefix = RESTAMP_CARVE_OUT_PREFIX.format(doc_rel="spec.md")
-    a = _approved(tmp_path / "a")
+    # Frozen-v2 premise: the re-pad parts need a stamp under which padding is
+    # hashed; a v2-stamp carve-out line also names the basis change (Unit F T18).
+    basis = "; hash basis v2 → v3"
+    a = _approved(tmp_path / "a", basis="v2")
     _add_latest(a, _seal())
     _archive(a)
     out = _approve_out(a, tmp_path / "a", capsys)
-    assert prefix + SEAL_PART.format(ids="[SEAL-01]") in out.splitlines()
+    assert prefix + SEAL_PART.format(ids="[SEAL-01]") + basis in out.splitlines()
     assert prefix == "restamp-carve-out: spec.md re-stamped with no pending-review marker — "
     assert SEAL_PART.format(ids="[SEAL-01]") == "seal promotion ([SEAL-01])"
-    b = _approved(tmp_path / "b")
+    b = _approved(tmp_path / "b", basis="v2")
     _archive(b, "--strict-bar")
     out = _approve_out(b, tmp_path / "b", capsys)
-    assert prefix + REPAD_PART in out.splitlines()
+    assert prefix + REPAD_PART + basis in out.splitlines()
     assert REPAD_PART == "Trajectory table re-pad"
-    c = _approved(tmp_path / "c")
+    c = _approved(tmp_path / "c", basis="v2")
     _add_latest(c, _seal("one"), _seal("two"))
     _archive(c, "--strict-bar")
     out = _approve_out(c, tmp_path / "c", capsys)
-    assert (prefix + "seal promotion ([SEAL-01], [SEAL-02]) and Trajectory table re-pad") in out.splitlines()
+    assert (prefix + "seal promotion ([SEAL-01], [SEAL-02]) and Trajectory table re-pad" + basis) in out.splitlines()
 
 
 def test_exactly_one_i9_line_per_approve(tmp_path, capsys):
@@ -561,14 +576,19 @@ def test_classifier_called_on_both_carve_out_paths(tmp_path, monkeypatch, capsys
 
 
 def test_i9_line_exact_binding_only_and_all_three_parts(tmp_path, capsys):
+    """Unit F (T9) split this onto two documents. A binding-only delta on a v2
+    stamp becomes a pure basis migration at T17, so one v2 document cannot carry
+    both subcases. The binding-only subcase keeps the default (v3) stamp; the
+    seal + binding + re-pad subcase gets its own v2-stamped document."""
     from approval_records import BINDING_PART
 
     assert BINDING_PART == "upstream binding refresh"
-    b = _approved(tmp_path / "b", "design.md")
-    (tmp_path / "b" / "spec.md").write_text(
-        "# s\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `0123456789abcdef`\n",
-        encoding="utf-8",
-    )
+
+    def _upstream(root: Path, h: str) -> None:
+        (root / "spec.md").write_text(
+            f"# s\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `{h}`\n",
+            encoding="utf-8",
+        )
 
     def bind(p):
         w = bc.ApprovalWrites(bindings=bc.collect_upstream_bindings(p.parent, "design.md"),
@@ -577,16 +597,179 @@ def test_i9_line_exact_binding_only_and_all_three_parts(tmp_path, capsys):
             lambda c, f: bc.verify_judged_transform(c, f, writes=w),
             lambda c, f: bc.apply_approval_writes(c, f, writes=w))
 
+    prefix = RESTAMP_CARVE_OUT_PREFIX.format(doc_rel="design.md")
+    # Binding-only subcase (default v3 stamp).
+    b = _approved(tmp_path / "b", "design.md")
+    _upstream(tmp_path / "b", "0123456789abcdef")
     capsys.readouterr()
     assert bc.approve_document(b, project_root=tmp_path / "b", content_transform=bind(b))
-    prefix = RESTAMP_CARVE_OUT_PREFIX.format(doc_rel="design.md")
     assert prefix + BINDING_PART in capsys.readouterr().out.splitlines()
-    (tmp_path / "b" / "spec.md").write_text(
-        "# s\n\n## Approval\n\n- [x] Approved to proceed\n- **Content Hash:** `fedcba9876543210`\n",
+    # Seal + binding + re-pad subcase (its own document, re-stamped under v2).
+    c = _approved(tmp_path / "c", "design.md")
+    _upstream(tmp_path / "c", "0123456789abcdef")
+    assert bc.approve_document(c, project_root=tmp_path / "c", content_transform=bind(c))
+    fx.stamp_under_basis(c, "v2")
+    _upstream(tmp_path / "c", "fedcba9876543210")
+    _add_latest(c, _seal())
+    _archive(c, "--strict-bar")
+    capsys.readouterr()
+    assert bc.approve_document(c, project_root=tmp_path / "c", content_transform=bind(c))
+    assert (prefix + "seal promotion ([SEAL-01]) and upstream binding refresh and Trajectory table re-pad"
+            + "; hash basis v2 → v3") in capsys.readouterr().out.splitlines()
+
+
+# --- Unit F T5: the classifier selects its hasher by stamp basis (AD5) --------
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("v1", "compute_content_hash"), ("v2", "compute_content_hash_v2"),
+    ("v3", "compute_content_hash"), ("v4", None), ("v03", None), ("v10", None),
+])
+def test_classifier_hasher_selects_by_stamp_basis(label, expected):
+    import content_hash as ch
+
+    got = pr._classifier_hasher(label)
+    assert got is (getattr(ch, expected) if expected else None)
+
+
+def test_classifier_unrecognised_basis_label_returns_none(tmp_path):
+    """AC-3.8: an approved artifact stamped `v4` whose delta is a seal promotion
+    is NOT recognised — the create-marker arm."""
+    p = _approved(tmp_path)
+    _add_latest(p, _seal())
+    _archive(p)
+    assert _classify(p) is not None  # recognised under its real basis label
+    t = p.read_text(encoding="utf-8")
+    basis = re.search(r"- \*\*Hash basis:\*\* v\d+", t).group(0)
+    _edit(p, basis, "- **Hash basis:** v4")
+    assert _classify(p) is None
+
+
+def test_classifier_v3_stamp_fallback_repad_returns_none(tmp_path):
+    """AD5: under a basis that canonicalises (v3), the classifier yields only the
+    on-disk header candidate, so a re-pad of a table v3 does not canonicalise —
+    here the only `### Trajectory` sits OUTSIDE `## Panel Review` — falls to the
+    create arm instead of reporting `repad`. Holds before and after the flip."""
+    header = ["Pass", "Date", "HIGHs", "Regressions", "Addressed", "Deferred", "Sealed", "Notes"]
+    rows = [
+        dict(zip(header, ["1", "2026-11-01", "0", "0", "0", "0", "0", "a"])),
+        dict(zip(header, ["2", "2026-11-02", "0", "0", "0", "0", "0", "a much wider notes cell"])),
+    ]
+    full = tr.render_table(header, rows)
+    narrow = tr.render_table(header, rows[:1])[:2]
+    assert narrow != full[:2]
+    body = "\n".join(narrow + full[2:])
+    p = tmp_path / "spec.md"
+    p.write_text(
+        f"# Doc\n\n## Objective\n\nx\n\n### Trajectory\n\n{body}\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n",
         encoding="utf-8",
     )
-    _add_latest(b, _seal())
-    _archive(b, "--strict-bar")
-    capsys.readouterr()
-    assert bc.approve_document(b, project_root=tmp_path / "b", content_transform=bind(b))
-    assert (prefix + "seal promotion ([SEAL-01]) and upstream binding refresh and Trajectory table re-pad") in capsys.readouterr().out.splitlines()
+    fx.stamp_under_basis(p, "v3")
+    _edit(p, "\n".join(narrow), "\n".join(full[:2]))  # the re-pad
+    assert _classify(p) is None
+
+
+@pytest.mark.parametrize("basis", ["v1", "v2", "v3"])
+def test_stamp_under_basis_writes_requested_basis(tmp_path, basis):
+    import content_hash as ch
+
+    text = _skeleton("spec.md", body="An example line: **Hash basis:** v9 stays in prose.")
+    text = fx.add_converged_closing_row(text)
+    p = tmp_path / "spec.md"
+    p.write_text(text, encoding="utf-8")
+    stored = fx.stamp_under_basis(p, basis)
+    out = p.read_text(encoding="utf-8")
+    assert ch.read_hash_basis(out) == basis
+    assert bc.read_stored_hash(out) == stored
+    assert "**Hash basis:** v9 stays in prose." in out
+    hasher = {"v1": ch.compute_content_hash_v1, "v2": ch.compute_content_hash_v2,
+              "v3": ch.compute_content_hash}[basis]
+    assert hasher(bc.trim_trajectory_table(out) if basis == "v1" else out) == stored
+    assert (out.count("**Hash basis:**") - 1) == (0 if basis == "v1" else 1)
+
+
+# --- Unit F T9: AC-3.10 — a v3 stamp never reports a Trajectory re-pad --------
+
+
+def _approved_variant(root: Path, *, header=None, sep=None) -> Path:
+    """`_approved` with the Trajectory header or separator rewritten before the
+    (v3) approval."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".git").mkdir(exist_ok=True)
+    text = fx.add_converged_closing_row(_skeleton("spec.md"))
+    lines = text.split("\n")
+    i = next(j for j, ln in enumerate(lines) if ln.startswith("| Pass "))
+    if header is not None:
+        lines[i] = header
+    if sep is not None:
+        lines[i + 1] = sep
+    p = root / "spec.md"
+    p.write_text("\n".join(lines), encoding="utf-8")
+    assert bc.approve_document(p, project_root=root)
+    assert bc.read_hash_basis(p.read_text(encoding="utf-8")) == "v3"
+    return p
+
+
+@pytest.mark.parametrize("case", ["plain", "colon_aligned_separator", "escaped_pipe_header"])
+def test_v3_stamp_seal_promotion_never_reports_repad(tmp_path, capsys, case):
+    """AC-3.10: on a v3 stamp, the restamp after a seal-promoting archive never
+    names `Trajectory table re-pad`. The plain case is recognised as a seal
+    promotion; render_table drops separator colons and split_table_row
+    unescapes `\\|`, so in those two cases the archive really changes the
+    canonical rows and the re-stamp takes the create arm."""
+    if case == "plain":
+        p = _approved_variant(tmp_path)
+    elif case == "colon_aligned_separator":
+        p = _approved_variant(
+            tmp_path, sep="|:-----|:-----|:------|:------------|:----------|:---------|:-------|:------|")
+    else:
+        p = _approved_variant(
+            tmp_path, header="| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes \\| more |")
+    def _rows():
+        lines = p.read_text(encoding="utf-8").splitlines()
+        i = next(j for j, ln in enumerate(lines) if ln.startswith("| Pass "))
+        return lines[i:i + 2]
+
+    before = _rows()
+    _add_latest(p, _seal())
+    _archive(p, "--strict-bar")  # the wider mode stamp forces a re-pad
+    assert _rows() != before  # non-vacuous: the archive really re-rendered the rows
+    out = _approve_out(p, tmp_path, capsys)
+    carve = [ln for ln in out.splitlines() if ln.startswith("restamp-carve-out:")]
+    assert not any(REPAD_PART in ln for ln in carve)
+    if case == "plain":
+        assert carve == [RESTAMP_CARVE_OUT_PREFIX.format(doc_rel="spec.md")
+                         + SEAL_PART.format(ids="[SEAL-01]")]
+        assert _pending_keys(tmp_path) == []
+    else:
+        assert carve == []
+        assert _REMINDER in out
+        assert _pending_keys(tmp_path) != []
+
+
+def test_v3_stamp_fallback_table_repad_falls_to_create_arm(tmp_path, capsys):
+    """AC-3.10's fallback case end to end: a v3 stamp whose only `### Trajectory`
+    lies outside `## Panel Review` keeps its padding hashed, so a re-pad takes
+    the create arm (marker plus REAPPROVAL_REMINDER)."""
+    (tmp_path / ".git").mkdir()
+    header = ["Pass", "Date", "HIGHs", "Regressions", "Addressed", "Deferred", "Sealed", "Notes"]
+    rows = [
+        dict(zip(header, ["1", "2026-11-01", "0", "0", "0", "0", "0", "a"])),
+        dict(zip(header, ["2", "2026-11-02", "0", "0", "0", "0", "0", "a much wider notes cell"])),
+    ]
+    full = tr.render_table(header, rows)
+    narrow = tr.render_table(header, rows[:1])[:2]
+    p = tmp_path / "spec.md"
+    p.write_text(
+        "# Doc\n\n## Objective\n\nx\n\n### Trajectory\n\n" + "\n".join(narrow + full[2:])
+        + "\n\n## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n",
+        encoding="utf-8",
+    )
+    assert bc.approve_document(p, project_root=tmp_path)
+    assert bc.read_hash_basis(p.read_text(encoding="utf-8")) == "v3"
+    _edit(p, "\n".join(narrow), "\n".join(full[:2]))
+    out = _approve_out(p, tmp_path, capsys)
+    assert not any(ln.startswith("restamp-carve-out:") for ln in out.splitlines())
+    assert _REMINDER in out
+    assert _pending_keys(tmp_path) != []

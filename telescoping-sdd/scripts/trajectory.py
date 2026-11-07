@@ -7,6 +7,14 @@ and detecting orphaned (stranded) rows. A leaf module — it imports only `re`, 
 blueprint_common can import it at the TOP and re-export its names (the hashing
 path's `_strip_trajectory_rows` and the marker path's `stamped_at_pass_from_content`
 both depend on it). Operates on RAW content — never on `content_for_hashing` output.
+
+Hash basis v3 (Unit F): `_canonical_trajectory_table` is the single locator of
+the canonical table (the one inside `## Panel Review`, no fallback); the current
+basis strips its data rows (`_strip_trajectory_rows`, step 4) and renders its
+column-header and separator rows in R1's canonical form
+(`canonicalize_trajectory_header_rows` / `canonical_trajectory_row`, step 4b), so
+archive_pass.py re-padding those rows never moves an approval hash. The frozen v2
+basis keeps its own verbatim copies in content_hash.py.
 """
 from __future__ import annotations
 
@@ -21,11 +29,8 @@ TRAJECTORY_ELIDED_NOTES_RE = re.compile(r"^(\d+) earlier passes elided$")
 TRAJECTORY_KEEP_DEFAULT = 15
 UPSTREAM_PANEL_TAG_RE = re.compile(r"upstream-panel ([0-9a-f]{8})")
 
-# R4 hash-basis migration messages.
-# HASH_BASIS_MIGRATION_MSG: the BLOCKING check-time FAIL detail for a v1-basis
-# artifact whose stored hash no longer matches under v2. Begins with the
-# distinct `HASH-BASIS-MIGRATION:` token so an operator (and `grep`) can tell it
-# apart from the pre-fix `Pending-review: FAILED` text at a glance (R4.AC1).
+# The hash-basis migration messages (HASH_BASIS_MIGRATION_MSG and friends) live
+# in blueprint_common.py, beside check_approval, which emits them.
 
 
 def _panel_trajectory_header_idx(lines: list) -> "Optional[int]":
@@ -131,22 +136,22 @@ def _trajectory_bounds(content: str) -> "Optional[tuple[int, int, int, int]]":
     return (table_header_idx, first_data_idx, terminator_idx, section_end)
 
 
-def _strip_trajectory_rows(content: str) -> str:
-    """Remove data rows from the ### Trajectory table inside ## Panel Review (R1/AD1).
+def _canonical_trajectory_table(lines: list) -> "Optional[Tuple[int, int]]":
+    """(header_idx, section_end) of the canonical `### Trajectory` table, or None.
 
-    Locates the canonical `### Trajectory` via `_panel_trajectory_header_idx` (the
-    SAME locator `_trajectory_bounds` uses, so the rows excluded from the hash are
-    exactly the rows the anchor/orphan logic operates on), bounds it at the next
-    ###-or-shallower heading, and removes all data rows — keeping the heading, the
-    column-header row, and the separator row intact. Every OTHER panel sub-section
-    (### Latest pass detail, ### Sealed dispositions, ### Deferred dispositions)
-    is left byte-identical (R7). No-op when ## Panel Review or ### Trajectory is
-    absent. Idempotent.
+    The SINGLE locator both the data-row strip (v3 step 4) and the header/
+    separator canonicaliser (step 4b) use, so the two can never disagree about
+    which table is canonical. None unless: `_panel_trajectory_header_idx` finds
+    the heading inside `## Panel Review` (NO fallback — `_trajectory_bounds`'s
+    document-wide fallback is deliberately not used); a line whose `.strip()`
+    starts and ends with `|` exists before `section_end` (the next heading of
+    level 3 or shallower); `header_idx + 1 < section_end`; and
+    `TRAJECTORY_SEP_RE` matches `lines[header_idx + 1]` RAW (so an indented
+    separator is not recognised). Never raises.
     """
-    lines = content.split("\n")
     traj_idx = _panel_trajectory_header_idx(lines)
     if traj_idx is None:
-        return content
+        return None
     section_end = len(lines)
     for j in range(traj_idx + 1, len(lines)):
         stripped = lines[j].lstrip()
@@ -161,9 +166,29 @@ def _strip_trajectory_rows(content: str) -> str:
             table_header_idx = j
             break
     if table_header_idx is None or table_header_idx + 1 >= section_end:
-        return content
+        return None
     if not TRAJECTORY_SEP_RE.match(lines[table_header_idx + 1]):
+        return None
+    return (table_header_idx, section_end)
+
+
+def _strip_trajectory_rows(content: str) -> str:
+    """Remove data rows from the ### Trajectory table inside ## Panel Review (R1/AD1).
+
+    Locates the canonical table via `_canonical_trajectory_table` (which uses
+    `_panel_trajectory_header_idx`, the SAME locator `_trajectory_bounds` uses, so
+    the rows excluded from the hash are exactly the rows the anchor/orphan logic
+    operates on) and removes all data rows — keeping the heading, the
+    column-header row, and the separator row intact. Every OTHER panel
+    sub-section (### Latest pass detail, ### Sealed dispositions, ### Deferred
+    dispositions) is left byte-identical (R7). No-op when ## Panel Review or
+    ### Trajectory is absent. Idempotent.
+    """
+    lines = content.split("\n")
+    located = _canonical_trajectory_table(lines)
+    if located is None:
         return content
+    table_header_idx, section_end = located
     data_start = table_header_idx + 2
     data_end = data_start
     while data_end < section_end:
@@ -172,6 +197,57 @@ def _strip_trajectory_rows(content: str) -> str:
             break
         data_end += 1
     return "\n".join(lines[:data_start] + lines[data_end:])
+
+
+def canonical_trajectory_row(line: str, *, separator: bool) -> str:
+    r"""R1 rules 1-5 for one `### Trajectory` header or separator row. Pure; never raises.
+
+    1. Whitespace outside the outer pipes (indentation, trailing spaces, `\r`)
+       is neutralised (`line.strip()`).
+    2. Split at every pipe not preceded by a backslash (`_UNESCAPED_PIPE`); drop
+       exactly one empty fragment at each end. Cells are never unescaped.
+    3. Each cell is trimmed at both edges; inner whitespace stays. A cell that
+       then ends in a backslash keeps one trailing space, so the re-joined pipe
+       after it still splits.
+    4. Separator rows only: every run of dashes collapses to one `-`.
+    5. Re-join with bare pipes, one outer pipe at each end.
+
+    Rules 1 and 3 use `str.strip()` DELIBERATELY: it trims Unicode whitespace
+    (NBSP, U+0085, U+2028, ...), wider than ASCII padding, so an NBSP-only cell
+    canonicalises equal to an empty cell (pinned by a boundary test).
+    """
+    parts = _UNESCAPED_PIPE.split(line.strip())
+    if parts and parts[0] == "":
+        parts = parts[1:]
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    cells = []
+    for cell in parts:
+        cell = cell.strip()
+        if cell.endswith("\\"):
+            cell += " "
+        if separator:
+            cell = re.sub(r"-+", "-", cell)
+        cells.append(cell)
+    return "|" + "|".join(cells) + "|"
+
+
+def canonicalize_trajectory_header_rows(content: str) -> str:
+    """Hash basis v3 step 4b: render the canonical table's column-header and
+    separator rows in R1's canonical form; every other line byte-identical.
+
+    Identity when `_canonical_trajectory_table` returns None (no canonical
+    table). Idempotent: a canonical header still parses as a header and a
+    canonical separator still matches `TRAJECTORY_SEP_RE`.
+    """
+    lines = content.split("\n")
+    located = _canonical_trajectory_table(lines)
+    if located is None:
+        return content
+    header_idx = located[0]
+    lines[header_idx] = canonical_trajectory_row(lines[header_idx], separator=False)
+    lines[header_idx + 1] = canonical_trajectory_row(lines[header_idx + 1], separator=True)
+    return "\n".join(lines)
 
 
 def trim_trajectory_table(content: str, keep: int = TRAJECTORY_KEEP_DEFAULT) -> str:

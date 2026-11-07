@@ -953,7 +953,7 @@ def test_migration_restamp_no_marker_spec(tmp_path, capsys):
     out = capsys.readouterr().out
     assert _pending(tmp_path) == {}
     assert "RE-APPROVAL REMINDER" not in out
-    assert "- **Hash basis:** v2" in p.read_text()
+    assert "- **Hash basis:** v3" in p.read_text()
 
 
 def test_migration_restamp_no_marker_blueprint(tmp_path):
@@ -964,7 +964,7 @@ def test_migration_restamp_no_marker_blueprint(tmp_path):
     p.write_text(text, encoding="utf-8")
     vb.approve_document(p, project_root=tmp_path)
     assert _pending(tmp_path) == {}
-    assert "- **Hash basis:** v2" in p.read_text()
+    assert "- **Hash basis:** v3" in p.read_text()
 
 
 def test_migration_concurrent_edit_writes_marker(tmp_path):
@@ -973,7 +973,7 @@ def test_migration_concurrent_edit_writes_marker(tmp_path):
     _substantive_edit(p, "a concurrent edit")  # changes the v1 hash too
     vs.approve_document(p, project_root=tmp_path)
     assert "specs/F1-x/spec.md" in _pending(tmp_path)
-    assert "- **Hash basis:** v2" in p.read_text()
+    assert "- **Hash basis:** v3" in p.read_text()
 
 
 def test_migration_round_trip_idempotent(tmp_path, capsys):
@@ -994,7 +994,7 @@ def test_migration_grown_trajectory_writes_marker(tmp_path):
     _add_traj_row(p, 4)  # Trajectory grew since the v1 approval (never re-approved)
     vs.approve_document(p, project_root=tmp_path)
     assert "specs/F1-x/spec.md" in _pending(tmp_path)
-    assert "- **Hash basis:** v2" in p.read_text()
+    assert "- **Hash basis:** v3" in p.read_text()
 
 
 def test_bare_archive_write_validation_clean(tmp_path):
@@ -1006,13 +1006,29 @@ def test_bare_archive_write_validation_clean(tmp_path):
 
 
 def test_v1_v2_equal_no_migration_message(tmp_path, capsys):
+    """A v1 stamp whose v1 hash equals the CURRENT hash needs no migration (the
+    AC-3.13 v1 case). Unit F moved the premise: an empty Trajectory makes v1 ==
+    v2, but v1 == v3 also needs the Trajectory header and separator rows already
+    in canonical form (v1 hashes them verbatim, v3 canonicalises them), so the
+    fixture writes them canonical. The no-migration assertions are unchanged."""
     vs = _load_validate_spec()
-    # Empty Trajectory: v1 hash == v2 hash (no rows to strip) -> no migration.
-    p, _v1 = _seed_v1(tmp_path, "specs/F1-x/spec.md", passes=())
+    base = _churn_doc(passes=(), checked=True, hash_val="pending", basis=None)
+    canonical = base.replace(
+        _CHURN_TRAJ_HEADER,
+        "### Trajectory\n\n|Pass|Date|HIGHs|Regressions|Addressed|Deferred|Sealed|Notes|\n"
+        "|-|-|-|-|-|-|-|-|\n",
+    )
+    assert canonical != base
+    v1 = bc.compute_content_hash_v1(bc.trim_trajectory_table(canonical))
+    assert v1 == bc.compute_content_hash(canonical)  # the premise, made explicit
+    p = tmp_path / "specs" / "F1-x" / "spec.md"
+    p.parent.mkdir(parents=True)
+    p.write_text(canonical.replace("**Content Hash:** `pending`", f"**Content Hash:** `{v1}`"),
+                 encoding="utf-8")
     assert "HASH-BASIS-MIGRATION:" not in _detail_blob(_check(vs, p.read_text()))
     vs.approve_document(p, project_root=tmp_path)
     assert _pending(tmp_path) == {}
-    assert "- **Hash basis:** v2" in p.read_text()
+    assert "- **Hash basis:** v3" in p.read_text()
 
 
 def test_migration_severity_is_fail_not_warn(tmp_path):
@@ -1097,7 +1113,7 @@ def test_approval_section_prose_decoy_bounds_correct(tmp_path):
     p.write_text(body, encoding="utf-8")
     vs.approve_document(p, project_root=tmp_path)
     txt = p.read_text()
-    assert bc.read_hash_basis(txt) == "v2"  # basis written into the REAL section
+    assert bc.read_hash_basis(txt) == "v3"  # basis written into the REAL section
     assert bc.verify_content_hash(txt, bc.read_stored_hash(txt))
 
 

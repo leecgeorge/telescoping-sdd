@@ -1082,7 +1082,7 @@ def _maybe_trim_trajectory(original_content, new_content):
 
     Gate (skip the trim) iff ALL hold on the artifact's committed state:
         has_approval(original_content)                       # approval box is [x]
-        and read_hash_basis(original_content) == "v1"        # no `**Hash basis:** v2`
+        and read_hash_basis(original_content) == "v1"        # no `**Hash basis:**` line
         and _is_valid_16_hex(read_stored_hash(original_content))  # a real, well-formed
                                                                    # committed hash
 
@@ -1090,9 +1090,9 @@ def _maybe_trim_trajectory(original_content, new_content):
       - a never-yet-approved artifact (basis reports "v1" but stored hash is
         'pending' → not skipped) — R2's dominant population and the explicit
         anti-mis-gate case (a bare `== "v2"` gate would wrongly hold it back),
-      - a v2-approved artifact (basis "v2" → not skipped; trajectory rows are
-        stripped by content_for_hashing before hashing → provably hash-neutral),
-        and
+      - a v2- or v3-approved artifact (basis "v2"/"v3" → not skipped;
+        trajectory data rows are stripped before hashing under both the frozen v2
+        and the current v3 basis → provably hash-neutral), and
       - an approved v1-basis artifact whose stored hash is present but malformed
         (not 16 lowercase hex chars) — mirrors the fail-closed handling in
         `changed_since_stamp`/`is_basis_migration_only`, which both treat a

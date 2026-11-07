@@ -67,6 +67,87 @@ _FROZEN_PLAN_FIXTURE = """\
 
 
 # ---------------------------------------------------------------------------
+# Unit F (T1, AC-2.1): the frozen-v2 golden. `AC_2_1_FIXTURE` carries every
+# element the v2 normalisation touches — the approval block (checked box, a
+# Content Hash, a `- **Hash basis:** v2` line), a body-prose basis line,
+# `## Milestones` and the decorated `## Milestones (Q3)` with checked rows, a
+# fenced `### Trajectory` example, and a `## Panel Review` Trajectory table whose
+# header and separator rows are PADDED (archive_pass.py's re-pad shape) with
+# several data rows. `AC_2_1_GOLDEN` was captured byte-for-byte from the
+# UNMODIFIED v2 `content_for_hashing` (v2.28.0) before any Unit F edit, so the
+# frozen v2 copy is pinned to what 2.28.0 actually stamped. Never re-capture it.
+# ---------------------------------------------------------------------------
+
+AC_2_1_FIXTURE = """\
+# Implementation Plan: Golden
+
+## Notes
+
+An example basis line in body prose:
+**Hash basis:** v2
+
+```markdown
+### Trajectory
+
+| Pass | Date | Notes |
+|------|------|-------|
+| 9    | 2026-01-01 | fenced example row |
+```
+
+## Milestones
+
+- [x] F1 Foundation
+- [ ] F2 Core
+- [X] F3 Polish
+
+## Milestones (Q3)
+
+- [x] F4 Stays checked in the hash
+
+## Panel Review
+
+### Trajectory
+
+| Pass | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes                                  |
+|------|------------|-------|-------------|-----------|----------|--------|----------------------------------------|
+| 1    | 2026-11-01 | 2     | 0           | 2         | 0        | 0      | tags=d0u0c2                            |
+| 2    | 2026-11-02 | 0     | 0           | 0         | 0        | 0      | converged (0 HIGH); panel=0.1.0,0.0.1 |
+
+### Sealed dispositions
+
+### Latest pass detail
+
+| Severity | Source | Concern | Disposition | Notes |
+|----------|--------|---------|-------------|-------|
+
+## Approval
+
+- [x] Approved to proceed to implementation
+- **Content Hash:** `0123456789abcdef`
+- **Hash basis:** v2
+"""
+
+# Captured 2026-11-07 from the unmodified v2.28.0 content_for_hashing(AC_2_1_FIXTURE)
+# (tasks.md T1 Verification step 1). Note what v2 does: removes both basis lines,
+# neutralises `## Milestones` state but not `## Milestones (Q3)`, leaves the fenced
+# table alone, strips the Panel Review data rows and KEEPS the padded header and
+# separator rows verbatim — the exact leak basis v3 closes.
+AC_2_1_GOLDEN = (
+    "# Implementation Plan: Golden\n\n## Notes\n\nAn example basis line in body prose:\n\n"
+    "```markdown\n### Trajectory\n\n| Pass | Date | Notes |\n|------|------|-------|\n"
+    "| 9    | 2026-01-01 | fenced example row |\n```\n\n"
+    "## Milestones\n\n- [ ] F1 Foundation\n- [ ] F2 Core\n- [ ] F3 Polish\n\n"
+    "## Milestones (Q3)\n\n- [x] F4 Stays checked in the hash\n\n"
+    "## Panel Review\n\n### Trajectory\n\n"
+    "| Pass | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes                                  |\n"
+    "|------|------------|-------|-------------|-----------|----------|--------|----------------------------------------|\n\n"
+    "### Sealed dispositions\n\n### Latest pass detail\n\n"
+    "| Severity | Source | Concern | Disposition | Notes |\n|----------|--------|---------|-------------|-------|\n\n"
+    "## Approval\n\n- [ ] Approved to proceed to implementation\n- **Content Hash:** `pending`"
+)
+
+
+# ---------------------------------------------------------------------------
 # Unit C0 (T8, design Testing Strategy, `[DEF-23]`): a converged, tokened
 # closing Trajectory row built on the PRODUCTION path — trajectory.render_table
 # plus trajectory.stamp_provenance — so a fixture row is byte-identical to what
@@ -273,4 +354,157 @@ def write_chain(root, tier: str, *, approve, bind: bool, prefixed: bool = False)
             ok = mod.approve_document(p, project_root=root)
         if not ok:
             raise AssertionError(f"approve failed for {p}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Unit F (T5, design SEAL-08): stamp an artifact under a NAMED hash basis.
+# `approve_document` always stamps the current basis, so tests that need a v1-
+# or v2-stamped artifact (the migration path, the classifier's basis selection)
+# build one here. The file is first trimmed exactly as approve_document trims
+# it, then: the approval box is ticked, the Content Hash is that basis's hash
+# of the post-trim content, and the basis line is set to `basis` (removed for
+# v1, which predates the line). `v3` means the label `v3` with the hash the
+# CURRENT `compute_content_hash` returns, so the contract holds before and
+# after the flip.
+# ---------------------------------------------------------------------------
+
+
+def stamp_under_basis(path, basis: str) -> str:
+    """Stamp `path` under `basis` ('v1' | 'v2' | 'v3'); return the stored hash."""
+    import re as _re
+
+    import content_hash as _ch
+    from trajectory import trim_trajectory_table as _trim
+
+    hashers = {
+        "v1": _ch.compute_content_hash_v1,
+        "v2": _ch.compute_content_hash_v2,
+        "v3": _ch.compute_content_hash,
+    }
+    if basis not in hashers:
+        raise ValueError(f"stamp_under_basis: unsupported basis {basis!r}")
+    path = _Path(path)
+    text = _trim(path.read_text(encoding="utf-8"))
+    bounds = _ch.approval_section_bounds(text)
+    if bounds is None:
+        raise ValueError("stamp_under_basis: no ## Approval section")
+    start, end = bounds
+    text = text[:start] + _ch._HASH_BASIS_REMOVAL_RE.sub("", text[start:end]) + text[end:]
+    text = _re.sub(r"- \[[ xX]\] Approved to proceed", "- [x] Approved to proceed", text, count=1)
+    stored = hashers[basis](text)
+    text = _re.sub(
+        r"(\*\*Content Hash:\*\*\s*)`[^`]*`", lambda m: f"{m.group(1)}`{stored}`", text, count=1
+    )
+    if basis != "v1":
+        text = _re.sub(
+            r"(^[ \t]*-?\s*\*\*Content Hash:\*\*[^\n]*$)",
+            lambda m: f"{m.group(1)}\n- **Hash basis:** {basis}", text, count=1, flags=_re.MULTILINE,
+        )
+    path.write_text(text, encoding="utf-8")
+    return stored
+
+
+# ---------------------------------------------------------------------------
+# Unit F (T10, AC-1.7): approve an artifact, then stage a pass for archiving.
+# The artifact is v3-approved over a header-only `### Latest pass detail` that is
+# byte-identical to the render archive_pass.py writes when it clears that
+# section, so after the archive everything outside the Trajectory table is as
+# it was at the stamp. `latest_rows` (Addressed / `Halt and re-scope` only, so
+# nothing is promoted to Sealed or Deferred) are injected AFTER the approval.
+# ---------------------------------------------------------------------------
+
+_STAGE_LATEST_HEADER = (
+    "| Severity | Source | Concern | Disposition | Notes |\n"
+    "|----------|--------|---------|-------------|-------|\n"
+)
+
+
+def stamp_then_stage_pass(path, tier: str, *, latest_rows, mode: str = "normal"):
+    """Write + approve `path` (a phase-1 artifact of `tier`), then inject
+    `latest_rows`. Returns the archive_pass.py argv tail for `mode`
+    ('panel_roster' | 'strict_bar' | 'halt_vote' | 'normal' | 'skip')."""
+    path = _Path(path)
+    root = path.parent
+    (root / ".git").mkdir(parents=True, exist_ok=True)
+    text = (
+        f"# {path.stem}\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    text = _ensure_panel_review(text).replace(
+        "### Latest pass detail", "### Deferred dispositions\n\n<!-- none -->\n\n### Latest pass detail", 1
+    )
+    path.write_text(add_converged_closing_row(text), encoding="utf-8")
+    mod = _load_validator(tier)
+    if not mod.approve_document(path, project_root=root):
+        raise AssertionError(f"approve failed for {path}")
+    stamped = path.read_text(encoding="utf-8")
+    assert _STAGE_LATEST_HEADER in stamped
+    path.write_text(
+        stamped.replace(_STAGE_LATEST_HEADER, _STAGE_LATEST_HEADER + "".join(r + "\n" for r in latest_rows), 1),
+        encoding="utf-8",
+    )
+    return {
+        "panel_roster": ["--panel-roster", "user-advocate,devils-advocate,pragmatist"],
+        "strict_bar": ["--strict-bar"],
+        "halt_vote": [],
+        "normal": [],
+        "skip": ["--skip", "a deliberately long mechanical reason that widens the Notes column"],
+    }[mode]
+
+
+# ---------------------------------------------------------------------------
+# Unit F (T18): a v2-STAMPED bound chain. write_chain(bind=True) stamps the
+# current basis (v3) since the flip, so the migration tests build their chain
+# here: each artifact gets a Panel Review with a converged closing row (whose
+# padded Trajectory header makes v2 != v3), each downstream's binding lines
+# name its upstreams' v2 stamps (UPSTREAM_SETS), and every artifact is stamped
+# under frozen v2 in upstream-first order. The blueprint PLAN.md carries a
+# Cross-Feature Contracts section but is stamped WITHOUT its per-CFC hash
+# sub-block, so its first --approve performs a real producer refresh.
+# ---------------------------------------------------------------------------
+
+_V2_CHAIN_CFC = (
+    "## Cross-Feature Contracts\n\n"
+    "### CFC-1: Shared ids\n\n"
+    "- **Participating features:** F1, F2\n"
+    "- **Contract:** ids are stable.\n"
+    "- **Per-feature AC:** GIVEN an id WHEN read THEN it is stable [CFC-1]\n"
+    "- **Enforcement:** F1 owns the check.\n\n"
+)
+
+
+def write_v2_chain(root, tier: str) -> dict:
+    """Write + v2-stamp the tier's three artifacts; return {bare_name: Path}."""
+    import approval_records as _ar
+    import blueprint_common as _bc
+
+    root = _Path(root)
+    (root / ".git").mkdir(parents=True, exist_ok=True)
+    if tier == "sdd":
+        d, names = root / "specs" / "feat-x", ("spec.md", "design.md", "tasks.md")
+    else:
+        d, names = root / "blueprint", ("SCOPE.md", "ARCHITECTURE.md", "PLAN.md")
+    d.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for bare in names:
+        body = f"# {bare}\n\n**PLAN feature identifier:** `n/a`\n\n## Objective\n\nx\n\n"
+        if bare == "PLAN.md":
+            body += _V2_CHAIN_CFC
+        text = _ensure_panel_review(
+            body + "## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+        )
+        if bare not in _TERMINAL_NAMES:
+            text = text.replace(
+                "### Latest pass detail",
+                "### Deferred dispositions\n\n<!-- none -->\n\n### Latest pass detail", 1,
+            )
+        text = add_converged_closing_row(text)
+        bindings = _bc.collect_upstream_bindings(d, bare) if bare in _bc.UPSTREAM_SETS else ()
+        if bindings:
+            text = _ar.upsert_binding_lines(text, bindings)
+        p = d / bare
+        p.write_text(text, encoding="utf-8")
+        stamp_under_basis(p, "v2")
+        out[bare] = p
     return out

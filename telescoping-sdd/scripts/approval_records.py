@@ -267,6 +267,26 @@ def display_arg(text: str) -> DisplayArg:
     return DisplayArg(shlex.quote(text), None)
 
 
+# Why display_arg refused a value, as operator text (moved from pending_review).
+DISPLAY_REASON_TEXT = {
+    "non-printable": "contains non-printable or unassigned characters",
+    "backtick": "contains a backtick",
+}
+
+
+def display_refusal_text(text: str, reason) -> str:
+    """The operator-facing reason `display_arg` refused `text`."""
+    return DISPLAY_REASON_TEXT.get(
+        reason, f"is {len(text)} characters, too long to print as a command"
+    )
+
+
+def positional_arg(rel: str) -> str:
+    """Positional target as printed: ``./<path>``, except the root ``.``, so a
+    name starting with ``-`` cannot read as a flag (moved from pending_review)."""
+    return "." if rel in ("", ".") else f"./{rel}"
+
+
 def display_text(text: str, *, max_len: Optional[int] = None) -> str:
     """AD8's character rule without quoting: ANSI removed, every replaced-category
     character becomes a space, so the result is one physical line. Truncated to
@@ -309,6 +329,12 @@ RESTAMP_CARVE_OUT_PREFIX = (
 SEAL_PART = "seal promotion ({ids})"
 BINDING_PART = "upstream binding refresh"
 REPAD_PART = "Trajectory table re-pad"
+# Unit F (C9): the basis-change part a v2/v1-stamp carve-out line gains, and the
+# producer-refresh part the migration line names (PLAN.md CFC sub-block).
+BASIS_CHANGE_PART = "hash basis {old} → {new}"
+PRODUCER_REFRESH_PART = "producer refresh"
+# Longest stamped basis label printed verbatim; longer labels are truncated.
+BASIS_LABEL_MAX = 16
 
 # The validator each tier's routes print.
 TIER_VALIDATOR_CMD = {

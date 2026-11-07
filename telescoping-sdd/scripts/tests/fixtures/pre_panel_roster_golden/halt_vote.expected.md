@@ -10,7 +10,7 @@ Golden fixture body.
 
 | Pass | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes                                                                                                                                                                        |
 |------|------------|-------|-------------|-----------|----------|--------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 1    | <DATE> | 2     | 0           | 0         | 0        | 1      | tags=d0u1c1; halt-and-rescope disposed; halt votes (n=2: testability-reviewer: contract cannot be tested as…; architect: spec criterion contradicts…); prov=ceb84a9dcf5a4427 |
+| 1    | <DATE> | 2     | 0           | 0         | 0        | 1      | tags=d0u1c1; halt-and-rescope disposed; halt votes (n=2: testability-reviewer: contract cannot be tested as…; architect: spec criterion contradicts…); prov=b88254bd5ea74271 |
 
 ### Sealed dispositions
 

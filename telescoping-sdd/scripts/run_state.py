@@ -49,7 +49,7 @@ from content_hash import (
     changed_since_stamp,
     compute_content_hash,
     has_approval,
-    is_basis_migration_only,
+    is_pure_basis_migration,
     read_stored_hash,
 )
 from pending_review import (
@@ -67,8 +67,10 @@ class HashStatus(str, Enum):
     """Per-artifact hash state.
 
     `NA` = not approved (no stamped hash to compare); `MATCHES` = stamped hash
-    coherent; `STALE` = genuine content drift (re-approval + panel re-review);
-    `STALE_MIGRATION` = costless v1->v2 basis re-stamp only (no re-review, AD4);
+    coherent; `STALE` = the hash moved (re-approve; a panel re-review is owed
+    unless `--approve` recognises the delta as a carve-out); `STALE_MIGRATION` =
+    a pure hash-basis migration (a v1 or v2 stamp, unedited since) — a costless
+    re-stamp only (no re-review, AD4);
     `DEGRADED` = the read failed / was ambiguous (cannot verify). A `str` Enum so
     a member renders as its lowercase-free name directly in text.
     """
@@ -275,10 +277,10 @@ def _read_artifact_text(path: Path) -> "Tuple[str, Optional[str]]":
 def _classify_hash(text: str) -> HashStatus:
     """MATCHES / STALE / STALE_MIGRATION for an already-approved artifact. [AD4]
 
-    Splits a stale result via `is_basis_migration_only` (whose own internal
-    `read_hash_basis == "v1"` gate makes a redundant outer basis check
-    unnecessary): a pure v1->v2 basis re-stamp reads STALE_MIGRATION (costless,
-    no re-review), genuine drift reads STALE (re-approval + panel re-review).
+    Splits a stale result via `is_pure_basis_migration` (Unit F: the same
+    predicate the validator FAIL and the approve-time arm use, so the three
+    cannot disagree): a pure basis migration of a v1 or v2 stamp reads
+    STALE_MIGRATION (costless, no re-review); any other drift reads STALE.
     Malformed `## Approval` hashes read STALE via `changed_since_stamp`'s
     fail-closed non-16-hex branch and never raise (AD8).
     """
@@ -286,7 +288,7 @@ def _classify_hash(text: str) -> HashStatus:
     new_hash = compute_content_hash(text)
     if not changed_since_stamp(new_hash, stored, text):
         return HashStatus.MATCHES
-    if is_basis_migration_only(
+    if is_pure_basis_migration(
         original_content=text,
         stored_hash=stored,
         content_trimmed=trim_trajectory_table(text),
@@ -477,8 +479,8 @@ def derive_run_state(
     """Derive the run-state summary read-only from disk. [I1; AD11-L1]
 
     Reads each artifact via `resolve_artifact` + a degraded-read-guarded raw
-    read, computes approved/hash status (splitting a v1->v2 basis migration from
-    genuine drift, AD4), derives the current phase (AD3), sets the Phase-4
+    read, computes approved/hash status (splitting a pure hash-basis migration
+    from genuine drift, AD4), derives the current phase (AD3), sets the Phase-4
     tick_hint (AD6), and reads the pending-review marker via the STRICT path.
     Performs the REAL per-primitive catches (Layer 1) so no reachable read
     exception propagates; never mutates any file; imports only shared leaves
@@ -497,7 +499,7 @@ def derive_run_state(
 
     # AD6 Phase-4 tick hint: only when the tier HAS a Phase 4 (terminal label),
     # we are at that terminal phase (all artifacts approved), and the tick-hint
-    # artifact is STALE (genuine drift) — never STALE_MIGRATION (a v1->v2 basis
+    # artifact is STALE (genuine drift) — never STALE_MIGRATION (a hash-basis
     # migration is not task-ticks).
     if (
         tick_hint_artifact is not None
@@ -589,7 +591,7 @@ def _artifact_next_action(a: ArtifactState) -> str:
     """The per-artifact next-action, derived HERE from `hash_status` (AD4) — the
     two stale labels MUST render DISTINCT next-actions, never one generic line."""
     if a.hash_status == HashStatus.STALE:
-        return "re-approval + panel re-review"
+        return "run --approve; a panel re-review is owed unless --approve reports otherwise"
     if a.hash_status == HashStatus.STALE_MIGRATION:
         return "re-stamp only — no panel re-review"
     if a.hash_status == HashStatus.DEGRADED:

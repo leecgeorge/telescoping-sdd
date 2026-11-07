@@ -10,7 +10,7 @@ Golden fixture body.
 
 | Pass | Date       | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes                              |
 |------|------------|-------|-------------|-----------|----------|--------|------------------------------------|
-| 1    | <DATE> | 1     | 0           | 2         | 0        | 1      | tags=d1u0c0; prov=781727aec2a9bf58 |
+| 1    | <DATE> | 1     | 0           | 2         | 0        | 1      | tags=d1u0c0; prov=689918667f2f9d2d |
 
 ### Sealed dispositions
 

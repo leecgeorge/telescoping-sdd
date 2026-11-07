@@ -6,6 +6,7 @@ archive_pass.py.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -3147,9 +3148,39 @@ def test_provenance_golden_hand_computed_literal(tmp_path):
     art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
     assert _run_archive_pass([str(art)]).returncode == 0
     text = art.read_text(encoding="utf-8")
-    # Data rows are hash-excluded and the Date cell is fixed-width, so this
-    # literal is independent of the archive date.
-    assert tr.read_provenance_hash(_last_row_notes(text)) == "b9d3c048042f12dd"
+    # Spec SEAL-16 / AC-5.4: the expected v3 HASHED TEXT, written by hand from
+    # R1's rules (data rows stripped; the Trajectory header and separator in
+    # canonical form, so the archive's re-padding and the archive date are both
+    # irrelevant) — never copied from observed output. Its sha256 prefix is the
+    # literal below, and the archived prov= must equal it.
+    hashed_text = (
+        "# Doc\n\n## Panel Review\n\n### Trajectory\n\n"
+        "|Pass|Date|HIGHs|Regressions|Addressed|Deferred|Sealed|Notes|\n|-|-|-|-|-|-|-|-|\n\n"
+        "### Sealed dispositions\n\n_None yet._\n\n### Deferred dispositions\n\n"
+        "<!-- Auto-populated by archive_pass.py when a Deferred-disposed row is promoted; "
+        "remains empty until first deferral. -->\n\n"
+        "### Latest pass detail\n\n| Severity | Source | Concern | Disposition | Notes |\n"
+        "|----------|--------|---------|-------------|-------|\n\n"
+        "## Approval\n\n- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`"
+    )
+    literal = "8edbf34ebbf684e5"
+    assert hashlib.sha256(hashed_text.encode("utf-8")).hexdigest()[:16] == literal
+    assert tr.read_provenance_hash(_last_row_notes(text)) == literal
+
+
+def test_archive_prov_is_v3_hash_of_written_file(tmp_path):
+    """AC-4.3: a widening archive on a padded table stamps prov= as the CURRENT
+    (v3) hash of the file it writes, which differs from the frozen-v2 hash."""
+    _load_archive_pass()
+    import content_hash as ch
+
+    tr = _load_trajectory()
+    art = _artifact_with_latest(tmp_path, "| [MED] | critic | minor | Addressed | fixed |\n")
+    assert _run_archive_pass([str(art)]).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    prov = tr.read_provenance_hash(_last_row_notes(text))
+    assert prov == ch.compute_content_hash(text)
+    assert prov != ch.compute_content_hash_v2(text)
 
 
 def test_halt_and_rescope_disposition_appends_halt_stamp(tmp_path):
@@ -3313,6 +3344,10 @@ def test_restamp_provenance_recomputes_newest_token():
 # Unit C (T4): omitted-roster golden captured from the pre-feature script
 # (c02b8fd, v2.27.1). Without `--panel-roster`, artifact bytes, stdout and
 # stderr must stay identical to it (spec R5 / Success Criteria no-regression).
+# Unit F (T8): the five `*.expected.md` were re-captured under hash basis v3 and
+# differ from the c02b8fd capture ONLY in `prov=` (AC-5.4). To confirm, per case:
+#   diff <(git show "$(git merge-base HEAD main)":<file> | sed -E 's/prov=[0-9a-f]{16}/prov=X/g') \
+#        <(sed -E 's/prov=[0-9a-f]{16}/prov=X/g' <file>)
 # ---------------------------------------------------------------------------
 
 _GOLDEN_DIR = (
@@ -3361,6 +3396,33 @@ def test_omitted_roster_matches_pre_feature_golden(tmp_path, case):
     assert _golden_norm(result, artifact) == expected("expected.md")
     assert _golden_norm(proc.stdout, artifact) == expected("stdout.txt")
     assert _golden_norm(proc.stderr, artifact) == expected("stderr.txt")
+
+
+@pytest.mark.parametrize("case", sorted(_GOLDEN_CASES))
+def test_pre_panel_roster_goldens_prov_equals_v3_hash_of_placeholdered_file(case):
+    """The PERMANENT check (Unit F T8): each golden's prov= is the current-basis
+    hash of the golden with its own prov= placeholdered. It proves AC-4.3 (archive
+    stamps the v3 hash of what it wrote), not that the golden is correct."""
+    _load_archive_pass()
+    import content_hash as ch
+
+    tr = _load_trajectory()
+    text = (_GOLDEN_DIR / f"{case}.expected.md").read_text(encoding="utf-8")
+    prov = tr.read_provenance_hash(_last_row_notes(text))
+    assert prov is not None
+    assert ch.compute_content_hash(text.replace(f"prov={prov}", "prov=" + "0" * 16)) == prov
+
+
+def test_phase2_golden_canonical_rows_hand_written():
+    """DRK6's independent oracle: phase2.expected.md's Trajectory header and
+    separator rows, canonicalised, equal literals written by hand from R1."""
+    tr = _load_trajectory()
+    text = (_GOLDEN_DIR / "phase2.expected.md").read_text(encoding="utf-8")
+    lines = tr.canonicalize_trajectory_header_rows(text).split("\n")
+    i = lines.index("### Trajectory")
+    hdr = next(j for j in range(i + 1, len(lines)) if lines[j].startswith("|"))
+    assert lines[hdr] == "|Pass|Date|HIGHs|Regressions|Addressed|Deferred|Sealed|Notes|"
+    assert lines[hdr + 1] == "|-|-|-|-|-|-|-|-|"
 
 
 # ---------------------------------------------------------------------------
@@ -4054,21 +4116,6 @@ def test_prefixed_roster_names_are_stripped(tmp_path):
     assert _norm_date(a.read_text(encoding="utf-8")) == _norm_date(b.read_text(encoding="utf-8"))
 
 
-def _traj_canonical(text: str) -> str:
-    """Canonicalise the `### Trajectory` column-header and separator rows:
-    header cells trimmed, each separator cell reduced to a single `-` (spec R4)."""
-    lines = text.split("\n")
-    i = lines.index("### Trajectory")
-    hdr = next(j for j in range(i + 1, len(lines)) if lines[j].startswith("|"))
-    for j in (hdr, hdr + 1):
-        cells = lines[j].strip()[1:-1].split("|")
-        if j == hdr:
-            lines[j] = "|" + "|".join(c.strip() for c in cells) + "|"
-        else:
-            lines[j] = "|" + "|".join("-" for _ in cells) + "|"
-    return "\n".join(lines)
-
-
 def _archive_pair(tmp_path: Path, rows: str, traj_rows: str = "") -> list:
     """Archive two identical approved v2 copies, with and without the roster."""
     _load_archive_pass()  # puts the scripts dir on sys.path
@@ -4088,28 +4135,35 @@ def _archive_pair(tmp_path: Path, rows: str, traj_rows: str = "") -> list:
 
 
 def test_panel_token_hash_neutral_as_data_row_on_widening_fixture(tmp_path):
-    """Spec R4 / spec [SEAL-32], widening fixture: the token is hash-neutral as
-    Trajectory data-row content, and the pre-existing header re-pad leak is
-    documented by the hash INEQUALITY below. When the future hash-basis fix
-    lands this inequality is expected to fail: flip it to equality, do not
-    delete it."""
+    """Spec R4 / spec [SEAL-32], AC-5.1/5.2 — the R5 tripwire, FLIPPED by Unit F.
+
+    The widening fixture's `panel=` token widens Notes, so archive_pass.py
+    re-pads the Trajectory header and separator rows. Under basis v2 that re-pad
+    moved the hash (the documented leak this test used to pin as an
+    inequality). Hash basis v3 closes the leak: the header and separator rows
+    are hashed in canonical form, so the two archived copies hash EQUAL.
+    """
     import content_hash as ch
 
     with_r, without_r = _archive_pair(
         tmp_path, "| [HIGH] | architect | [contract] c | Sealed | Defense: d |\n"
     )
-    a, b = ch.content_for_hashing(with_r), ch.content_for_hashing(without_r)
-    # Non-vacuous: un-canonicalised outputs differ, and only in two rows.
-    diff = [i for i, (x, y) in enumerate(zip(a.split("\n"), b.split("\n"))) if x != y]
-    assert len(a.split("\n")) == len(b.split("\n"))
-    assert len(diff) == 2, diff
-    hdr = a.split("\n")[diff[0]]
-    assert hdr.lstrip().startswith("| Pass"), hdr
-    assert diff[1] == diff[0] + 1
-    # Canonicalised equality: the data-row content contributes nothing.
-    assert _traj_canonical(a) == _traj_canonical(b)
-    # The documented leak (tripwire).
-    assert ch.compute_content_hash(with_r) != ch.compute_content_hash(without_r)
+
+    def _traj_header_rows(text: str) -> list:
+        lines = text.split("\n")
+        i = lines.index("### Trajectory")
+        hdr = next(j for j in range(i + 1, len(lines)) if lines[j].startswith("|"))
+        return lines[hdr:hdr + 2]
+
+    # Non-vacuous (AC-5.2): the RAW header and separator rows really differ ...
+    raw_with, raw_without = _traj_header_rows(with_r), _traj_header_rows(without_r)
+    assert raw_with[0] != raw_without[0] and raw_with[1] != raw_without[1]
+    assert raw_with[0].lstrip().startswith("| Pass"), raw_with
+    # ... and the frozen v2 basis still sees the leak.
+    assert ch.compute_content_hash_v2(with_r) != ch.compute_content_hash_v2(without_r)
+    # Under v3 the hashed texts are equal (the data-row token contributes nothing).
+    assert ch.content_for_hashing(with_r) == ch.content_for_hashing(without_r)
+    assert ch.compute_content_hash(with_r) == ch.compute_content_hash(without_r)
 
 
 def test_panel_token_hash_equal_on_non_widening_fixture(tmp_path):
