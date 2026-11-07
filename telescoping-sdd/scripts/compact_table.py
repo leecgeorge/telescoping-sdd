@@ -166,12 +166,14 @@ def validate_compact_table(text: str, *, phase: int) -> List[str]:
         if is_high:
             if not anchors:
                 violations.append(f"data row {n}: ANCHOR-REFS empty on a HIGH row")
-            if not source:
-                violations.append(f"data row {n}: SOURCE empty on a HIGH row")
             if not disposition:
                 violations.append(
                     f"data row {n}: DISPOSITION-PROPOSAL empty on a HIGH row"
                 )
+
+        # SOURCE non-empty on every row (R10), whatever the row's severity.
+        if not source:
+            violations.append(f"data row {n}: SOURCE empty (required on every row)")
 
         # FIX-INSTRUCTION non-empty when the proposal base is Addressed (LOW-4).
         if is_high and disposition_base(disposition) == "Addressed" and not fix:

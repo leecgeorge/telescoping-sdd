@@ -241,3 +241,57 @@ def test_validate_discrepancy_list_empty_list_distinct_from_clean_sentinel():
     never sees)."""
     ct = _load()
     assert ct.validate_discrepancy_list([]) == []
+
+
+# --- R10: SOURCE required on every row (Unit C, AD3) ----------------------
+
+
+def test_validate_compact_table_rejects_empty_source_on_med_row():
+    ct = _load()
+    v = ct.validate_compact_table(
+        _table(_row(severity="[MED]", source="  ")), phase=2
+    )
+    assert any("SOURCE empty" in m and "data row 1" in m for m in v), v
+    assert any("data row 1: SOURCE empty (required on every row)" == m for m in v), v
+
+
+def test_validate_compact_table_rejects_empty_source_on_low_row():
+    ct = _load()
+    v = ct.validate_compact_table(
+        _table(_row(severity="[LOW]", source="")), phase=2
+    )
+    assert "data row 1: SOURCE empty (required on every row)" in v, v
+
+
+def test_validate_compact_table_reports_empty_source_alongside_malformed_severity():
+    ct = _load()
+    v = ct.validate_compact_table(
+        _table(_row(severity="[CRIT]", source="")), phase=2
+    )
+    assert any("SEVERITY" in m for m in v), v
+    assert "data row 1: SOURCE empty (required on every row)" in v, v
+
+
+def test_validate_compact_table_accepts_med_row_with_populated_source():
+    ct = _load()
+    assert ct.validate_compact_table(
+        _table(_row(severity="[MED]", source="architect")), phase=2
+    ) == []
+
+
+def test_validate_compact_table_anchor_refs_stays_high_only():
+    ct = _load()
+    v = ct.validate_compact_table(
+        _table(_row(severity="[MED]", anchors="")), phase=2
+    )
+    assert not any("ANCHOR-REFS empty" in m for m in v), v
+
+
+def test_validate_compact_table_disposition_proposal_empty_stays_high_only():
+    ct = _load()
+    v = ct.validate_compact_table(
+        _table(_row(severity="[MED]", disposition="", fix="")), phase=2
+    )
+    assert not any("DISPOSITION-PROPOSAL empty" in m for m in v), v
+    # The out-of-vocabulary check on an empty proposal still fires, as today.
+    assert any("out-of-vocabulary" in m for m in v), v

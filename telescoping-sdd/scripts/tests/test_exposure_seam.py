@@ -60,8 +60,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.27.1"
-CHANGELOG_FIRST_ENTRY = "## 2.27.1 — The approval gates now hold the lines they claimed"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.28.0"
+CHANGELOG_FIRST_ENTRY = "## 2.28.0 — Trust the instrument first"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):

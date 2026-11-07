@@ -3307,3 +3307,827 @@ def test_restamp_provenance_recomputes_newest_token():
     assert fixed.replace(row, "") == edited.replace(
         [ln for ln in edited.splitlines() if ln.startswith("| 1 ")][0], ""
     )
+
+
+# ---------------------------------------------------------------------------
+# Unit C (T4): omitted-roster golden captured from the pre-feature script
+# (c02b8fd, v2.27.1). Without `--panel-roster`, artifact bytes, stdout and
+# stderr must stay identical to it (spec R5 / Success Criteria no-regression).
+# ---------------------------------------------------------------------------
+
+_GOLDEN_DIR = (
+    _REPO_ROOT / "telescoping-sdd" / "scripts" / "tests" / "fixtures"
+    / "pre_panel_roster_golden"
+)
+_GOLDEN_CASES = {
+    "phase1": ("01_spec.md", ["--phase", "1"]),
+    "strict_bar": ("01_spec.md", ["--phase", "1", "--strict-bar"]),
+    "phase2": ("02_design.md", ["--phase", "2"]),
+    "phase3": ("03_tasks.md", ["--phase", "3", "--terminal"]),
+    "halt_vote": ("02_design.md", ["--phase", "2"]),
+}
+_GOLDEN_DATE_RE = re.compile(r"^(\|\s*\d+\s*\|\s*)\d{4}-\d{2}-\d{2}", re.MULTILINE)
+
+
+def _golden_norm(text: str, artifact: Path) -> str:
+    """Normalise the artifact path and the new Trajectory row's date — the
+    same normalisation applied at capture time; `prov=` is kept verbatim."""
+    return _GOLDEN_DATE_RE.sub(r"\1<DATE>", text.replace(str(artifact), "<ARTIFACT>"))
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("case", sorted(_GOLDEN_CASES))
+def test_omitted_roster_matches_pre_feature_golden(tmp_path, case):
+    name, flags = _GOLDEN_CASES[case]
+    source = (_GOLDEN_DIR / f"{case}.input.md").read_text(encoding="utf-8")
+    spec_dir = tmp_path / "specs" / "F1-x"
+    spec_dir.mkdir(parents=True)
+    artifact = spec_dir / name
+    artifact.write_text(source, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(_ARCHIVE_PASS), str(artifact), *flags],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    result = artifact.read_text(encoding="utf-8")
+    assert result != source, "archive left the artifact unchanged"
+    expected = lambda suffix: (_GOLDEN_DIR / f"{case}.{suffix}").read_text(  # noqa: E731
+        encoding="utf-8"
+    )
+    assert _golden_norm(result, artifact) == expected("expected.md")
+    assert _golden_norm(proc.stdout, artifact) == expected("stdout.txt")
+    assert _golden_norm(proc.stderr, artifact) == expected("stderr.txt")
+
+
+# ---------------------------------------------------------------------------
+# Unit C (T5): roster, tier and order-check helpers; [SELF-CHECK] factoring
+# (design CP4, AD8, AD10, AD12, DM2, DM5, I1, I2, I3, I5)
+# ---------------------------------------------------------------------------
+
+_PANEL_REVIEW_COPIES = {
+    "sdd": (
+        _REPO_ROOT / "telescoping-sdd/skills/spec-driven-dev/references/panel-review.md",
+        ("Specify", "Design", "Tasks"),
+    ),
+    "blueprint": (
+        _REPO_ROOT / "telescoping-sdd/skills/project-blueprint/references/panel-review.md",
+        ("Scope", "Architecture", "Plan"),
+    ),
+}
+_SDD_P2 = ("architect", "testability-reviewer", "security-reviewer")
+_SHARED_P1 = ("user-advocate", "devils-advocate", "pragmatist")
+_SHARED_P3 = ("delivery-manager", "critic", "simplifier")
+
+
+def _parsed_panelists_per_phase(path: Path, labels) -> dict:
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"^## Panelists per phase\n(.*?)(?=^## )", text, re.MULTILINE | re.DOTALL)
+    assert m, path
+    out = {}
+    for phase, label in enumerate(labels, start=1):
+        line = re.search(rf"^- \*\*{label}:\*\* (.+)$", m.group(1), re.MULTILINE)
+        assert line, (path, label)
+        names = re.findall(r"`telescoping-sdd:([^`]+)`", line.group(1))
+        out[phase] = tuple(names)
+    return out
+
+
+def test_canonical_rosters_match_panelists_per_phase_both_tiers():
+    ap = _load_archive_pass()
+    assert len(ap.CANONICAL_ROSTERS) == 6
+    for tier, (path, labels) in _PANEL_REVIEW_COPIES.items():
+        for phase, names in _parsed_panelists_per_phase(path, labels).items():
+            assert tuple(ap.CANONICAL_ROSTERS[(tier, phase)]) == names, (tier, phase)
+
+
+def test_artifact_stems_map_every_known_stem():
+    ap = _load_archive_pass()
+    expected = {
+        "SCOPE": "blueprint", "ARCHITECTURE": "blueprint", "PLAN": "blueprint",
+        "spec": "sdd", "design": "sdd", "tasks": "sdd",
+        "tasks-python": "sdd", "tasks-java": "sdd",
+    }
+    assert set(ap.ARTIFACT_STEMS) == set(expected)
+    for stem, tier in expected.items():
+        assert ap.artifact_tier(Path(f"specs/F1-x/{stem}.md")) == tier, stem
+        assert ap.artifact_tier(Path(f"specs/F1-x/03_{stem}.md")) == tier, stem
+    assert ap.ARTIFACT_STEMS["PLAN"] == ("blueprint", 3)
+    assert ap.ARTIFACT_STEMS["tasks-java"] == ("sdd", 3)
+    assert ap.ARTIFACT_STEMS["design"] == ("sdd", 2)
+
+
+def test_artifact_tier_returns_none_for_unknown_stem():
+    ap = _load_archive_pass()
+    assert ap.artifact_tier(Path("notes.md")) is None
+    assert ap.artifact_tier(Path("01_notes.md")) is None
+
+
+def test_normalize_panelist_name_strips_whitespace_and_one_prefix_keeps_case():
+    ap = _load_archive_pass()
+    assert ap.PANELIST_PREFIX == "telescoping-sdd:"
+    assert ap._normalize_panelist_name("  critic ") == "critic"
+    assert ap._normalize_panelist_name("telescoping-sdd:critic") == "critic"
+    assert ap._normalize_panelist_name(" telescoping-sdd:Critic ") == "Critic"
+    assert (
+        ap._normalize_panelist_name("telescoping-sdd:telescoping-sdd:critic")
+        == "telescoping-sdd:critic"
+    )
+
+
+def test_parse_panel_roster_flattens_comma_repeated_and_mixed_forms():
+    ap = _load_archive_pass()
+    for values in (["a,b,c"], ["a", "b", "c"], ["a,b", "c"], [" a , b ", "c"]):
+        assert ap.parse_panel_roster(values) == ["a", "b", "c"], values
+
+
+def test_parse_panel_roster_drops_empty_elements():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_roster(["a,,b"]) == ["a", "b"]
+    assert ap.parse_panel_roster(["a,b,c,"]) == ["a", "b", "c"]
+    assert ap.parse_panel_roster(["architect,"]) == ["architect"]
+    assert ap.parse_panel_roster(["a", "", "b"]) == ["a", "b"]
+
+
+def test_parse_panel_roster_returns_none_when_absent_or_empty():
+    ap = _load_archive_pass()
+    for values in (None, [], [""], [","], ["", ","]):
+        assert ap.parse_panel_roster(values) is None, values
+
+
+def test_parse_panel_roster_prefixed_and_bare_same_name_form_duplicate():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_roster(["telescoping-sdd:critic,critic"]) == ["critic", "critic"]
+    assert ap.parse_panel_roster(["Critic"]) == ["Critic"]  # case kept
+
+
+def test_is_self_check_detects_marker():
+    ap = _load_archive_pass()
+    assert ap._is_self_check({"Source": "[SELF-CHECK] (b)"}) is True
+    assert ap._is_self_check({"Source": "architect"}) is False
+    assert ap._is_self_check({}) is False
+
+
+def test_is_panel_tagged_high_truth_table_unchanged():
+    ap = _load_archive_pass()
+    assert ap._is_panel_tagged_high({"Severity": "[HIGH]", "Source": "architect"}) is True
+    assert ap._is_panel_tagged_high({"Severity": "[HIGH]", "Source": "[SELF-CHECK] (a)"}) is False
+    assert ap._is_panel_tagged_high({"Severity": "[MED]", "Source": "architect"}) is False
+
+
+def test_check_roster_order_returns_none_for_canonical_roster():
+    ap = _load_archive_pass()
+    assert ap.check_roster_order(list(_SDD_P2), "sdd", 2) is None
+    assert ap.check_roster_order(
+        ["architect", "ops-reviewer", "security-reviewer"], "blueprint", 2
+    ) is None
+    assert ap.check_roster_order(list(_SHARED_P1), "blueprint", 1) is None
+    assert ap.check_roster_order(list(_SHARED_P3), "sdd", 3) is None
+
+
+def test_check_roster_order_transposed_names_both_orders():
+    ap = _load_archive_pass()
+    given = ["testability-reviewer", "architect", "security-reviewer"]
+    w = ap.check_roster_order(given, "sdd", 2)
+    assert w == (
+        "warning: panel= not stamped — --panel-roster "
+        "testability-reviewer,architect,security-reviewer does not match the "
+        "canonical sdd Phase 2 order architect,testability-reviewer,security-reviewer "
+        "(## Panelists per phase)."
+    ), w
+
+
+def test_check_roster_order_flags_non_permutation_and_wrong_length():
+    ap = _load_archive_pass()
+    assert ap.check_roster_order(["architect", "ops-reviewer", "security-reviewer"], "sdd", 2)
+    assert ap.check_roster_order(["architect", "testability-reviewer"], "sdd", 2)
+    assert ap.check_roster_order([*_SDD_P2, "critic"], "sdd", 2)
+
+
+def test_check_roster_order_flags_duplicate_name():
+    ap = _load_archive_pass()
+    w = ap.check_roster_order(["a", "a", "b"], "sdd", 1)
+    assert w and "--panel-roster a,a,b" in w, w
+
+
+def test_check_roster_order_unknown_tier_phase1_and_3_uses_shared():
+    ap = _load_archive_pass()
+    assert ap.check_roster_order(list(_SHARED_P1), None, 1) is None
+    assert ap.check_roster_order(list(_SHARED_P3), None, 3) is None
+    w = ap.check_roster_order(["critic", "delivery-manager", "simplifier"], None, 3)
+    assert w and "canonical shared Phase 3 order" in w, w
+
+
+def test_check_roster_order_unknown_tier_phase2_is_silent():
+    ap = _load_archive_pass()
+    for roster in (["a"], ["a", "b", "c"], ["a", "b", "c", "d"], ["a", "a", "b"]):
+        assert ap.check_roster_order(roster, None, 2) is None, roster
+
+
+# ---------------------------------------------------------------------------
+# Unit C (T6): panel= counting, formatting and parsing (AD11, DM1, I4, I6)
+# ---------------------------------------------------------------------------
+
+_ROSTER3 = ["architect", "testability-reviewer", "security-reviewer"]
+_PROV = "prov=0123456789abcdef"
+
+
+def _r(sev="[HIGH]", src="architect", disp="Addressed", concern="c"):
+    return {"Severity": sev, "Source": src, "Concern": concern,
+            "Disposition": disp, "Notes": "n"}
+
+
+def test_severity_bucket_maps_each_core_tag():
+    ap = _load_archive_pass()
+    assert ap._severity_bucket("[HIGH]") == 0
+    assert ap._severity_bucket("[MED]") == 1
+    assert ap._severity_bucket("[LOW]") == 2
+    assert ap._severity_bucket("") is None
+    assert ap._severity_bucket("[REGRESSION]") is None
+
+
+def test_severity_bucket_accepts_every_validate_row_high_form():
+    ap = _load_archive_pass()
+    for cell in ("[HIGH]", "[HIGH] [REGRESSION]", "[REGRESSION] [HIGH]",
+                 "[HIGH][REGRESSION]", "  [HIGH]  "):
+        assert ap._severity_bucket(cell) == 0, cell
+        counts, _ = ap.count_panel_yield([_r(sev=cell)], _ROSTER3)
+        assert counts == [(1, 0, 0), (0, 0, 0), (0, 0, 0)], cell
+
+
+def test_count_panel_yield_single_source_increments_its_seat():
+    ap = _load_archive_pass()
+    rows = [_r("[HIGH]", "architect"), _r("[MED]", "testability-reviewer"),
+            _r("[LOW]", "security-reviewer"), _r("[LOW]", "security-reviewer")]
+    counts, unrec = ap.count_panel_yield(rows, _ROSTER3)
+    assert counts == [(1, 0, 0), (0, 1, 0), (0, 0, 2)]
+    assert all(isinstance(c, tuple) for c in counts)
+    assert unrec == []
+
+
+def test_count_panel_yield_merged_row_increments_nobody():
+    ap = _load_archive_pass()
+    counts, unrec = ap.count_panel_yield(
+        [_r("[HIGH]", "architect, security-reviewer")], _ROSTER3
+    )
+    assert counts == [(0, 0, 0)] * 3 and unrec == []
+
+
+def test_count_panel_yield_excludes_self_check_at_every_severity():
+    ap = _load_archive_pass()
+    rows = [_r(sev, "[SELF-CHECK] (b)") for sev in ("[HIGH]", "[MED]", "[LOW]")]
+    counts, unrec = ap.count_panel_yield(rows, _ROSTER3)
+    assert counts == [(0, 0, 0)] * 3 and unrec == []
+
+
+def test_count_panel_yield_ignores_disposition():
+    ap = _load_archive_pass()
+    rows = [_r(disp=d) for d in ("Addressed", "Sealed", "Halt and re-scope",
+                                 "Deferred → design.md", "")]
+    counts, _ = ap.count_panel_yield(rows, _ROSTER3)
+    assert counts[0] == (5, 0, 0)
+
+
+def test_count_panel_yield_reports_unrecognised_and_empty_source():
+    ap = _load_archive_pass()
+    rows = [_r(src="critic"), _r(src=""), _r(src="architect, critic")]
+    counts, unrec = ap.count_panel_yield(rows, _ROSTER3)
+    assert counts == [(0, 0, 0)] * 3
+    assert unrec == [("critic", "critic"), ("", ""), ("architect, critic", "critic")]
+
+
+def test_count_panel_yield_dedupes_unrecognised_pairs_in_first_seen_order():
+    ap = _load_archive_pass()
+    rows = [_r(src="zeta"), _r(src="alpha"), _r(src="zeta"), _r(src="alpha")]
+    _, unrec = ap.count_panel_yield(rows, _ROSTER3)
+    assert unrec == [("zeta", "zeta"), ("alpha", "alpha")]
+
+
+def test_count_panel_yield_duplicate_roster_first_seat_wins():
+    ap = _load_archive_pass()
+    counts, _ = ap.count_panel_yield([_r(src="a"), _r("[MED]", "a")], ["a", "a", "b"])
+    assert counts == [(1, 1, 0), (0, 0, 0), (0, 0, 0)]
+
+
+def test_count_panel_yield_prefixed_and_bare_source_names_increment_nobody():
+    ap = _load_archive_pass()
+    counts, unrec = ap.count_panel_yield(
+        [_r(src="telescoping-sdd:critic, critic")], ["delivery-manager", "critic", "simplifier"]
+    )
+    assert counts == [(0, 0, 0)] * 3 and unrec == []
+
+
+def test_count_panel_yield_trailing_comma_source_is_single_name():
+    ap = _load_archive_pass()
+    counts, unrec = ap.count_panel_yield([_r(src="architect,")], _ROSTER3)
+    assert counts[0] == (1, 0, 0) and unrec == []
+
+
+def test_count_panel_yield_comma_only_source_is_empty_source():
+    ap = _load_archive_pass()
+    counts, unrec = ap.count_panel_yield([_r(src=",")], _ROSTER3)
+    assert counts == [(0, 0, 0)] * 3
+    assert unrec == [(",", "")]
+
+
+def test_count_panel_yield_degenerate_cells_do_not_raise():
+    ap = _load_archive_pass()
+    rows = [{}, {"Severity": ""}, {"Severity": "[HIGH]", "Source": "   "},
+            {"Severity": "[MED]", "Source": ","}, {"Source": "architect,"},
+            {"Severity": "[LOW]", "Source": "architect", "Concern": "", "Disposition": ""}]
+    counts, unrec = ap.count_panel_yield(rows, _ROSTER3)
+    assert len(counts) == 3
+    assert counts[0] == (0, 0, 1)
+
+
+def test_format_panel_summary_joins_groups_with_commas():
+    ap = _load_archive_pass()
+    assert ap.format_panel_summary([(2, 1, 0), (0, 0, 1)]) == "2.1.0,0.0.1"
+    assert ap.format_panel_summary([(0, 0, 0)]) == "0.0.0"
+
+
+def test_parse_panel_summary_plain_token():
+    ap = _load_archive_pass()
+    got = ap.parse_panel_summary("panel=2.1.0,0.0.1,3.0.0")
+    assert got == [(2, 1, 0), (0, 0, 1), (3, 0, 0)]
+    assert all(isinstance(g, tuple) and all(isinstance(n, int) for n in g) for g in got)
+
+
+def test_parse_panel_summary_after_preceding_part():
+    ap = _load_archive_pass()
+    notes = f"converged (0 unresolved HIGH); sealed=1; panel=1.0.0,0.0.0,0.0.0; {_PROV}"
+    assert ap.parse_panel_summary(notes) == [(1, 0, 0), (0, 0, 0), (0, 0, 0)]
+    assert ap.parse_panel_summary(f"strict-bar pass; panel=0.0.0; {_PROV}") == [(0, 0, 0)]
+
+
+def test_parse_panel_summary_followed_by_tags_and_prov():
+    ap = _load_archive_pass()
+    notes = f"panel=1.2.3,0.0.0,4.5.6; tags=d0u1c2; {_PROV}"
+    assert ap.parse_panel_summary(notes) == [(1, 2, 3), (0, 0, 0), (4, 5, 6)]
+    assert ap.parse_tag_summary(notes) == {"detail": 0, "upstream": 1, "contract": 2}
+
+
+def test_parse_panel_summary_does_not_consume_raised_token():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_summary("panel=1.0.0; raised=5/1/2") == [(1, 0, 0)]
+
+
+def test_parse_panel_summary_with_trailing_upstream_panel_tag():
+    ap = _load_archive_pass()
+    notes = f"panel=1.0.0,0.1.0,0.0.1; {_PROV}; upstream-panel 0badc0de"
+    assert ap.parse_panel_summary(notes) == [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+
+
+def test_parse_panel_summary_row_without_prov_parses():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_summary("panel=1.0.0,0.0.0,0.0.2; tags=d0u0c1") == [
+        (1, 0, 0), (0, 0, 0), (0, 0, 2)]
+
+
+def test_parse_panel_summary_ignores_token_inside_halt_vote_text():
+    ap = _load_archive_pass()
+    forged = f"tags=d0u1c0; halt vote (critic: panel=1.0.0 is fine); {_PROV}"
+    assert ap.parse_panel_summary(forged) is None
+    real = (f"panel=0.0.2,0.0.0,0.0.0; tags=d0u1c0; "
+            f"halt votes (n=1: critic: panel=9.9.9 quoted); {_PROV}")
+    assert ap.parse_panel_summary(real) == [(0, 0, 2), (0, 0, 0), (0, 0, 0)]
+
+
+def test_parse_panel_summary_rejects_trailing_character():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_summary("panel=1.0.0x") is None
+    assert ap.parse_panel_summary("panel=1.0.0, 2.0.0") is None
+    assert ap.parse_panel_summary("xpanel=1.0.0") is None
+
+
+def test_parse_panel_summary_returns_none_without_token():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_summary("—") is None
+    assert ap.parse_panel_summary(f"tags=d0u0c1; {_PROV}") is None
+    assert ap.parse_panel_summary("") is None
+
+
+def test_parse_panel_summary_rejects_ten_digit_number():
+    ap = _load_archive_pass()
+    assert ap.parse_panel_summary("panel=1234567890.0.0") is None
+    assert ap.parse_panel_summary("panel=999999999.0.0") == [(999999999, 0, 0)]
+
+
+def test_panel_summary_round_trip():
+    ap = _load_archive_pass()
+    for c in ([(0, 0, 0)], [(1, 2, 3), (0, 0, 0), (4, 5, 6)], [(12, 0, 305)],
+              [(999999999, 0, 999999999)]):
+        assert ap.parse_panel_summary(f"panel={ap.format_panel_summary(c)}") == c
+
+
+# ---------------------------------------------------------------------------
+# Unit C (T7): --panel-roster wired into main() (CP4, AD9, AD11, I8, DM5)
+# ---------------------------------------------------------------------------
+
+_SDD2 = "architect,testability-reviewer,security-reviewer"
+_SDD1 = "user-advocate,devils-advocate,pragmatist"
+_SDD3 = "delivery-manager,critic,simplifier"
+
+
+def _c_doc(latest: str, *, deferred_section: bool = True, approved_hash: str = "",
+           traj_rows: str = "") -> str:
+    d = (
+        "### Deferred dispositions\n\n"
+        "<!-- Auto-populated by archive_pass.py when a Deferred-disposed row is "
+        "promoted; remains empty until first deferral. -->\n\n"
+    ) if deferred_section else ""
+    approval = (
+        "- [x] Approved to proceed to next phase\n"
+        f"- **Content Hash:** `{approved_hash}`\n- **Hash basis:** v2\n"
+        if approved_hash else
+        "- [ ] Approved to proceed to next phase\n- **Content Hash:** `pending`\n"
+    )
+    return (
+        "# Doc\n\n## Objective\n\nBody.\n\n## Panel Review\n\n### Trajectory\n\n"
+        "| Pass | Date | HIGHs | Regressions | Addressed | Deferred | Sealed | Notes |\n"
+        "|------|------|-------|-------------|-----------|----------|--------|-------|\n"
+        f"{traj_rows}\n"
+        "### Sealed dispositions\n\n_None yet._\n\n"
+        f"{d}"
+        "### Latest pass detail\n\n"
+        "| Severity | Source | Concern | Disposition | Notes |\n"
+        "|----------|--------|---------|-------------|-------|\n"
+        f"{latest}\n## Approval\n\n{approval}"
+    )
+
+
+def _c_art(tmp_path: Path, name: str, latest: str, *, sub: str = "w", **kw) -> Path:
+    d = tmp_path / sub / "specs" / "F1-x"
+    d.mkdir(parents=True, exist_ok=True)
+    art = d / name
+    art.write_text(_c_doc(latest, **kw), encoding="utf-8")
+    return art
+
+
+def _c_run(art: Path, *flags: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(_ARCHIVE_PASS), str(art), *flags],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def _c_notes(art: Path) -> str:
+    return _last_row_notes(art.read_text(encoding="utf-8"))
+
+
+def _c_tokens(art: Path) -> list:
+    return [t.strip() for t in _c_notes(art).split(";")]
+
+
+_P2_ROWS = (
+    "| [HIGH] | architect | [contract] c1 | Addressed | fixed |\n"
+    "| [MED] | testability-reviewer | m1 | Addressed | fixed |\n"
+    "| [LOW] | security-reviewer | l1 | Addressed | fixed |\n"
+    "| [LOW] | security-reviewer | l2 | Addressed | fixed |\n"
+    "| [MED] | architect, security-reviewer | merged | Addressed | fixed |\n"
+    "| [HIGH] | [SELF-CHECK] (b) | sc | Addressed | fixed |\n"
+)
+_PHASE_CASES = {
+    1: ("01_spec.md", ["--phase", "1"], _SDD1,
+        "| [HIGH] | user-advocate | c | Addressed | f |\n"
+        "| [LOW] | pragmatist | l | Addressed | f |\n", "1.0.0,0.0.0,0.0.1"),
+    2: ("02_design.md", ["--phase", "2"], _SDD2, _P2_ROWS, "1.0.0,0.1.0,0.0.2"),
+    3: ("03_tasks.md", ["--phase", "3", "--terminal"], _SDD3,
+        "| [HIGH] | critic | [detail] c | Addressed | f |\n"
+        "| [MED] | simplifier | m | Addressed | f |\n", "0.0.0,1.0.0,0.1.0"),
+}
+
+
+@pytest.mark.parametrize("phase", [1, 2, 3])
+def test_panel_token_stamped_on_every_phase(tmp_path, phase):
+    name, flags, roster, rows, expected = _PHASE_CASES[phase]
+    art = _c_art(tmp_path, name, rows, deferred_section=(phase != 3))
+    proc = _c_run(art, *flags, "--panel-roster", roster)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+    toks = _c_tokens(art)
+    assert f"panel={expected}" in toks, toks
+    assert re.fullmatch(r"prov=[0-9a-f]{16}", toks[-1]), toks
+    if phase in (2, 3):
+        assert toks.index(f"panel={expected}") < next(
+            i for i, t in enumerate(toks) if t.startswith("tags="))
+
+
+def test_panel_token_precedes_tags_and_prov_on_phase2_sealed_exit(tmp_path):
+    art = _c_art(tmp_path, "02_design.md",
+                 "| [HIGH] | architect | [contract] c | Sealed | Defense: d |\n")
+    assert _c_run(art, "--phase", "2", "--panel-roster", _SDD2).returncode == 0
+    notes = _c_notes(art)
+    toks = _c_tokens(art)
+    assert notes.index("converged (0 unresolved HIGH)") < notes.index("panel=")
+    assert toks[-1].startswith("prov=")
+    assert toks[-2].startswith("tags=")
+    assert toks[-3] == "panel=1.0.0,0.0.0,0.0.0"
+
+
+def test_panel_token_precedes_halt_disposition_and_halt_text(tmp_path):
+    ap = _load_archive_pass()
+    art = _c_art(tmp_path, "02_design.md",
+                 "| [HIGH] | testability-reviewer | [contract] c | Halt and re-scope | h |\n")
+    assert _c_run(art, "--phase", "2", "--panel-roster", _SDD2).returncode == 0
+    notes = _c_notes(art)
+    assert notes.index("panel=") < notes.index("halt-and-rescope disposed")
+    assert notes.index("panel=") < notes.lower().index("halt vote")
+    assert _c_tokens(art)[-1].startswith("prov=")
+    assert ap.parse_panel_summary(notes) == [(0, 0, 0), (1, 0, 0), (0, 0, 0)]
+
+
+def test_upstream_halt_text_does_not_break_panel_token_parse(tmp_path):
+    ap = _load_archive_pass()
+    art = _c_art(tmp_path, "02_design.md",
+                 "| [HIGH] | architect | [upstream] u panel=9.9.9 | Sealed | Defense: d |\n")
+    assert _c_run(art, "--phase", "2", "--panel-roster", _SDD2).returncode == 0
+    notes = _c_notes(art)
+    assert "halt vote" in notes.lower()
+    assert notes.index("tags=") < notes.lower().index("halt vote")
+    assert ap.parse_panel_summary(notes) == [(1, 0, 0), (0, 0, 0), (0, 0, 0)]
+
+
+def test_degraded_path_latest_is_stamped_subject_to_mismatch_suppression(tmp_path):
+    # Hand-projected Source cells; security-reviewer never wrote a findings file.
+    rows = ("| [HIGH] | architect | [contract] c | Addressed | f |\n"
+            "| [MED] | testability-reviewer | m | Addressed | f |\n")
+    art = _c_art(tmp_path, "02_design.md", rows, sub="a")
+    proc = _c_run(art, "--phase", "2", "--panel-roster", _SDD2)
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert "panel=1.0.0,0.1.0,0.0.0" in _c_tokens(art)
+    art2 = _c_art(tmp_path, "02_design.md",
+                  rows + "| [LOW] | ops-reviewer | l | Addressed | f |\n", sub="b")
+    proc2 = _c_run(art2, "--phase", "2", "--panel-roster", _SDD2)
+    assert proc2.returncode == 0
+    assert "names 'ops-reviewer'" in proc2.stderr
+    assert "panel=" not in _c_notes(art2)
+
+
+def test_panel_token_groups_follow_roster_order(tmp_path):
+    rows = ("| [HIGH] | security-reviewer | [contract] c | Addressed | f |\n"
+            "| [LOW] | architect | l | Addressed | f |\n")
+    art = _c_art(tmp_path, "02_design.md", rows)
+    assert _c_run(art, "--phase", "2", "--panel-roster", _SDD2).returncode == 0
+    assert "panel=0.0.1,0.0.0,1.0.0" in _c_tokens(art)
+
+
+def test_panel_token_survives_rearchive(tmp_path):
+    ap = _load_archive_pass()
+    art = _c_art(tmp_path, "01_spec.md", "| [HIGH] | user-advocate | c | Addressed | f |\n")
+    assert _c_run(art, "--phase", "1", "--panel-roster", _SDD1).returncode == 0
+    text = art.read_text(encoding="utf-8")
+    text = text.replace(
+        "|----------|--------|---------|-------------|-------|\n",
+        "|----------|--------|---------|-------------|-------|\n"
+        "| [LOW] | pragmatist | l | Addressed | f |\n", 1)
+    art.write_text(text, encoding="utf-8")
+    proc = _c_run(art, "--phase", "1", "--panel-roster", _SDD1)
+    assert proc.returncode == 0 and "malformed" not in proc.stderr.lower(), proc.stderr
+    rows = [ln for ln in art.read_text(encoding="utf-8").splitlines()
+            if re.match(r"^\| \d+\s+\|", ln)]
+    tr = _load_trajectory()
+    parsed = [ap.parse_panel_summary(tr.split_table_row(r)[-1]) for r in rows]
+    assert parsed == [[(1, 0, 0), (0, 0, 0), (0, 0, 0)], [(0, 0, 0), (0, 0, 0), (0, 0, 1)]]
+
+
+@pytest.mark.parametrize("mode", ["--skip", "--check", "--dry-run"])
+def test_panel_token_not_written_on_skip_check_or_dry_run(tmp_path, mode):
+    rows = "" if mode == "--skip" else "| [HIGH] | user-advocate | c | Addressed | f |\n"
+    art = _c_art(tmp_path, "01_spec.md", rows)
+    extra = ["--skip", "mechanical"] if mode == "--skip" else [mode]
+    proc = _c_run(art, "--phase", "1", *extra, "--panel-roster", _SDD1)
+    assert proc.returncode == 0, proc.stderr
+    assert "panel=" not in art.read_text(encoding="utf-8")
+    if mode == "--check":
+        assert "panel=" not in proc.stdout
+
+
+@pytest.mark.parametrize("mode", ["--strict-bar", "--cross-check"])
+def test_panel_token_zeros_on_empty_mode_pass(tmp_path, mode):
+    art = _c_art(tmp_path, "01_spec.md", "")
+    assert _c_run(art, "--phase", "1", mode, "--panel-roster", _SDD1).returncode == 0
+    assert "panel=0.0.0,0.0.0,0.0.0" in _c_tokens(art)
+
+
+def test_unrecognised_source_name_warns_and_suppresses_token(tmp_path):
+    art = _c_art(tmp_path, "01_spec.md", "| [HIGH] | critic | c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "1", "--panel-roster", _SDD1)
+    assert proc.returncode == 0
+    assert proc.stderr == (
+        "warning: panel= not stamped — Source 'critic' names 'critic', which is "
+        f"not in --panel-roster {_SDD1}.\n"
+    )
+    assert "panel=" not in _c_notes(art)
+
+
+def test_multi_name_source_with_unrecognised_name_warns_once_and_suppresses(tmp_path):
+    art = _c_art(tmp_path, "01_spec.md",
+                 "| [HIGH] | user-advocate, critic | c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "1", "--panel-roster", _SDD1)
+    assert proc.returncode == 0
+    assert proc.stderr.count("warning:") == 1 and "names 'critic'" in proc.stderr
+    assert "panel=" not in _c_notes(art)
+
+
+def test_empty_source_warns_and_suppresses_token(tmp_path):
+    art = _c_art(tmp_path, "01_spec.md", "| [LOW] |  | c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "1", "--panel-roster", _SDD1)
+    assert proc.returncode == 0
+    assert proc.stderr == (
+        "warning: panel= not stamped — Source '' is empty, so the row cannot be "
+        f"attributed to --panel-roster {_SDD1}.\n"
+    )
+    assert "panel=" not in _c_notes(art)
+
+
+def test_repeated_unrecognised_pair_warns_once(tmp_path):
+    art = _c_art(tmp_path, "01_spec.md",
+                 "| [HIGH] | critic | c | Addressed | f |\n"
+                 "| [LOW] | critic | d | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "1", "--panel-roster", _SDD1)
+    assert proc.stderr.count("warning:") == 1
+
+
+def test_transposed_roster_warns_with_both_orders_and_suppresses(tmp_path):
+    art = _c_art(tmp_path, "01_spec.md", "| [HIGH] | user-advocate | c | Addressed | f |\n")
+    given = "devils-advocate,user-advocate,pragmatist"
+    proc = _c_run(art, "--phase", "1", "--panel-roster", given)
+    assert proc.returncode == 0
+    assert proc.stderr == (
+        f"warning: panel= not stamped — --panel-roster {given} does not match the "
+        f"canonical sdd Phase 1 order {_SDD1} (## Panelists per phase).\n"
+    )
+    assert "panel=" not in _c_notes(art)
+
+
+def test_non_permutation_roster_warns_and_suppresses(tmp_path):
+    art = _c_art(tmp_path, "02_design.md", "| [HIGH] | architect | [contract] c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "2", "--panel-roster",
+                  "architect,ops-reviewer,security-reviewer")
+    assert proc.returncode == 0 and "canonical sdd Phase 2 order" in proc.stderr
+    assert "panel=" not in _c_notes(art)
+
+
+def test_duplicate_roster_on_known_stem_warns_and_suppresses(tmp_path):
+    art = _c_art(tmp_path, "01_spec.md", "| [HIGH] | user-advocate | c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "1", "--panel-roster", "user-advocate,user-advocate,pragmatist")
+    assert proc.returncode == 0 and "does not match the canonical" in proc.stderr
+    assert "panel=" not in _c_notes(art)
+
+
+@pytest.mark.parametrize("phase", [1, 3])
+def test_unknown_stem_phase1_and_phase3_transposed_roster_warns_shared(tmp_path, phase):
+    roster = {1: "pragmatist,user-advocate,devils-advocate",
+              3: "critic,delivery-manager,simplifier"}[phase]
+    src = {1: "pragmatist", 3: "critic"}[phase]
+    art = _c_art(tmp_path, "notes.md", f"| [LOW] | {src} | c | Addressed | f |\n",
+                 deferred_section=(phase != 3))
+    flags = ["--phase", str(phase)] + (["--terminal"] if phase == 3 else [])
+    proc = _c_run(art, *flags, "--panel-roster", roster)
+    assert proc.returncode == 0
+    assert f"canonical shared Phase {phase} order" in proc.stderr
+    assert "panel=" not in _c_notes(art)
+
+
+@pytest.mark.parametrize("phase", [1, 3])
+def test_unknown_stem_phase1_and_phase3_canonical_roster_stamps_silently(tmp_path, phase):
+    roster = {1: _SDD1, 3: _SDD3}[phase]
+    src = {1: "pragmatist", 3: "critic"}[phase]
+    art = _c_art(tmp_path, "notes.md", f"| [LOW] | {src} | c | Addressed | f |\n",
+                 deferred_section=(phase != 3))
+    flags = ["--phase", str(phase)] + (["--terminal"] if phase == 3 else [])
+    proc = _c_run(art, *flags, "--panel-roster", roster)
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert any(t.startswith("panel=") for t in _c_tokens(art))
+
+
+@pytest.mark.parametrize("roster,expected", [
+    ("a", "panel=1.0.0"),
+    ("a,b,c", "panel=1.0.0,0.0.0,0.0.0"),
+    ("a,b,c,d", "panel=1.0.0,0.0.0,0.0.0,0.0.0"),
+])
+def test_unknown_stem_phase2_stamps_unchecked_at_any_roster_size(tmp_path, roster, expected):
+    art = _c_art(tmp_path, "notes.md", "| [HIGH] | a | [contract] c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "2", "--panel-roster", roster)
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert expected in _c_tokens(art)
+
+
+def test_unknown_stem_phase2_duplicate_roster_credits_first_seat(tmp_path):
+    art = _c_art(tmp_path, "notes.md", "| [HIGH] | a | [contract] c | Addressed | f |\n")
+    proc = _c_run(art, "--phase", "2", "--panel-roster", "a,a,b")
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert "panel=1.0.0,0.0.0,0.0.0" in _c_tokens(art)
+
+
+def _norm_date(text: str) -> str:
+    return _GOLDEN_DATE_RE.sub(r"\1<DATE>", text)
+
+
+def test_roster_flag_forms_give_identical_artifacts(tmp_path):
+    forms = {
+        "comma": ["--panel-roster", _SDD2],
+        "repeated": ["--panel-roster", "architect", "--panel-roster", "testability-reviewer",
+                     "--panel-roster", "security-reviewer"],
+        "mixed": ["--panel-roster", "architect,testability-reviewer",
+                  "--panel-roster", "security-reviewer"],
+    }
+    outs = set()
+    for sub, flags in forms.items():
+        art = _c_art(tmp_path, "02_design.md", _P2_ROWS, sub=sub)
+        assert _c_run(art, "--phase", "2", *flags).returncode == 0
+        outs.add(_norm_date(art.read_text(encoding="utf-8")))
+    assert len(outs) == 1
+
+
+def test_prefixed_roster_names_are_stripped(tmp_path):
+    a = _c_art(tmp_path, "02_design.md", _P2_ROWS, sub="bare")
+    b = _c_art(tmp_path, "02_design.md", _P2_ROWS, sub="pref")
+    assert _c_run(a, "--phase", "2", "--panel-roster", _SDD2).returncode == 0
+    prefixed = ",".join(f"telescoping-sdd:{n}" for n in _SDD2.split(","))
+    proc = _c_run(b, "--phase", "2", "--panel-roster", prefixed)
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert _norm_date(a.read_text(encoding="utf-8")) == _norm_date(b.read_text(encoding="utf-8"))
+
+
+def _traj_canonical(text: str) -> str:
+    """Canonicalise the `### Trajectory` column-header and separator rows:
+    header cells trimmed, each separator cell reduced to a single `-` (spec R4)."""
+    lines = text.split("\n")
+    i = lines.index("### Trajectory")
+    hdr = next(j for j in range(i + 1, len(lines)) if lines[j].startswith("|"))
+    for j in (hdr, hdr + 1):
+        cells = lines[j].strip()[1:-1].split("|")
+        if j == hdr:
+            lines[j] = "|" + "|".join(c.strip() for c in cells) + "|"
+        else:
+            lines[j] = "|" + "|".join("-" for _ in cells) + "|"
+    return "\n".join(lines)
+
+
+def _archive_pair(tmp_path: Path, rows: str, traj_rows: str = "") -> list:
+    """Archive two identical approved v2 copies, with and without the roster."""
+    _load_archive_pass()  # puts the scripts dir on sys.path
+    import content_hash as ch
+
+    h = ch.compute_content_hash(_c_doc(rows, approved_hash="0" * 16, traj_rows=traj_rows))
+    out = []
+    for sub, flags in (("with", ["--panel-roster", _SDD2]), ("without", [])):
+        art = _c_art(tmp_path, "02_design.md", rows, sub=sub, approved_hash=h,
+                     traj_rows=traj_rows)
+        assert _c_run(art, "--phase", "2", *flags).returncode == 0
+        out.append(art.read_text(encoding="utf-8"))
+    for sub in ("with", "without"):
+        assert not list((tmp_path / sub).rglob("pending-review.json"))
+    assert "panel=" in out[0] and "panel=" not in out[1]
+    return out
+
+
+def test_panel_token_hash_neutral_as_data_row_on_widening_fixture(tmp_path):
+    """Spec R4 / spec [SEAL-32], widening fixture: the token is hash-neutral as
+    Trajectory data-row content, and the pre-existing header re-pad leak is
+    documented by the hash INEQUALITY below. When the future hash-basis fix
+    lands this inequality is expected to fail: flip it to equality, do not
+    delete it."""
+    import content_hash as ch
+
+    with_r, without_r = _archive_pair(
+        tmp_path, "| [HIGH] | architect | [contract] c | Sealed | Defense: d |\n"
+    )
+    a, b = ch.content_for_hashing(with_r), ch.content_for_hashing(without_r)
+    # Non-vacuous: un-canonicalised outputs differ, and only in two rows.
+    diff = [i for i, (x, y) in enumerate(zip(a.split("\n"), b.split("\n"))) if x != y]
+    assert len(a.split("\n")) == len(b.split("\n"))
+    assert len(diff) == 2, diff
+    hdr = a.split("\n")[diff[0]]
+    assert hdr.lstrip().startswith("| Pass"), hdr
+    assert diff[1] == diff[0] + 1
+    # Canonicalised equality: the data-row content contributes nothing.
+    assert _traj_canonical(a) == _traj_canonical(b)
+    # The documented leak (tripwire).
+    assert ch.compute_content_hash(with_r) != ch.compute_content_hash(without_r)
+
+
+def test_panel_token_hash_equal_on_non_widening_fixture(tmp_path):
+    """Spec R4, non-widening fixture: an existing Notes cell is already wider
+    than the new stamped row, so no re-pad occurs and the two copies hash equal."""
+    import content_hash as ch
+
+    wide = "x" * 200
+    traj = f"| 1 | 2026-01-01 | 0 | 0 | 0 | 0 | 0 | {wide} |\n"
+    with_r, without_r = _archive_pair(
+        tmp_path, "| [HIGH] | architect | [contract] c | Sealed | Defense: d |\n",
+        traj_rows=traj,
+    )
+    assert with_r != without_r  # the token is really there
+    assert ch.compute_content_hash(with_r) == ch.compute_content_hash(without_r)
+
+
+def test_help_documents_panel_roster():
+    proc = _run_archive_pass(["--help"])
+    assert proc.returncode == 0
+    assert "--panel-roster" in proc.stdout and "panel=" in proc.stdout

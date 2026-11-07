@@ -253,3 +253,27 @@ def test_blueprint_skill_has_no_tasktick() -> None:
         f"{PB_SKILL} contains {R7_TASKTICK_PHRASE!r}; the SDD-only Phase-4 "
         f"completion cadence must not leak into the project-blueprint tier"
     )
+
+
+# --- Unit C (T3): R2 findings-directory pre-create in step 1 ---------------
+PRECREATE_PHRASE = "mkdir -p .sdd/panel-findings/<findings_scope>/"
+PRECREATE_LEAD = "**Create the findings directory before dispatch:**"
+PRECREATE_REENTRY_PHRASE = "after any loop re-entry clear"
+DISPATCH_INSTRUCTION = "Issue three Agent tool calls"
+
+
+@pytest.mark.parametrize("path", BOTH)
+def test_step1_precreate_findings_dir_present(path: Path) -> None:
+    block = _extract_loop_step1(_read(path), path)
+    assert PRECREATE_PHRASE in block, path
+    assert PRECREATE_LEAD in block, path
+    assert block.index(PRECREATE_PHRASE) < block.index(DISPATCH_INSTRUCTION), path
+    # Immediately after the bold lead (AD5); lead-in does not open with "First".
+    lead = "1. **Dispatch all three panelists in a single message.** "
+    assert block.startswith(lead + PRECREATE_LEAD), path
+
+
+@pytest.mark.parametrize("path", BOTH)
+def test_step1_precreate_names_reentry_clear(path: Path) -> None:
+    block = _extract_loop_step1(_read(path), path)
+    assert PRECREATE_REENTRY_PHRASE in block, path
