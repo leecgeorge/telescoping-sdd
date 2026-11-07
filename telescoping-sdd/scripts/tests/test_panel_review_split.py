@@ -146,6 +146,30 @@ POST_SPLIT_CONTENT_EDITS: list[tuple[str, str, str]] = [
         # Unit C0 (AC-5.5): the override route after a lightweight exit.
         '\n\n**Approval after a lightweight exit.** If the single pass did not converge, the artifact\'s first `--approve` is refused by the convergence gate; the route out is the convergence override (`--override-convergence "<reason>"`), a user decision the validator records in the artifact\'s `## Approval` section.',
     ),
+    # Unit D (T29, R7): a persisted `vibe` posture also selects lightweight
+    # mode. Four narrow entries, each matching once per tier's extract; the
+    # preamble trigger line sits outside every MOVED section and is pinned by
+    # test_doctrine_sweep_regression.py instead.
+    (
+        '## Lightweight Mode (single-pass panel)',
+        'For those cases the user may opt into **lightweight mode**: one panel pass, then exit.',
+        'For those cases the user may opt into **lightweight mode** (a persisted `vibe` posture also selects it; `panel-review.md` § Rigour posture): one panel pass, then exit.',
+    ),
+    (
+        '## Lightweight Mode (single-pass panel)',
+        'The default stays the full loop; lightweight mode is **opt-in only** and never auto-selected.',
+        'The default stays the full loop; lightweight mode is **opt-in only** and never auto-selected from the work\'s size; a persisted `vibe` posture selects it (`panel-review.md` § Rigour posture).',
+    ),
+    (
+        '## Lightweight Mode (single-pass panel)',
+        '**When it fits (the user says so):**',
+        '**When it fits (the user says so, or the persisted posture is `vibe`):**',
+    ),
+    (
+        '## Lightweight Mode (single-pass panel)',
+        "If the user hasn't said the work is small, run the full loop.",
+        "If the user hasn't said the work is small and the persisted posture is not `vibe`, run the full loop.",
+    ),
     (
         '## When to Skip the Panel',
         "Lint-class work doesn't need a design review; running a full panel on a sed cleanup wastes cycles and risks the panel objecting to phrasing artifacts of the cleanup itself.",

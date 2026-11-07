@@ -121,6 +121,11 @@ User Input ──> Validation ──> Processing ──> Storage
 - [ ] Q2: [Another question]
   - **Resolution:** [To be filled when answered]
 
+## Decision Points
+
+- [the Plan must decide … — a choice that belongs to the plan, recorded here instead of decided in this document. Not an approval gate.]
+- [Another point the plan must decide]
+
 ## Panel Review
 
 <!-- Populated by the skill across panel-review passes. archive_pass.py manages

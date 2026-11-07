@@ -52,6 +52,10 @@ The structure below is that `## Assessment (human)` block:
 - **Design Improvements for Testability** -- Changes that would make the design more testable
 - **Recommendations** -- Prioritized by risk of undetected defects
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Constraints
 
 - Never accept vague, unrepeatable, or absent verification for critical functionality. For an automated-test stack, "we will test this manually" is not a strategy. For a stack with no test harness, a *specific and repeatable* manual or review procedure is acceptable — but a hand-wave ("looks fine", "test manually" with no steps) is not, in any model.

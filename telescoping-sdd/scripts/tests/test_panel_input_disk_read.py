@@ -268,9 +268,12 @@ def test_step1_precreate_findings_dir_present(path: Path) -> None:
     assert PRECREATE_PHRASE in block, path
     assert PRECREATE_LEAD in block, path
     assert block.index(PRECREATE_PHRASE) < block.index(DISPATCH_INSTRUCTION), path
-    # Immediately after the bold lead (AD5); lead-in does not open with "First".
+    # Right after the bold lead (AD5) and Unit D C8's tapered-roster sentence;
+    # the lead-in does not open with "First".
     lead = "1. **Dispatch all three panelists in a single message.** "
-    assert block.startswith(lead + PRECREATE_LEAD), path
+    c8 = ("On a pass after a loop's first, the roster is the one `## Tapered roster` "
+          "names; 'all three' then means every seat on that roster. ")
+    assert block.startswith(lead + c8 + PRECREATE_LEAD), path
 
 
 @pytest.mark.parametrize("path", BOTH)

@@ -60,8 +60,8 @@ EXPECTED_DELIVERY_PANEL = frozenset(
     {"telescoping-sdd:delivery-manager", "telescoping-sdd:critic", "telescoping-sdd:simplifier"}
 )
 
-EXPECTED_VERSION = "2.29.0"
-CHANGELOG_FIRST_ENTRY = "## 2.29.0 — Recording a panel pass no longer moves an approved hash"  # em-dash U+2014, NOT a hyphen-minus
+EXPECTED_VERSION = "2.30.0"
+CHANGELOG_FIRST_ENTRY = "## 2.30.0 — The drafter applies the fixes, and a small change gets a smaller panel"  # em-dash U+2014, NOT a hyphen-minus
 
 
 class SectionMissingError(AssertionError):

@@ -700,3 +700,77 @@ def test_validate_blueprint_wires_blueprint_findings_scope():
     assert 'findings_scope="blueprint"' in src, (
         "validate_blueprint.py must pass the literal 'blueprint' tier scope (DEF-01)"
     )
+
+
+# --------------------------------------------------------------------------
+# Unit D (R3 lifecycle): no script removes a working file under .sdd/scratch/.
+# --------------------------------------------------------------------------
+
+import hashlib  # noqa: E402
+
+_TESTS = Path(__file__).resolve().parent
+if str(_TESTS) not in sys.path:
+    sys.path.insert(0, str(_TESTS))
+import _fixtures as _fx  # noqa: E402
+
+_ARCHIVE = _SCRIPTS / "archive_pass.py"
+_VALIDATOR = {
+    "sdd": _SCRIPTS.parent / "skills" / "spec-driven-dev" / "scripts" / "validate_spec.py",
+    "blueprint": _SCRIPTS.parent / "skills" / "project-blueprint" / "scripts" / "validate_blueprint.py",
+}
+
+
+def _populate_scratch(root: Path) -> Path:
+    scratch = root / ".sdd" / "scratch" / "sdd" / "feat-x"
+    scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / "02_design-draft-p2.md").write_text("draft\n", encoding="utf-8")
+    (scratch / "02_design-snapshot-p2.md").write_text("snapshot\n", encoding="utf-8")
+    (scratch / "02_design-zone-p2.diff").write_text("diff\n", encoding="utf-8")
+    # Names that look like cruft to the sweep must still survive under scratch/.
+    (scratch / "stray.tmp").write_text("tmp\n", encoding="utf-8")
+    (scratch / "pending-review.lock").write_text("", encoding="utf-8")
+    return root / ".sdd" / "scratch"
+
+
+def _tree_hash(d: Path) -> str:
+    h = hashlib.sha256()
+    for p in sorted(d.rglob("*")):
+        h.update(str(p.relative_to(d)).encode())
+        if p.is_file():
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def test_sweep_sdd_cruft_leaves_scratch_unchanged(tmp_path):
+    scratch = _populate_scratch(tmp_path)
+    before = _tree_hash(scratch)
+    pending_review.sweep_sdd_cruft(tmp_path, findings_scope="sdd/feat-x")
+    assert _tree_hash(scratch) == before
+
+
+def test_normal_archive_leaves_scratch_unchanged(tmp_path):
+    p = tmp_path / "spec.md"
+    flags = _fx.stamp_then_stage_pass(
+        p, "sdd", latest_rows=["| [MED] | critic | a concern | Addressed | fixed |"], mode="normal"
+    )
+    scratch = _populate_scratch(tmp_path)
+    before = _tree_hash(scratch)
+    proc = subprocess.run([sys.executable, str(_ARCHIVE), str(p), "--phase", "1", *flags],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert _tree_hash(scratch) == before
+
+
+@pytest.mark.parametrize("tier", ["sdd", "blueprint"])
+def test_approve_leaves_scratch_unchanged(tmp_path, tier):
+    out = _fx.write_chain(tmp_path, tier, approve=[], bind=False)
+    art = next(iter(out.values()))
+    scratch = _populate_scratch(tmp_path)
+    before = _tree_hash(scratch)
+    phase = "spec" if tier == "sdd" else "scope"
+    proc = subprocess.run(
+        [sys.executable, str(_VALIDATOR[tier]), str(art.parent), "--approve", phase, "--force"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    assert _tree_hash(scratch) == before

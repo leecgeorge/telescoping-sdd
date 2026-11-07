@@ -302,7 +302,8 @@ def test_aggregator_imports_match_allow_list_and_never_reference_canonical_roste
     assert non_std == {
         "archive_pass": {"parse_panel_summary", "ARTIFACT_STEMS"},
         "trajectory": {"parse_trajectory_rows", "TRAJECTORY_ELIDED_NOTES_RE",
-                       "STAMP_STRICT_BAR", "STAMP_CROSS_CHECK", "_strip_numeric_prefix"},
+                       "STAMP_STRICT_BAR", "STAMP_CROSS_CHECK", "_strip_numeric_prefix",
+                       "parse_seats_record", "seats_token_present"},
     }, non_std
     src = _PANEL_YIELD.read_text(encoding="utf-8")
     assert "panel-log.jsonl" not in src
@@ -315,3 +316,83 @@ def test_aggregator_output_names_no_roster_member(tmp_path):
         out = _run(str(p), *extra).stdout
         for name in _ROSTER_NAMES:
             assert not re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", out), name
+
+
+# ---------------------------------------------------------------------------
+# Unit D T23 (R6, C6, DM10): tapered-row attribution and `comparable`.
+# ---------------------------------------------------------------------------
+
+_TAPERED_NOTE = "tapered (seats 1,3): not comparable with full-roster rows for unique yield"
+_UNRESOLVED_NOTE = "seats unresolved — not comparable"
+
+
+def _one(tmp_path, notes):
+    py = _load()
+    p = _write(tmp_path, "01_spec.md", _art(_row(1, notes)))
+    res = py.read_artifact_yield(p)
+    return py, res, res.passes[0]
+
+
+def test_tapered_row_maps_groups_to_positions_and_marks_not_run(tmp_path):
+    py, res, row = _one(tmp_path, f"panel=2.1.0,0.0.1; seats=1,3; {_PROV}")
+    assert row.dispatched_positions == (1, 3)
+    assert row.comparable is False
+    assert _TAPERED_NOTE in row.note
+    text = py.render_text([res])
+    line = next(l for l in text.splitlines() if l.strip().startswith("1 "))
+    cells = re.split(r"\s{2,}", line.split("(")[0].strip())
+    assert cells == ["1", "2.1.0", "— not run —", "0.0.1"]
+    assert _TAPERED_NOTE in line
+
+
+@pytest.mark.parametrize("token", [
+    "seats=1",        # count differs from the two groups
+    "seats=1,4",      # a position above 3
+    "seats=3,1",      # non-increasing
+    "seats=1,3,2",
+])
+def test_malformed_seats_token_row_unresolved_not_comparable_never_raises(tmp_path, token):
+    py, res, row = _one(tmp_path, f"panel=2.1.0,0.0.1; {token}; {_PROV}")
+    assert row.dispatched_positions is None
+    assert row.comparable is False
+    assert _UNRESOLVED_NOTE in row.note
+    py.render_text([res]); py.render_json([res])  # never raises
+
+
+def test_valid_seats_row_comparable_false_with_positions(tmp_path):
+    _py, _res, row = _one(tmp_path, f"panel=1.0.0; seats=2; {_PROV}")
+    assert (row.dispatched_positions, row.comparable) == ((2,), False)
+
+
+def test_full_row_without_token_comparable_true(tmp_path):
+    _py, _res, row = _one(tmp_path, f"panel=2.1.0,0.0.1,1.3.2; {_PROV}")
+    assert (row.dispatched_positions, row.comparable, row.note) == (None, True, "")
+
+
+def test_short_row_without_token_marked_unresolved(tmp_path):
+    py, res, row = _one(tmp_path, f"panel=2.1.0,0.0.1; {_PROV}")
+    assert (row.dispatched_positions, row.comparable) == (None, False)
+    assert row.note == _UNRESOLVED_NOTE
+    line = next(l for l in py.render_text([res]).splitlines() if l.strip().startswith("1 "))
+    assert "2.1.0" in line and "0.0.1" in line and "not run" not in line
+
+
+def test_row_without_panel_token_comparable_false(tmp_path):
+    _py, _res, row = _one(tmp_path, f"converged (0 HIGH); {_PROV}")
+    assert (row.seats, row.dispatched_positions, row.comparable) == (None, None, False)
+    assert row.note == "no panel= token"
+
+
+def test_json_carries_dispatched_positions_and_comparable(tmp_path):
+    py = _load()
+    p = _write(tmp_path, "01_spec.md", _art(
+        _row(1, f"panel=2.1.0,0.0.1,1.3.2; {_PROV}")
+        + _row(2, f"panel=1.0.0,0.0.1; seats=1,3; {_PROV}")))
+    data = json.loads(py.render_json([py.read_artifact_yield(p)]))
+    passes = data["artifacts"][0]["passes"]
+    assert passes[0]["seats"] == [[2, 1, 0], [0, 0, 1], [1, 3, 2]]
+    assert (passes[0]["dispatched_positions"], passes[0]["comparable"]) == (None, True)
+    assert passes[1]["seats"] == [[1, 0, 0], [0, 0, 1]]
+    assert (passes[1]["dispatched_positions"], passes[1]["comparable"]) == ([1, 3], False)
+    blob = json.dumps(data)
+    assert not any(n in blob for n in _ROSTER_NAMES)

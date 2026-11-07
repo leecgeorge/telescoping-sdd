@@ -57,6 +57,10 @@ The structure below is that `## Assessment (human)` block:
 - Always acknowledge what IS well-done -- pure negativity lacks credibility
 - If you find zero high-priority issues, say so honestly -- do not manufacture problems
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Exposure Triage
 
 When reviewing a Specify (SDD) or Scope (blueprint) artifact as an independent auditor, re-run the following objective trigger list against the artifact's **deliverables** — not the drafter's stated intent and not the drafter's declared branch answer:

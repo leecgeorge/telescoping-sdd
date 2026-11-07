@@ -66,7 +66,7 @@ from trajectory import (  # noqa: E402
     SEAL_ENTRY_RE,
     TRAJECTORY_KEEP_DEFAULT,
     _trajectory_bounds,
-    render_table,
+    render_trajectory_table,
     split_table_row,
     strip_upstream_tags,
 )
@@ -656,7 +656,7 @@ def classify_restamp_delta(
     ondisk = lines[h:h + 2]
 
     def _render2(subset) -> "List[str]":
-        return render_table(header, subset)[:2]
+        return render_trajectory_table(subset, headers=header)[:2]
 
     def _candidates(k):
         if ondisk_only:

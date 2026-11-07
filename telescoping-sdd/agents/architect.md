@@ -43,6 +43,10 @@ The structure below is that `## Assessment (human)` block:
 - **Scalability & Evolution** -- How the design handles growth and change
 - **Recommendations** -- Prioritized list of architectural improvements
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Constraints
 
 - Never propose a redesign without explaining the specific quality attribute it improves

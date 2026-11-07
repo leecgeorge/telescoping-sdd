@@ -105,9 +105,18 @@ import os
 import re
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Optional
+
+from approval_records import display_arg, display_text  # noqa: E402
+from arch_config import (  # noqa: E402
+    NOTICE_FILENAME,
+    POSTURES,
+    config_path,
+    resolve_posture,
+)
 
 # archive_pass.py is a sibling of blueprint_common.py in telescoping-sdd/scripts/,
 # so a bare import resolves when run as a CLI (script dir on sys.path) and under
@@ -143,6 +152,10 @@ from trajectory import (  # noqa: E402
     notes_tokens,
     render_table,
     render_table_row,
+    render_trajectory_table,
+    seats_token_present,
+    SEATS_ROSTER_LENGTH,
+    format_seats_record,
     split_table_row,
     provenance_token,
     stamp_provenance,
@@ -201,6 +214,8 @@ EXIT_OK = 0
 EXIT_FORMAT_VIOLATION = 1
 EXIT_USER_INPUT_NEEDED = 2
 EXIT_OLD_FORMAT_OR_MISSING = 3
+# Unit D (C1): --zone-diff found a difference in the hard-fail zone.
+EXIT_ZONE_DIFFERS = 4
 
 SEPARATOR_PAT = re.compile(r"^\|[\s\-|:]+\|\s*$")
 
@@ -269,25 +284,77 @@ def artifact_tier(path: Path) -> Optional[str]:
     return entry[0] if entry else None
 
 
+# Unit D (C5): on phase 2 with an unknown tier, each Phase 2 name has one
+# canonical position across both tiers (position 2 differs by tier only), so a
+# union lookup resolves positions without the tier.
+_PHASE2_UNION_POSITIONS = {
+    name: i
+    for t in ("sdd", "blueprint")
+    for i, name in enumerate(CANONICAL_ROSTERS[(t, 2)], start=1)
+}
+
+
+def _canonical_positions(roster: list, tier: Optional[str], phase: int) -> Optional[tuple]:
+    """1-based canonical positions of `roster` when it is a canonical-order
+    subsequence (full or proper) of the roster in force, else None. Pure.
+
+    Known tier: CANONICAL_ROSTERS[(tier, phase)]. Unknown tier on phases 1 and
+    3: the shared roster. Unknown tier on phase 2: the union lookup, so a
+    roster mixing `testability-reviewer` and `ops-reviewer` (both position 2)
+    does not resolve.
+    """
+    if not roster:
+        return None
+    if tier is None and phase == 2:
+        if any(n not in _PHASE2_UNION_POSITIONS for n in roster):
+            return None
+        positions = tuple(_PHASE2_UNION_POSITIONS[n] for n in roster)
+    else:
+        canonical = list(CANONICAL_ROSTERS[("sdd" if tier is None else tier, phase)])
+        if any(n not in canonical for n in roster):
+            return None
+        positions = tuple(canonical.index(n) + 1 for n in roster)
+    if any(a >= b for a, b in zip(positions, positions[1:])):
+        return None
+    return positions
+
+
+def roster_seat_positions(roster: list, tier: Optional[str], phase: int) -> Optional[tuple]:
+    """1-based canonical positions when `roster` is a PROPER canonical-order
+    subsequence of the roster in force (C5's union lookup on phase 2 with an
+    unknown tier); else None. A full roster returns None: it carries no
+    `seats=` token (AD11). Pure."""
+    positions = _canonical_positions(roster, tier, phase)
+    if positions is None or len(positions) >= SEATS_ROSTER_LENGTH:
+        return None
+    return positions
+
+
 def check_roster_order(roster: list, tier: Optional[str], phase: int) -> Optional[str]:
     """Return the DM5 order warning, or None.
 
-    Canonical = CANONICAL_ROSTERS[(tier, phase)]. When tier is None and phase is
-    1 or 3, use the shared roster for that phase (identical across tiers) and
-    render the tier as 'shared'. When tier is None and phase is 2, return None
-    (silent skip, R4) whatever the roster's length or repeats. A mismatch is any
-    difference in list equality: order, set, length or a duplicate name. Pure.
+    None for the canonical roster or a proper subsequence of it in canonical
+    relative order (Unit D, C5: a tapered pass). Canonical =
+    CANONICAL_ROSTERS[(tier, phase)]; when tier is None and phase is 1 or 3,
+    the shared roster for that phase (rendered as tier 'shared'); when tier is
+    None and phase is 2, the cross-tier union lookup. A transposed, duplicated
+    or unrecognised name warns, as Unit C AD9 specifies. Pure.
     """
+    if _canonical_positions(roster, tier, phase) is not None:
+        return None
+    if tier is None and phase == 2:
+        return (
+            f"warning: panel= not stamped — --panel-roster {','.join(roster)} does "
+            f"not resolve to canonical Phase 2 positions in order (architect; "
+            f"testability-reviewer or ops-reviewer; security-reviewer) "
+            f"(## Panelists per phase)."
+        )
     if tier is None:
-        if phase == 2:
-            return None
         canonical = CANONICAL_ROSTERS[("sdd", phase)]
         tier_label = "shared"
     else:
         canonical = CANONICAL_ROSTERS[(tier, phase)]
         tier_label = tier
-    if list(roster) == list(canonical):
-        return None
     return (
         f"warning: panel= not stamped — --panel-roster {','.join(roster)} does "
         f"not match the canonical {tier_label} Phase {phase} order "
@@ -1130,6 +1197,386 @@ def write_or_diff(path, old_content, new_content, dry_run):
         _atomic_write(path, new_content)
 
 
+# ---------------------------------------------------------------------------
+# Unit D (R7, I5, DM2, DM6, DM7): rigour posture and the working-file root
+# ---------------------------------------------------------------------------
+
+_VALIDATOR_PATHS = {
+    "sdd": Path(__file__).resolve().parent.parent / "skills" / "spec-driven-dev"
+    / "scripts" / "validate_spec.py",
+    "blueprint": Path(__file__).resolve().parent.parent / "skills" / "project-blueprint"
+    / "scripts" / "validate_blueprint.py",
+}
+_POSTURE_NOTICE_LEAD = (
+    "PANEL-POSTURE-NOTICE: standard is now the default — passes after a loop's "
+    "first may run fewer panelists. Persist critical to keep every pass at three: "
+)
+
+
+def _shown_arg(text: str) -> str:
+    q = display_arg(text)
+    return q.quoted if q.quoted is not None else display_text(text, max_len=80)
+
+
+def _set_posture_command(tier: str, art_dir: Path) -> str:
+    return (f"python {_shown_arg(str(_VALIDATOR_PATHS[tier]))} "
+            f"{_shown_arg(str(art_dir))} --set-posture critical")
+
+
+def posture_notice(tier: Optional[str], art_dir: Path) -> str:
+    """DM2's one-time notice; an unknown tier prints both validators' commands."""
+    if tier is None:
+        cmds = (f"{_set_posture_command('sdd', art_dir)}, or "
+                f"{_set_posture_command('blueprint', art_dir)}")
+    else:
+        cmds = _set_posture_command(tier, art_dir)
+    return _POSTURE_NOTICE_LEAD + cmds
+
+
+def scratch_scope(art: Path) -> Optional[str]:
+    """DM7's `<scope>`: `sdd/<spec-dir-basename>` or `blueprint`; None for an
+    unknown stem."""
+    tier = artifact_tier(art)
+    if tier is None:
+        return None
+    return f"sdd/{Path(art).resolve().parent.name}" if tier == "sdd" else "blueprint"
+
+
+def scratch_line(root: Path, art: Path) -> str:
+    """`PANEL-SCRATCH: root=<root> dir=<root>/.sdd/scratch/<scope>/`, or
+    `dir=unresolved` for an unknown stem or a character display_text replaces."""
+    root_s = str(root)
+    shown_root = display_text(root_s)
+    scope = scratch_scope(art)
+    if scope is None or shown_root != root_s or display_text(scope) != scope:
+        return f"PANEL-SCRATCH: root={shown_root} dir=unresolved"
+    return f"PANEL-SCRATCH: root={root_s} dir={root_s}/.sdd/scratch/{scope}/"
+
+
+def marker_root(art: Path) -> Path:
+    """The one root for posture, scratch and the notice (Unit C AD15)."""
+    root, _key = _resolve_marker_root_and_key(art, None)
+    return Path(root).resolve()
+
+
+def resolve_run_posture(art: Path, explicit: Optional[str], root: Path):
+    """Resolve the posture against `root` and print DM2's stderr warning for a
+    rejected persisted value (one bounded line; a non-string value is never
+    echoed). Returns the PostureResolution."""
+    res = resolve_posture(Path(art).parent, explicit=explicit, project_root=root)
+    where = config_path(root)
+    tail = (f"using '{res.posture}' ({res.source}). Persist a valid one with "
+            f"--set-posture.")
+    if res.rejected_non_text:
+        print(f"warning: ignoring non-text posture value in {where}; {tail}",
+              file=sys.stderr)
+    elif res.rejected is not None:
+        shown = display_text(res.rejected, max_len=40)
+        print(f"warning: ignoring posture '{shown}' in {where} (not one of "
+              f"{', '.join(POSTURES)}); {tail}", file=sys.stderr)
+    return res
+
+
+def posture_report(art: Path, explicit: Optional[str], no_notice: bool) -> int:
+    """`--posture-report`: read-only apart from the DM6 sentinel. Prints
+    PANEL-POSTURE, then the one-time notice, then PANEL-SCRATCH. Exit 0."""
+    root = marker_root(art)
+    res = resolve_run_posture(art, explicit, root)
+    print(f"PANEL-POSTURE: {res.posture} (source: {res.source})")
+    sentinel = root / ".sdd" / NOTICE_FILENAME
+    if res.source == "default" and not no_notice and not sentinel.is_file():
+        print(posture_notice(artifact_tier(art), Path(art).parent))
+        try:
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.touch(exist_ok=False)
+        except OSError as exc:
+            print(f"warning: could not record the posture notice at {sentinel} "
+                  f"({exc.__class__.__name__}); it may print again.", file=sys.stderr)
+    print(scratch_line(root, art))
+    return EXIT_OK
+
+
+def _hard_fail_zone(text: str) -> list:
+    """The hard-fail zone's lines: from the `### Sealed dispositions` heading
+    that `find_section` locates inside `## Panel Review` (fence-aware) to end
+    of file; the whole file when there is none. Trailing whitespace removed."""
+    lines = text.splitlines()
+    start = 0
+    panel = find_section(lines, H_PANEL_REVIEW)
+    if panel is not None:
+        sealed = find_section(lines, H_SEALED, panel[0], panel[1])
+        if sealed is not None:
+            start = sealed[0]
+    return [ln.rstrip() for ln in lines[start:]]
+
+
+def zone_diff(live: str, draft: str) -> list:
+    """Unified-diff lines between the two texts' hard-fail zones; empty when
+    they match after trailing-whitespace normalisation (C1). Pure."""
+    a, b = _hard_fail_zone(live), _hard_fail_zone(draft)
+    if a == b:
+        return []
+    return list(difflib.unified_diff(a, b, "live", "draft", lineterm=""))
+
+
+def zone_diff_mode(art: Path, draft_arg: str) -> int:
+    """`--zone-diff <draft>`: print `ZONE-DIFF: clean` (exit 0) or the diff
+    (exit EXIT_ZONE_DIFFERS). An unreadable draft exits 3 and is never clean."""
+    draft = Path(draft_arg)
+    try:
+        draft_text = draft.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        reason = "not found"
+    except IsADirectoryError:
+        reason = "a directory"
+    except UnicodeDecodeError:
+        reason = "not valid UTF-8"
+    except OSError as exc:
+        reason = exc.__class__.__name__
+    else:
+        reason = None
+    if reason is not None:
+        print(f"error: cannot read draft {draft} ({reason})", file=sys.stderr)
+        return EXIT_OLD_FORMAT_OR_MISSING
+    live_text = art.read_text(encoding="utf-8-sig")
+    out = zone_diff(live_text, draft_text)
+    if not out:
+        print("ZONE-DIFF: clean")
+        return EXIT_OK
+    print("\n".join(out))
+    return EXIT_ZONE_DIFFERS
+
+
+# ---------------------------------------------------------------------------
+# Unit D taper engine (R5: AD9, AD10, DM2-DM4, I2). Grouped under one banner so
+# a later leaf-module extraction is mechanical [SEAL-03].
+# ---------------------------------------------------------------------------
+
+SMALL_MAX_BODY_LINES = 12
+SMALL_MAX_ADDRESSED = 3
+
+TAPER_SIZE_CLASSES = (
+    ("zero", 1),
+    ("small", 2),
+    ("large", 3),
+)
+TAPER_SIZE_CLASSES_DOC = """R5's threshold table: the one home of the size classes.
+
+Evaluated in order; the first match wins.
+  zero  — no Latest row is disposed Addressed. The next roster is 1.
+  small — no Addressed HIGH, the pass's snapshot is present, at most 12 changed
+          body lines and at most 3 Addressed rows. The next roster is 2.
+  large — anything else, including an unknown size. The next roster is 3.
+"""
+
+
+@dataclass(frozen=True)
+class ChangeSize:
+    """AD9's inputs. `body_lines` None means unknown; `reason` is 'measured',
+    'no-edit', 'snapshot-absent', 'snapshot-empty', 'no-promote' or
+    'unknown-tier'."""
+
+    addressed: int
+    addressed_high: int
+    body_lines: Optional[int]
+    reason: str
+
+
+def _snapshot_path(root: Path, art: Path, pass_n: int) -> Optional[Path]:
+    """DM7's unsuffixed pre-dispatch snapshot for pass `pass_n`:
+    `<root>/.sdd/scratch/<scope>/<stem>-snapshot-p<N>.md`; None for an unknown
+    stem (no scope can be formed)."""
+    scope = scratch_scope(art)
+    if scope is None:
+        return None
+    return Path(root) / ".sdd" / "scratch" / scope / f"{Path(art).stem}-snapshot-p{pass_n}.md"
+
+
+def _cut_body(text: str) -> list:
+    """Lines before the real (fence-aware) `## Panel Review`; the whole file
+    when there is none."""
+    lines = text.splitlines()
+    sec = find_section(lines, H_PANEL_REVIEW)
+    return lines if sec is None else lines[:sec[0]]
+
+
+def _changed_body_lines(before: str, after: str) -> int:
+    """Lines starting `+` or `-` in `unified_diff(n=0)`, the two file-header
+    lines dropped by position (so a body `---` rule still counts); `@@` hunk
+    lines are not counted."""
+    diff = list(difflib.unified_diff(_cut_body(before), _cut_body(after), n=0,
+                                     lineterm=""))[2:]
+    return sum(1 for ln in diff if ln[:1] in ("+", "-"))
+
+
+def _is_addressed(row: dict) -> bool:
+    return disposition_base(row.get("Disposition", "")) == "Addressed"
+
+
+def measure_change(art: Path, root: Path, latest_rows: list, pass_n: int) -> ChangeSize:
+    """AD9. Never raises on I/O: an unreadable snapshot reads as absent."""
+    addressed = [r for r in latest_rows if _is_addressed(r)]
+    a = len(addressed)
+    h = sum(1 for r in addressed if _severity_bucket(r.get("Severity", "")) == 0)
+    if a == 0:
+        return ChangeSize(0, 0, 0, "no-edit")
+    snap = _snapshot_path(root, art, pass_n)
+    if snap is None:
+        return ChangeSize(a, h, None, "unknown-tier")
+    try:
+        raw = snap.read_bytes()
+        snap_text = raw.decode("utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return ChangeSize(a, h, None, "snapshot-absent")
+    if not raw:
+        return ChangeSize(a, h, None, "snapshot-empty")
+    if not (snap.parent / f"{Path(art).stem}-draft-p{pass_n}.md").is_file():
+        return ChangeSize(a, h, None, "no-promote")
+    try:
+        live = Path(art).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return ChangeSize(a, h, None, "snapshot-absent")
+    return ChangeSize(a, h, _changed_body_lines(snap_text, live), "measured")
+
+
+def classify_change(size: ChangeSize) -> str:
+    """DM3's classes (TAPER_SIZE_CLASSES_DOC), first match wins. Pure."""
+    if size.addressed == 0:
+        return "zero"
+    if (size.addressed_high == 0 and size.body_lines is not None
+            and size.body_lines <= SMALL_MAX_BODY_LINES
+            and size.addressed <= SMALL_MAX_ADDRESSED):
+        return "small"
+    return "large"
+
+
+# DM4: per-phase seat priority over canonical positions (initial values; the
+# one home). A roster of k takes the first k positions, sorted into canonical
+# order. The anchor (first) seat is the one whose remit covers consistency
+# across the whole artifact (AD10).
+TAPER_SEAT_PRIORITY = {1: (2, 1, 3), 2: (1, 3, 2), 3: (2, 1, 3)}
+
+# DM2's reason vocabulary, in precedence order (the first that applies prints).
+ADVISORY_REASONS = (
+    "error", "high-on-tapered-pass", "high-unknown-roster", "addressed-high",
+    "unknown-tier", "snapshot-absent", "snapshot-empty", "no-promote", "size",
+)
+_CLASS_ROSTER = dict(TAPER_SIZE_CLASSES)
+
+
+@dataclass(frozen=True)
+class RosterAdvisory:
+    next_pass: int
+    roster: int
+    survivors: Optional[tuple]   # None means all (full roster)
+    size_class: str
+    reason: str
+    size: Optional[ChangeSize]
+
+
+def name_survivors(roster: int, tier: Optional[str], phase: int) -> Optional[tuple]:
+    """DM4 survivors for a roster of `roster` (< 3), in canonical order, named
+    through CANONICAL_ROSTERS; None for a full roster or when a position cannot
+    be named (phase 2 position 2 with an unknown tier)."""
+    if roster >= SEATS_ROSTER_LENGTH:
+        return None
+    positions = sorted(TAPER_SEAT_PRIORITY[phase][:roster])
+    if tier is None and phase == 2:
+        by_pos = {i: n for n, i in _PHASE2_UNION_POSITIONS.items()}
+        names = []
+        for pos in positions:
+            holders = [n for n, i in _PHASE2_UNION_POSITIONS.items() if i == pos]
+            if len(holders) != 1:
+                return None
+            names.append(by_pos[pos])
+        return tuple(names)
+    canonical = CANONICAL_ROSTERS[("sdd" if tier is None else tier, phase)]
+    return tuple(canonical[p - 1] for p in positions)
+
+
+def _row_roster_kind(notes: str) -> str:
+    """'tapered' (a seats= token, or a panel= with fewer than 3 groups),
+    'unknown' (no panel= token), or 'full'. Read from the written row's Notes."""
+    groups = parse_panel_summary(notes)
+    if groups is None:
+        return "unknown"
+    if seats_token_present(notes) or len(groups) < SEATS_ROSTER_LENGTH:
+        return "tapered"
+    return "full"
+
+
+def compute_roster_advisory(*, art: Path, root: Path, tier: Optional[str], phase: int,
+                            pass_n: int, latest_rows: list, new_row: dict) -> RosterAdvisory:
+    """DM3 overrides, then classes, then DM4 survivors. The HIGH count and the
+    tapered/unknown reading come from `new_row`, the Trajectory row just
+    written, never from the --panel-roster argument (R5: on-disk inputs)."""
+    size = measure_change(art, root, latest_rows, pass_n)
+    size_class = classify_change(size)
+    try:
+        highs = int(new_row.get("HIGHs", "0"))
+    except ValueError:
+        highs = 0
+    kind = _row_roster_kind(new_row.get("Notes", ""))
+    if highs > 0 and kind == "tapered":
+        reason, roster = "high-on-tapered-pass", 3
+    elif highs > 0 and kind == "unknown":
+        reason, roster = "high-unknown-roster", 3
+    else:
+        roster = _CLASS_ROSTER[size_class]
+        if size.addressed_high > 0:
+            reason = "addressed-high"
+        elif size.reason in ("unknown-tier", "snapshot-absent", "snapshot-empty", "no-promote"):
+            reason = size.reason
+        else:
+            reason = "size"
+    return RosterAdvisory(pass_n + 1, roster, name_survivors(roster, tier, phase),
+                          size_class, reason, size)
+
+
+def format_roster_advisory(adv: RosterAdvisory) -> str:
+    """DM2's advisory line."""
+    size = adv.size
+
+    def v(x):
+        return "?" if x is None else str(x)
+
+    names = "all" if adv.survivors is None else ",".join(adv.survivors)
+    return (
+        f"PANEL-ROSTER-ADVISORY: pass {adv.next_pass} roster={adv.roster}/3 "
+        f"survivors={names} (class={adv.size_class}; reason={adv.reason}; "
+        f"body-lines={v(size.body_lines if size else None)}; "
+        f"addressed={v(size.addressed if size else None)}; "
+        f"addressed-high={v(size.addressed_high if size else None)})"
+    )
+
+
+def _guard_posture_flags(args) -> None:
+    """C1's guard rows for the read-only modes --zone-diff and --posture-report
+    and for --no-notice: each is refused with the other mode and with --skip,
+    --strict-bar, --cross-check, --check and --dry-run, and --no-notice is
+    refused without --posture-report. Exit 1, before the artifact-exists
+    check. (tests/_flag_matrix.py generates the cases.)"""
+    others = [("--zone-diff", args.zone_diff is not None),
+              ("--posture-report", args.posture_report), ("--no-notice", args.no_notice),
+              ("--skip", args.skip), ("--strict-bar", args.strict_bar),
+              ("--cross-check", args.cross_check), ("--check", args.check),
+              ("--dry-run", args.dry_run)]
+    zone = args.zone_diff is not None
+    for flag, on in (("--zone-diff", zone), ("--posture-report", args.posture_report),
+                     ("--no-notice", args.no_notice)):
+        if not on:
+            continue
+        for other, other_on in others:
+            if other_on and other != flag and not (
+                {flag, other} == {"--posture-report", "--no-notice"}
+            ):
+                print(f"error: {flag} cannot be combined with {other}", file=sys.stderr)
+                sys.exit(EXIT_FORMAT_VIOLATION)
+    if args.no_notice and not args.posture_report:
+        print("error: --no-notice is valid only with --posture-report", file=sys.stderr)
+        sys.exit(EXIT_FORMAT_VIOLATION)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Archive a panel-review pass.")
     parser.add_argument("artifact", help="Path to artifact (spec.md / design.md / etc.)")
@@ -1174,6 +1621,27 @@ def main():
              "panel=H.M.L,... unique-yield token in Trajectory Notes. Omit to stamp "
              "nothing. Ignored with --skip.",
     )
+    parser.add_argument(
+        "--posture", choices=list(POSTURES), default=None,
+        help="This run's rigour posture (critical, standard or vibe); overrides "
+             "the persisted posture for this run only.",
+    )
+    parser.add_argument(
+        "--posture-report", action="store_true",
+        help="Read-only: print PANEL-POSTURE, the one-time default notice and "
+             "PANEL-SCRATCH (the working-file root and directory), then exit 0.",
+    )
+    parser.add_argument(
+        "--zone-diff", metavar="DRAFT", default=None,
+        help="Read-only scope-verify check (a): compare the hard-fail zone (from "
+             "### Sealed dispositions to end of file) of the artifact and DRAFT. "
+             "Prints 'ZONE-DIFF: clean' and exits 0, or prints the diff and exits 4.",
+    )
+    parser.add_argument(
+        "--no-notice", action="store_true",
+        help="With --posture-report only: suppress the one-time notice and do not "
+             "record it as shown (for a root lookup).",
+    )
     args = parser.parse_args()
 
     if sum(bool(x) for x in (args.skip, args.strict_bar, args.cross_check)) > 1:
@@ -1182,11 +1650,19 @@ def main():
             file=sys.stderr,
         )
         sys.exit(EXIT_FORMAT_VIOLATION)
+    _guard_posture_flags(args)
 
     art = Path(args.artifact)
     if not art.is_file():
         print(f"error: artifact not found: {art}", file=sys.stderr)
         sys.exit(EXIT_OLD_FORMAT_OR_MISSING)
+
+    # Unit D (I5): read-only, before the TERMINAL_FILENAMES guard, so a
+    # terminal artifact needs no --terminal for it.
+    if args.posture_report:
+        sys.exit(posture_report(art, args.posture, args.no_notice))
+    if args.zone_diff is not None:
+        sys.exit(zone_diff_mode(art, args.zone_diff))
 
     if _strip_numeric_prefix(art.name) in TERMINAL_FILENAMES and not args.terminal:
         print(
@@ -1358,6 +1834,7 @@ def main():
 
     new_seals = []
     new_defs = []  # T5: Deferred-row promotions (parallel to new_seals)
+    run_posture = None  # resolved only on NORMAL / --strict-bar / --cross-check (DM2)
     if args.skip:
         if latest_rows:
             print(
@@ -1377,6 +1854,9 @@ def main():
         }
         latest_to_clear = False
     else:
+        # Unit D (DM2): NORMAL, --strict-bar and --cross-check resolve the
+        # posture (--check and --skip never do).
+        run_posture = resolve_run_posture(art, args.posture, marker_root(art))
         mode_pass = args.strict_bar or args.cross_check
         if not latest_rows and not mode_pass:
             print(
@@ -1459,6 +1939,11 @@ def main():
                 print(order_warning, file=sys.stderr)
             if not unrecognised and not order_warning:
                 tag_parts.append(f"panel={format_panel_summary(counts)}")
+                # Unit D (AD11, DM1): a tapered pass records its dispatched
+                # canonical seat positions directly after panel=.
+                positions = roster_seat_positions(roster, artifact_tier(art), args.phase)
+                if positions is not None:
+                    tag_parts.append(format_seats_record(positions))
         # Stash tag counts for Phase 2/3 so detect_strict_bar_signal can read
         # them across passes (Latest is cleared after each archive).
         if args.phase in (2, 3):
@@ -1656,7 +2141,7 @@ def main():
 
     def build(prov_hex: str) -> str:
         row = dict(new_traj_row, Notes=_with_token(new_traj_row["Notes"], prov_hex))
-        traj_block = render_table(TRAJECTORY_COLS, traj_rows + [row])
+        traj_block = render_trajectory_table(traj_rows + [row])
         edits = list(base_edits)
         if traj_table is not None:
             h, _, _, last = traj_table
@@ -1704,6 +2189,19 @@ def main():
     )
     if advisory:
         print(advisory)
+
+    # Unit D (R5, R7): the next pass's roster, on a NORMAL archive under the
+    # standard posture only. Never changes the exit code.
+    if (run_posture is not None and not (args.strict_bar or args.cross_check)
+            and run_posture.posture == "standard"):
+        try:
+            line = format_roster_advisory(compute_roster_advisory(
+                art=art, root=marker_root(art), tier=artifact_tier(art), phase=args.phase,
+                pass_n=next_pass, latest_rows=latest_rows, new_row=new_traj_row))
+        except Exception:  # noqa: BLE001 — fail to the full roster
+            line = format_roster_advisory(RosterAdvisory(
+                next_pass + 1, 3, None, "large", "error", None))
+        print(line)
 
     sys.exit(EXIT_OK)
 

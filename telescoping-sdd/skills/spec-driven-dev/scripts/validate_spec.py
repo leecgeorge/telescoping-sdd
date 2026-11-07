@@ -50,6 +50,8 @@ if str(_SHARED_SCRIPTS) not in sys.path:
 
 from blueprint_common import (  # noqa: E402
     APPROVAL_HASH_LINE_STRICT,
+    fail_key_counts,
+    fail_key_lines,
     HASH_BASIS_MIGRATION_MSG,
     REAPPROVAL_REMINDER,
     TBD_PATTERN,
@@ -118,9 +120,11 @@ from cfc_parser import (  # noqa: E402
     parse_cfc_entries,
 )
 from arch_config import (  # noqa: E402
+    POSTURES,
     find_project_root as arch_find_project_root,
     resolve_language,
     write_arch_config,
+    write_posture,
 )
 from downstream_ref_guard import PolicyConfig, scan_for_downstream_refs  # noqa: E402
 from spec_dirname import (  # noqa: E402
@@ -2084,13 +2088,32 @@ def _handle_set_language(args, spec_dir: Path, project_root: Optional[Path]) -> 
     code.
     """
     root = arch_find_project_root(spec_dir, project_root)
-    written = write_arch_config(
-        root,
-        args.set_language,
-        list(LANGUAGE_PROFILES.keys()),
-        source="user",
-    )
+    try:
+        written = write_arch_config(
+            root,
+            args.set_language,
+            list(LANGUAGE_PROFILES.keys()),
+            source="user",
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(f"Persisted stack '{args.set_language}' to {written}")
+    return 0
+
+
+def _handle_set_posture(args, spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--set-posture` mode (Unit D, I4). Persist the rigour posture beside the
+    stack in `.sdd/architecture.json` and exit. Touches no content hash and no
+    pending-review marker. An existing file that cannot be merged safely is
+    refused (exit 2) and left unchanged."""
+    root = arch_find_project_root(spec_dir, project_root)
+    try:
+        written = write_posture(root, args.set_posture)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"Persisted posture '{args.set_posture}' to {written}")
     return 0
 
 
@@ -2171,6 +2194,68 @@ def _handle_completion_gate(args, spec_dir: Path, project_root: Path) -> int:
     return 0 if result.passed else 1
 
 
+def _resolve_run_language(args, spec_dir: Path, project_root: Optional[Path]):
+    """(language, source) for this run: explicit flag > persisted config >
+    marker auto-detect (which itself falls back to the neutral profile)."""
+    return resolve_language(
+        spec_dir,
+        explicit=args.language,
+        detector=detect_language,
+        known_languages=list(LANGUAGE_PROFILES.keys()),
+        project_root=project_root,
+    )
+
+
+_PHASE_LABELS = {
+    "spec": "Spec (spec.md)",
+    "design": "Design (design.md)",
+    "tasks": "Tasks (tasks.md)",
+}
+
+
+def _phase_results(args, spec_dir: Path, project_root: Optional[Path]):
+    """Run the requested phase validators and return `[(phase_key, result)]`.
+
+    Phase-`all` semantics: a phase whose artifact does not exist yet is skipped.
+    Shared by the default validation run and `--fail-keys` (Unit D, I4). It does
+    NOT reconcile pending-review, so it reads and writes no marker and no lock.
+    """
+    language, _source = _resolve_run_language(args, spec_dir, project_root)
+    validators = {
+        "spec": lambda d: validate_spec(d),
+        "design": lambda d: validate_design(d, language),
+        "tasks": lambda d: validate_tasks(d, language),
+    }
+    out = []
+    for phase_key, validator in validators.items():
+        if args.phase not in ("all", phase_key):
+            continue
+        # In "all" mode, skip phases whose files don't exist yet
+        _bare = "spec.md" if phase_key == "spec" else f"{phase_key}.md"
+        expected_file = resolve_artifact(spec_dir, _bare)
+        if args.phase == "all" and not expected_file.exists():
+            continue
+        out.append((phase_key, validator(spec_dir)))
+    return out
+
+
+def _handle_fail_keys(args, spec_dir: Path, project_root: Optional[Path]) -> int:
+    """`--fail-keys` mode (Unit D, AD6 / I4). Print the multiset of FAIL check
+    names, approval-state names excluded, as sorted `FAIL-KEY: <count> <key>`
+    lines, and exit 0. Read-only: no reconcile, no marker, no lock, and it is
+    dispatched before the cruft sweep is registered. Any validator exception
+    exits 3 with a one-line error and no FAIL-KEY line."""
+    try:
+        results = [r for _k, r in _phase_results(args, spec_dir, project_root)]
+        lines = fail_key_lines(fail_key_counts(results))
+    except Exception as exc:  # noqa: BLE001 — fail closed, never a traceback
+        print(f"error: --fail-keys could not validate ({exc.__class__.__name__})")
+        return 3
+    for line in lines:
+        print(line)
+    return 0
+
+
 def _run_validation(args, spec_dir: Path, project_root: Optional[Path]) -> int:
     """Default mode: validate the requested phase(s), reconcile pending-review,
     print the summary (audit R3.2 — extracted from main). Returns a process exit
@@ -2179,13 +2264,7 @@ def _run_validation(args, spec_dir: Path, project_root: Optional[Path]) -> int:
     # > marker auto-detect (which itself falls back to the neutral profile). This
     # is the SAME code path any other consumer uses, so the prose layer and the
     # script layer cannot drift to different answers.
-    language, language_source = resolve_language(
-        spec_dir,
-        explicit=args.language,
-        detector=detect_language,
-        known_languages=list(LANGUAGE_PROFILES.keys()),
-        project_root=project_root,
-    )
+    language, language_source = _resolve_run_language(args, spec_dir, project_root)
     use_json = args.output == "json"
 
     if not use_json:
@@ -2200,23 +2279,9 @@ def _run_validation(args, spec_dir: Path, project_root: Optional[Path]) -> int:
         "language_source": language_source,
         "phases": {},
     }
-    validators = {
-        "spec": ("Spec (spec.md)", lambda d: validate_spec(d)),
-        "design": ("Design (design.md)", lambda d: validate_design(d, language)),
-        "tasks": ("Tasks (tasks.md)", lambda d: validate_tasks(d, language)),
-    }
 
-    for phase_key, (label, validator) in validators.items():
-        if args.phase not in ("all", phase_key):
-            continue
-
-        # In "all" mode, skip phases whose files don't exist yet
-        _bare = "spec.md" if phase_key == "spec" else f"{phase_key}.md"
-        expected_file = resolve_artifact(spec_dir, _bare)
-        if args.phase == "all" and not expected_file.exists():
-            continue
-
-        result = validator(spec_dir)
+    for phase_key, result in _phase_results(args, spec_dir, project_root):
+        label = _PHASE_LABELS[phase_key]
 
         if not result.passed:
             status = "FAILED"
@@ -2393,7 +2458,22 @@ def main():
         choices=list(LANGUAGE_PROFILES.keys()),
         default=None,
         help="Persist the project's stack to .sdd/architecture.json (the "
-        "declare-once store) and exit. The single, explicit write path.",
+        "declare-once store) and exit. The explicit write path for the stack.",
+    )
+    mode_group.add_argument(
+        "--fail-keys",
+        action="store_true",
+        help="Read-only: print the multiset of FAIL check names (approval-state "
+        "names excluded) as sorted 'FAIL-KEY: <count> <json key>' lines and exit "
+        "0; exit 3 if a validator raises. No reconcile, marker or lock.",
+    )
+    mode_group.add_argument(
+        "--set-posture",
+        choices=list(POSTURES),
+        default=None,
+        help="Persist the project's rigour posture (critical, standard or vibe) "
+        "to .sdd/architecture.json, keeping the stack, and exit. Touches no "
+        "content hash.",
     )
     mode_group.add_argument(
         "--run-state",
@@ -2456,6 +2536,10 @@ def main():
     # below, so the cruft sweep never runs and the audit writes nothing.
     if args.audit_convergence:
         sys.exit(_handle_audit(spec_dir))
+    # Unit D (I4): --fail-keys is likewise dispatched before the atexit
+    # registration, so the cruft sweep never runs and the mode writes nothing.
+    if args.fail_keys:
+        sys.exit(_handle_fail_keys(args, spec_dir, project_root))
 
     # Best-effort .sdd/ cruft cleanup at process exit.
     # Registered AFTER the arg-validation sys.exit(2)/parser.error guards above
@@ -2482,6 +2566,8 @@ def main():
         sys.exit(_handle_completion_gate(args, spec_dir, project_root))
     if args.set_language:
         sys.exit(_handle_set_language(args, spec_dir, project_root))
+    if args.set_posture:
+        sys.exit(_handle_set_posture(args, spec_dir, project_root))
     if args.run_state:
         sys.exit(_handle_run_state(args, spec_dir, project_root))
 

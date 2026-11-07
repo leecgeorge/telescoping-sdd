@@ -363,7 +363,8 @@ def test_sidecar_write_failure_warns_and_archive_succeeds(tmp_path):
     root = tmp_path / "failing"
     art = _spec(root)
     (root / ".sdd").write_text("not a directory", encoding="utf-8")
-    proc = _run(art, "--phase", "1")
+    # --posture critical: no Unit D roster advisory on stdout.
+    proc = _run(art, "--phase", "1", "--posture", "critical")
     assert proc.returncode == 0
     assert proc.stdout == ""
     assert proc.stderr.startswith("warning: panel-log append to ")
@@ -382,7 +383,8 @@ def test_record_building_exception_warns_and_exits_zero(tmp_path, monkeypatch, c
         raise ValueError("record build failed")
 
     monkeypatch.setattr(ap, "build_panel_log_records", boom)
-    monkeypatch.setattr(sys, "argv", ["archive_pass.py", str(art), "--phase", "1"])
+    monkeypatch.setattr(sys, "argv", ["archive_pass.py", str(art), "--phase", "1",
+                                      "--posture", "critical"])
     with pytest.raises(SystemExit) as exc:
         ap.main()
     assert exc.value.code == 0

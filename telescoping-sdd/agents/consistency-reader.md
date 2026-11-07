@@ -40,6 +40,10 @@ Either the single word `clean` (no discrepancies found), **or** a list where **e
 - **quoted_span_or_line** — a quoted span or a line reference precise enough that the orchestrator can locate it **without** re-reading the chain. If a discrepancy is real but too coarse to pin to a span, say so explicitly (this is itself reportable — the orchestrator will fall back to an in-main re-read).
 - **description** — a one-line statement of the discrepancy.
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Boundaries (what you must NOT do)
 
 - Do **not** halt, classify (trivial vs. substantial), or route a fix — you locate; the orchestrator decides (each discrepancy is locatable input, not a routing decision).

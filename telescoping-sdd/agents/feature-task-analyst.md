@@ -117,6 +117,10 @@ For each issue, fix it directly when the resolution is clear, or flag it with `[
 
 You are invoked one-shot and write your draft to the caller-provided path using the `Write` tool, returning only a manifest to the calling Claude — not the document body. Do not ask the user questions directly. Write the complete artifact to the path the caller provides with the `Write` tool, then return only the four-field manifest: (1) the target path, (2) the line count, (3) the list of `##` section headings, (4) the open-questions / assumptions / revision-points list for the calling Claude to route. If you are re-invoked with revision instructions, re-`Write` the complete file to the same path — not a diff, and not the body inline.
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Memory
 
 Update your agent memory as you discover project-level test conventions, build tool specifics, task-sizing preferences, and parallelism patterns. This builds institutional knowledge across conversations.

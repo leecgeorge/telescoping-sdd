@@ -60,6 +60,10 @@ Grammar (the orchestrator validates this shape; violating it triggers a fall-bac
 
 `Addressed`, `Deferred`, `Sealed`, `Accepted as risk`, `User input needed`, `Halt and re-scope`. A `→ <target>` suffix is allowed (e.g. `Deferred → design.md`); the base label must be one of these.
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Boundaries (what you must NOT do)
 
 - Do **not** dispose, self-check, vote, or confirm `[upstream]` — you propose; the orchestrator decides.

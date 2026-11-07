@@ -42,6 +42,8 @@ if str(_SHARED_SCRIPTS) not in sys.path:
 
 from blueprint_common import (  # noqa: E402
     APPROVAL_HASH_LINE_STRICT,
+    fail_key_counts,
+    fail_key_lines,
     PANEL_UNRESOLVED_DISPOSITION,
     REAPPROVAL_REMINDER,
     MarkerCorruptError,
@@ -124,9 +126,11 @@ from cfc_parser import (  # noqa: E402
     parse_cfc_entries as _shared_parse_cfc_entries,
 )
 from arch_config import (  # noqa: E402
+    POSTURES,
     find_project_root as arch_find_project_root,
     parse_arch_token,
     write_arch_config,
+    write_posture,
 )
 from downstream_ref_guard import PolicyConfig, scan_for_downstream_refs  # noqa: E402
 from spec_dirname import (  # noqa: E402
@@ -2109,14 +2113,33 @@ def _handle_write_arch_config(blueprint_dir: Path) -> int:
         )
         return 2
     project_root = blueprint_dir.parent
-    written = write_arch_config(
-        project_root,
-        token,
-        KNOWN_ARCH_TOKENS,
-        source="blueprint",
-        detected_from="ARCHITECTURE.md",
-    )
+    try:
+        written = write_arch_config(
+            project_root,
+            token,
+            KNOWN_ARCH_TOKENS,
+            source="blueprint",
+            detected_from="ARCHITECTURE.md",
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(f"Persisted stack '{token}' (from ARCHITECTURE.md) to {written}")
+    return 0
+
+
+def _handle_set_posture(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """`--set-posture` mode (Unit D, I4). Persist the rigour posture beside the
+    stack in `.sdd/architecture.json` and exit. Touches no content hash and no
+    pending-review marker. An existing file that cannot be merged safely is
+    refused (exit 2) and left unchanged."""
+    root = arch_find_project_root(blueprint_dir, project_root)
+    try:
+        written = write_posture(root, args.set_posture)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"Persisted posture '{args.set_posture}' to {written}")
     return 0
 
 
@@ -2308,6 +2331,60 @@ def _guard_override_convergence(args) -> None:
         sys.exit(2)
 
 
+_PHASE_FILES = {
+    "scope": "SCOPE.md",
+    "architecture": "ARCHITECTURE.md",
+    "plan": "PLAN.md",
+}
+
+_PHASE_LABELS = {
+    "scope": "Scope (SCOPE.md)",
+    "architecture": "Architecture (ARCHITECTURE.md)",
+    "plan": "Plan (PLAN.md)",
+}
+
+
+def _phase_results(args, blueprint_dir: Path, project_root: Optional[Path]):
+    """Run the requested phase validators and return `[(phase_key, result)]`.
+
+    Phase-`all` semantics: a phase whose artifact does not exist yet is skipped.
+    Shared by the default validation run and `--fail-keys` (Unit D, I4). It does
+    NOT reconcile pending-review, so it reads and writes no marker and no lock.
+    """
+    validators = {
+        "scope": lambda d: validate_scope(d),
+        "architecture": lambda d: validate_architecture(d),
+        "plan": lambda d: validate_plan(d, project_root),
+    }
+    out = []
+    for phase_key, validator in validators.items():
+        if args.phase not in ("all", phase_key):
+            continue
+        # In "all" mode, skip phases whose files don't exist yet
+        expected_file = resolve_artifact(blueprint_dir, _PHASE_FILES[phase_key])
+        if args.phase == "all" and not expected_file.exists():
+            continue
+        out.append((phase_key, validator(blueprint_dir)))
+    return out
+
+
+def _handle_fail_keys(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
+    """`--fail-keys` mode (Unit D, AD6 / I4). Print the multiset of FAIL check
+    names, approval-state names excluded, as sorted `FAIL-KEY: <count> <key>`
+    lines, and exit 0. Read-only: no reconcile, no marker, no lock, and it is
+    dispatched before the cruft sweep is registered. Any validator exception
+    exits 3 with a one-line error and no FAIL-KEY line."""
+    try:
+        results = [r for _k, r in _phase_results(args, blueprint_dir, project_root)]
+        lines = fail_key_lines(fail_key_counts(results))
+    except Exception as exc:  # noqa: BLE001 — fail closed, never a traceback
+        print(f"error: --fail-keys could not validate ({exc.__class__.__name__})")
+        return 3
+    for line in lines:
+        print(line)
+    return 0
+
+
 def _run_validation(args, blueprint_dir: Path, project_root: Optional[Path]) -> int:
     """Default mode: validate the requested phase(s), reconcile pending-review,
     print the summary (audit R3.2 — extracted from main). Returns an exit code
@@ -2324,31 +2401,10 @@ def _run_validation(args, blueprint_dir: Path, project_root: Optional[Path]) -> 
         "phases": {},
     }
 
-    phase_file_map = {
-        "scope": "SCOPE.md",
-        "architecture": "ARCHITECTURE.md",
-        "plan": "PLAN.md",
-    }
+    phase_file_map = _PHASE_FILES
 
-    validators = {
-        "scope": ("Scope (SCOPE.md)", lambda d: validate_scope(d)),
-        "architecture": (
-            "Architecture (ARCHITECTURE.md)",
-            lambda d: validate_architecture(d),
-        ),
-        "plan": ("Plan (PLAN.md)", lambda d: validate_plan(d, project_root)),
-    }
-
-    for phase_key, (label, validator) in validators.items():
-        if args.phase not in ("all", phase_key):
-            continue
-
-        # In "all" mode, skip phases whose files don't exist yet
-        expected_file = resolve_artifact(blueprint_dir, phase_file_map[phase_key])
-        if args.phase == "all" and not expected_file.exists():
-            continue
-
-        result = validator(blueprint_dir)
+    for phase_key, result in _phase_results(args, blueprint_dir, project_root):
+        label = _PHASE_LABELS[phase_key]
 
         if not result.passed:
             status = "FAILED"
@@ -2458,6 +2514,21 @@ def main():
         "touches no content hash).",
     )
     mode_group.add_argument(
+        "--fail-keys",
+        action="store_true",
+        help="Read-only: print the multiset of FAIL check names (approval-state "
+        "names excluded) as sorted 'FAIL-KEY: <count> <json key>' lines and exit "
+        "0; exit 3 if a validator raises. No reconcile, marker or lock.",
+    )
+    mode_group.add_argument(
+        "--set-posture",
+        choices=list(POSTURES),
+        default=None,
+        help="Persist the project's rigour posture (critical, standard or vibe) "
+        "to <project-root>/.sdd/architecture.json, keeping the stack, and exit. "
+        "Touches no content hash.",
+    )
+    mode_group.add_argument(
         "--run-state",
         action="store_true",
         help="Print a compact, read-only one-screen rehydration summary (current "
@@ -2548,6 +2619,10 @@ def main():
     # below, so the cruft sweep never runs and the audit writes nothing.
     if args.audit_convergence:
         sys.exit(_handle_audit(blueprint_dir))
+    # Unit D (I4): --fail-keys is likewise dispatched before the atexit
+    # registration, so the cruft sweep never runs and the mode writes nothing.
+    if args.fail_keys:
+        sys.exit(_handle_fail_keys(args, blueprint_dir, project_root))
 
     # Best-effort .sdd/ cruft cleanup at process exit.
     # Registered AFTER the arg-validation sys.exit(2) guards above and before the
@@ -2571,6 +2646,8 @@ def main():
         sys.exit(_handle_restore_anchor(blueprint_dir, project_root))
     if args.write_arch_config:
         sys.exit(_handle_write_arch_config(blueprint_dir))
+    if args.set_posture:
+        sys.exit(_handle_set_posture(args, blueprint_dir, project_root))
     if args.run_state:
         sys.exit(_handle_run_state(args, blueprint_dir, project_root))
     if args.approve:

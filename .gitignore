@@ -41,6 +41,12 @@ Thumbs.db
 # loop; author-side, never shipped). Ignore the dir, not all of .sdd/.
 /.sdd/panel-findings/
 
+# Orchestrator scratch: drafts, snapshots, diffs, sweep/census output. One
+# root and one naming rule (panel-review.md § Working files). Never committed.
+/.sdd/scratch/
+# Per-user marker: the one-time default-posture notice has been shown.
+/.sdd/posture-notice
+
 # SDD working artifacts — author-side specs/design/tasks, NOT part of the
 # shipped plugin (the plugin is telescoping-sdd/). Do not ship.
 /specs/
@@ -59,6 +65,8 @@ Thumbs.db
 /V2_24_1_REVIEW.md
 /OPUS5-PROMPTING-REVIEW.md
 /PROMPT-EVAL-RESULTS.md
+/PANEL-LOOP-LEVERS.md
+/OUTSTANDING.md
 # NOT ignored, deliberately: PROMPT-EVAL-METHOD.md — written subject-agnostic
 # (it names no private project) so it can be committed as maintainer docs. Left
 # visible so that stays an explicit choice rather than an accident.

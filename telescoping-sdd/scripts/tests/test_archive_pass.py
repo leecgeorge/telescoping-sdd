@@ -3354,12 +3354,15 @@ _GOLDEN_DIR = (
     _REPO_ROOT / "telescoping-sdd" / "scripts" / "tests" / "fixtures"
     / "pre_panel_roster_golden"
 )
+# Unit D (AD11): pre-feature output is preserved under the `critical` posture,
+# where no roster advisory prints; under `standard` a NORMAL archive adds one
+# PANEL-ROSTER-ADVISORY line to stdout.
 _GOLDEN_CASES = {
-    "phase1": ("01_spec.md", ["--phase", "1"]),
+    "phase1": ("01_spec.md", ["--phase", "1", "--posture", "critical"]),
     "strict_bar": ("01_spec.md", ["--phase", "1", "--strict-bar"]),
-    "phase2": ("02_design.md", ["--phase", "2"]),
-    "phase3": ("03_tasks.md", ["--phase", "3", "--terminal"]),
-    "halt_vote": ("02_design.md", ["--phase", "2"]),
+    "phase2": ("02_design.md", ["--phase", "2", "--posture", "critical"]),
+    "phase3": ("03_tasks.md", ["--phase", "3", "--terminal", "--posture", "critical"]),
+    "halt_vote": ("02_design.md", ["--phase", "2", "--posture", "critical"]),
 }
 _GOLDEN_DATE_RE = re.compile(r"^(\|\s*\d+\s*\|\s*)\d{4}-\d{2}-\d{2}", re.MULTILINE)
 
@@ -3565,8 +3568,34 @@ def test_check_roster_order_transposed_names_both_orders():
 def test_check_roster_order_flags_non_permutation_and_wrong_length():
     ap = _load_archive_pass()
     assert ap.check_roster_order(["architect", "ops-reviewer", "security-reviewer"], "sdd", 2)
-    assert ap.check_roster_order(["architect", "testability-reviewer"], "sdd", 2)
     assert ap.check_roster_order([*_SDD_P2, "critic"], "sdd", 2)
+
+
+# Unit D (DK2): a proper canonical-order subsequence is a tapered pass and no
+# longer warns; these replace Unit C's two-name-roster-warns cases.
+def test_check_roster_order_accepts_canonical_subsequence():
+    ap = _load_archive_pass()
+    assert ap.check_roster_order(["architect", "testability-reviewer"], "sdd", 2) is None
+    assert ap.check_roster_order(["architect", "security-reviewer"], "blueprint", 2) is None
+    assert ap.check_roster_order(["user-advocate", "pragmatist"], None, 1) is None
+    assert ap.check_roster_order(["simplifier"], "sdd", 3) is None
+    assert ap.check_roster_order(["architect", "ops-reviewer"], None, 2) is None
+
+
+def test_check_roster_order_warns_on_transposed_subset():
+    ap = _load_archive_pass()
+    w = ap.check_roster_order(["security-reviewer", "architect"], "sdd", 2)
+    assert w and "does not match the canonical sdd Phase 2 order" in w, w
+    assert ap.check_roster_order(["architect", "architect"], "sdd", 2)
+    assert ap.check_roster_order(["pragmatist", "user-advocate"], None, 1)
+
+
+def test_check_roster_order_warns_on_unrecognised_name():
+    ap = _load_archive_pass()
+    assert ap.check_roster_order(["architect", "critic"], "sdd", 2)
+    assert ap.check_roster_order(["architect", "ops-reviewer"], "sdd", 2)
+    w = ap.check_roster_order(["testability-reviewer", "ops-reviewer"], None, 2)
+    assert w and "does not resolve to canonical Phase 2 positions" in w, w
 
 
 def test_check_roster_order_flags_duplicate_name():
@@ -3583,10 +3612,16 @@ def test_check_roster_order_unknown_tier_phase1_and_3_uses_shared():
     assert w and "canonical shared Phase 3 order" in w, w
 
 
-def test_check_roster_order_unknown_tier_phase2_is_silent():
+def test_check_roster_order_unknown_tier_phase2_union_lookup():
+    # Unit D (DK2, C5): an unknown stem on phase 2 resolves positions through
+    # the cross-tier union lookup; a roster that does not resolve now warns.
     ap = _load_archive_pass()
-    for roster in (["a"], ["a", "b", "c"], ["a", "b", "c", "d"], ["a", "a", "b"]):
+    for roster in (list(_SDD_P2), ["architect", "ops-reviewer", "security-reviewer"],
+                   ["architect"], ["architect", "security-reviewer"]):
         assert ap.check_roster_order(roster, None, 2) is None, roster
+    for roster in (["a"], ["a", "b", "c"], ["a", "b", "c", "d"], ["a", "a", "b"],
+                   ["testability-reviewer", "ops-reviewer"]):
+        assert ap.check_roster_order(roster, None, 2), roster
 
 
 # ---------------------------------------------------------------------------
@@ -4068,22 +4103,24 @@ def test_unknown_stem_phase1_and_phase3_canonical_roster_stamps_silently(tmp_pat
 
 
 @pytest.mark.parametrize("roster,expected", [
-    ("a", "panel=1.0.0"),
-    ("a,b,c", "panel=1.0.0,0.0.0,0.0.0"),
-    ("a,b,c,d", "panel=1.0.0,0.0.0,0.0.0,0.0.0"),
+    ("architect", "panel=1.0.0; seats=1"),
+    ("architect,testability-reviewer,security-reviewer", "panel=1.0.0,0.0.0,0.0.0"),
+    ("architect,ops-reviewer,security-reviewer", "panel=1.0.0,0.0.0,0.0.0"),
 ])
-def test_unknown_stem_phase2_stamps_unchecked_at_any_roster_size(tmp_path, roster, expected):
-    art = _c_art(tmp_path, "notes.md", "| [HIGH] | a | [contract] c | Addressed | f |\n")
+def test_unknown_stem_phase2_stamps_through_union_lookup(tmp_path, roster, expected):
+    # Unit D (DK2): replaces Unit C's stamps-unchecked-at-any-roster-size case.
+    art = _c_art(tmp_path, "notes.md", "| [HIGH] | architect | [contract] c | Addressed | f |\n")
     proc = _c_run(art, "--phase", "2", "--panel-roster", roster)
     assert proc.returncode == 0 and proc.stderr == ""
-    assert expected in _c_tokens(art)
+    assert expected in _c_notes(art)
 
 
-def test_unknown_stem_phase2_duplicate_roster_credits_first_seat(tmp_path):
+@pytest.mark.parametrize("roster", ["a", "a,b,c", "a,a,b"])
+def test_unknown_stem_phase2_unresolved_roster_warns_and_suppresses(tmp_path, roster):
     art = _c_art(tmp_path, "notes.md", "| [HIGH] | a | [contract] c | Addressed | f |\n")
-    proc = _c_run(art, "--phase", "2", "--panel-roster", "a,a,b")
-    assert proc.returncode == 0 and proc.stderr == ""
-    assert "panel=1.0.0,0.0.0,0.0.0" in _c_tokens(art)
+    proc = _c_run(art, "--phase", "2", "--panel-roster", roster)
+    assert proc.returncode == 0 and "does not resolve to canonical Phase 2 positions" in proc.stderr
+    assert "panel=" not in _c_notes(art)
 
 
 def _norm_date(text: str) -> str:
