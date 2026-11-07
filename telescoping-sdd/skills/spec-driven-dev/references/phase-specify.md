@@ -47,6 +47,8 @@ Before drafting, answer one intake question: **does this feature implement a mas
 
 If the agent believes a CFC's `Per-feature AC` is wrong for this feature (the Participating-features list is mistaken, the AC text is unworkable as written, the Enforcement is infeasible), the agent must NOT edit the AC text locally. Instead, surface the concern as a candidate `Halt and re-scope` for the spec panel — the CFC lives in PLAN and must be revised at PLAN level via project-blueprint's amendment workflow, not silently dropped from the feature.
 
+**Altitude rule.** An upstream artifact follows one rule: each artifact decides only what its altitude owns; it may constrain a lower altitude, never decide for it. `spec.md` owns the observable behaviour at the feature's boundary, its acceptance criteria, and where the feature touches the codebase (the file list). It does not own which function or module holds the logic, internal algorithms, or data layouts not visible at the boundary, which belong to `design.md`. Litmus for every sentence you draft: *would this sentence still be true if the next phase chose a different, equally valid implementation?* If not, the sentence belongs a level down. If a mechanism matters, write "Design must decide X" under `## Decision Points`, never in the body and never as an unchecked Open Question. Keep `Project Structure` a file list that says what changes in each file, not how.
+
 Required sections:
 - **Objective** — One paragraph on what and why, unless the feature is **PLAN-driven**
   (see the thin-Objective sanction above), in which case the sanctioned form is the

@@ -57,6 +57,10 @@ The structure below is that `## Assessment (human)` block:
 - **Operational Burden** -- Manual steps, on-call complexity, maintenance overhead
 - **Recommendations** -- Prioritized by operational risk
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Constraints
 
 - For a deliverable with a production runtime, never approve a design whose changes cannot be undone — but read "rollback" at the right altitude: a deployed service needs a fast revert path; a static site or skill needs "redeploy the previous build / revert the commit"; a no-runtime artifact may have nothing to roll back, which is a valid finding to state, not a blocker to invent.

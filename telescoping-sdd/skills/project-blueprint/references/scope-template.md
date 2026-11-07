@@ -53,6 +53,11 @@ Use this template when creating `SCOPE.md` for a new project blueprint.
 - [ ] Q1: [Question about scope, users, or constraints]
 - [ ] Q2: [Another question]
 
+## Decision Points
+
+- [Architecture must decide … — a choice that belongs to the architecture, recorded here instead of decided in this document. Not an approval gate.]
+- [Another point the architecture must decide]
+
 ## Success Criteria
 
 - [ ] [Measurable condition 1 — e.g., "Users can complete X in under Y seconds"]

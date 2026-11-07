@@ -169,3 +169,56 @@ def test_model_tiers_section_byte_identical_after_consistency_reader() -> None:
     sdd_block = _extract_section(_read(SDD), HEADING, SDD)
     assert "consistency-reader" in pb_block and "consistency-reader" in sdd_block
     assert pb_block == sdd_block, "Model tiers section drifted across copies"
+
+
+# ---------------------------------------------------------------------------
+# Per-tier drafter effort pin (Unit D T34, AD17; spec R10, SEAL-06, DEF-01).
+# Values come from the #22 drafter-arm decisions (T33): both tiers KEEP
+# `opus`/`medium`, so `## Model tiers` keeps its untiered drafter bullet and no
+# drafter is pending a frontmatter change (no xfail set is needed).
+# ---------------------------------------------------------------------------
+
+DRAFTER_EFFORT = {"blueprint": "medium", "sdd": "medium"}
+
+_TIER_DRAFTERS = {
+    "blueprint": (
+        "project-spec-analyst",
+        "project-architecture-analyst",
+        "project-plan-analyst",
+    ),
+    "sdd": (
+        "feature-spec-analyst",
+        "feature-architecture-analyst",
+        "feature-task-analyst",
+    ),
+}
+
+_DRAFTER_PARAMS = [
+    pytest.param(tier, name, id=f"{tier}-{name}")
+    for tier, names in _TIER_DRAFTERS.items()
+    for name in names
+]
+
+
+@pytest.mark.parametrize(("tier", "name"), _DRAFTER_PARAMS)
+def test_drafter_frontmatter_matches_tier_effort(tier: str, name: str) -> None:
+    """Each drafter's frontmatter says `model: opus` with its tier's effort."""
+    path = _AGENTS_DIR / f"{name}.md"
+    assert path.is_file(), f"missing drafter agent file: {path}"
+    fm = _frontmatter(path)
+    assert fm.get("name") == name, fm
+    assert fm.get("model") == "opus", fm
+    assert fm.get("effort") == DRAFTER_EFFORT[tier], (
+        f"{path}: effort {fm.get('effort')!r} != {tier} tier's "
+        f"{DRAFTER_EFFORT[tier]!r} (## Model tiers / AD17)"
+    )
+
+
+def test_drafter_effort_matches_model_tiers_bullet() -> None:
+    """With both tiers on one effort, the untiered drafter bullet names it."""
+    efforts = set(DRAFTER_EFFORT.values())
+    assert len(efforts) == 1, "split decision: the bullet must be tier-qualified (AD17)"
+    (effort,) = efforts
+    for path in (SDD, PB):
+        section = _extract_section(_read(path), HEADING, path)
+        assert f"Opus, `effort: {effort}`" in section, path

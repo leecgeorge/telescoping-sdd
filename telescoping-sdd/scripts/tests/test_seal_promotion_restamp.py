@@ -773,3 +773,30 @@ def test_v3_stamp_fallback_table_repad_falls_to_create_arm(tmp_path, capsys):
     assert not any(ln.startswith("restamp-carve-out:") for ln in out.splitlines())
     assert _REMINDER in out
     assert _pending_keys(tmp_path) != []
+
+
+# ---------------------------------------------------------------------------
+# Unit D T17 ([DEF-05]): the reworded-Notes-header case on the headers= path.
+# A v3 stamp never reaches `_render2`, so these premises stamp under v2.
+# ---------------------------------------------------------------------------
+
+def _reworded_after_seal(p: Path) -> None:
+    _add_latest(p, _seal())
+    _archive(p)
+    t = p.read_text(encoding="utf-8")
+    hdr = next(ln for ln in t.splitlines() if ln.startswith("| Pass "))
+    _edit(p, hdr, hdr.replace("| Notes ", "| Notez "))
+
+
+def test_classifier_reworded_header_plus_seal_unrecognised_v2(tmp_path):
+    p = _approved(tmp_path, basis="v2")
+    _reworded_after_seal(p)
+    assert _classify(p) is None
+
+
+def test_classifier_reworded_header_plus_seal_with_seats_token_unrecognised(tmp_path):
+    p = _approved(tmp_path, basis="v2",
+                  row_notes={1: "panel=1.0.0,0.1.0; seats=1,3; converged (0 HIGH)"})
+    assert "seats=1,3" in p.read_text(encoding="utf-8")
+    _reworded_after_seal(p)
+    assert _classify(p) is None

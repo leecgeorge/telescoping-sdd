@@ -496,12 +496,25 @@ def render_table_row(values, widths):
     return "|" + "|".join(cells) + "|"
 
 
-def render_table(headers, rows):
+def render_table(headers, rows, *, measure=None):
+    """Render a Markdown table, padding each column to its widest cell.
+
+    With ``measure=None`` the output is exactly the pre-Unit-D output (pinned
+    by a golden fixture). Otherwise each column's width is
+    ``max(len(header), measure(header, cell))``; cells are still written in
+    full, so a cell measured shorter than it is runs past the padded width
+    (``ljust`` never truncates).
+    """
     if not rows:
         widths = [len(h) for h in headers]
-    else:
+    elif measure is None:
         widths = [
             max(len(h), max(len(r.get(h, "")) for r in rows))
+            for h in headers
+        ]
+    else:
+        widths = [
+            max(len(h), max(measure(h, r.get(h, "")) for r in rows))
             for h in headers
         ]
     out = [
@@ -792,3 +805,116 @@ def evaluate_convergence(content: str) -> ConvergenceVerdict:
              "strict-bar-closing": 4, "halt-and-rescope": 5}
     failed.sort(key=lambda c: order.get(c.split("=")[0], 9))
     return ConvergenceVerdict(r.pass_no, tuple(failed), legacy, legacy_format, freshness)
+
+
+# ---------------------------------------------------------------------------
+# Tapered-roster record and header-width hold (Unit D, R6: DM1, AD11, AD12)
+# ---------------------------------------------------------------------------
+
+SEATS_PREFIX = "seats="
+# Unit C's panel= group, pinned equal to archive_pass.PANEL_TOKEN_RE by a test.
+_G = r"[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}"
+PANEL_TOKEN_FULL_RE = re.compile(rf"panel={_G}(?:,{_G})*")
+SEATS_TOKEN_FULL_RE = re.compile(r"seats=([1-9](?:,[1-9])*)")
+# The canonical roster length every CANONICAL_ROSTERS entry has (pinned by a
+# test, [DEF-02]). A full-roster pass carries no seats= token.
+SEATS_ROSTER_LENGTH = 3
+
+
+def _seats_token_span(notes: str) -> Optional[Tuple[int, int]]:
+    """Raw ``(start, end)`` span of the real ``; seats=…`` token, or None.
+
+    Applies Unit C0's ``strip_upstream_tags`` first (as ``notes_tokens`` does;
+    it only removes from the end, so offsets into the stripped text are offsets
+    into the raw cell), then walks the ``;``-split pieces left to right with
+    ``notes_tokens``' skip rules: an empty piece is skipped and the walk stops
+    at the first piece starting with 'halt vote'. The first piece that
+    fullmatches ``PANEL_TOKEN_FULL_RE`` marks ``panel=``; the next non-empty
+    piece must fullmatch ``SEATS_TOKEN_FULL_RE``. The span runs from the ``;``
+    before it to its end. A ``seats=`` anywhere else is never read. Pure.
+    """
+    text = strip_upstream_tags(notes)
+    pos = 0
+    seen_panel = False
+    for piece in text.split(";"):
+        start = pos
+        pos += len(piece) + 1
+        t = piece.strip()
+        if not t:
+            continue
+        if t.lower().startswith(_HALT_VOTE_PREFIX):
+            return None
+        if seen_panel:
+            if SEATS_TOKEN_FULL_RE.fullmatch(t):
+                return start - 1, start + len(piece.rstrip())
+            return None
+        if PANEL_TOKEN_FULL_RE.fullmatch(t):
+            seen_panel = True
+    return None
+
+
+def _strip_seats_for_width(notes: str) -> str:
+    """Notes with the ``_seats_token_span`` removed, or unchanged. Pure."""
+    span = _seats_token_span(notes)
+    if span is None:
+        return notes
+    return notes[:span[0]] + notes[span[1]:]
+
+
+def format_seats_record(positions: Sequence[int]) -> str:
+    """``(1, 3) -> 'seats=1,3'``. Raises ValueError unless the positions are
+    non-empty, strictly increasing and each in 1..9."""
+    ps = tuple(positions)
+    if not ps or any(not isinstance(p, int) or p < 1 or p > 9 for p in ps) \
+            or any(a >= b for a, b in zip(ps, ps[1:])):
+        raise ValueError(f"invalid seats positions {ps!r}")
+    return SEATS_PREFIX + ",".join(str(p) for p in ps)
+
+
+def seats_token_present(notes: str) -> bool:
+    """True when ``_seats_token_span`` finds a token, valid or not. Pure."""
+    return _seats_token_span(notes) is not None
+
+
+def parse_seats_record(notes: str) -> Optional[Tuple[int, ...]]:
+    """Positions from the token at ``_seats_token_span``, or None.
+
+    Also None unless DM1 holds: strictly increasing; every position at most the
+    canonical roster length; and the position count equal to the row's
+    ``panel=`` group count, which is itself below the canonical roster length.
+    Never raises.
+    """
+    span = _seats_token_span(notes)
+    if span is None:
+        return None
+    m = SEATS_TOKEN_FULL_RE.fullmatch(notes[span[0]:span[1]].lstrip(";").strip())
+    if m is None:
+        return None
+    ps = tuple(int(x) for x in m.group(1).split(","))
+    if any(a >= b for a, b in zip(ps, ps[1:])) or max(ps) > SEATS_ROSTER_LENGTH:
+        return None
+    panel = next((t for t in notes_tokens(notes) if PANEL_TOKEN_FULL_RE.fullmatch(t)), None)
+    if panel is None:
+        return None
+    groups = panel[len("panel="):].count(",") + 1
+    if groups >= SEATS_ROSTER_LENGTH or groups != len(ps):
+        return None
+    return ps
+
+
+def trajectory_measure(header: str, cell: str) -> int:
+    """``len(cell)``, except Notes is measured without its ``seats=`` span (AD12)."""
+    if header == "Notes":
+        return len(_strip_seats_for_width(cell))
+    return len(cell)
+
+
+def render_trajectory_table(rows, *, headers: Optional[Sequence[str]] = None) -> list:
+    """The only Trajectory renderer: ``render_table`` with ``trajectory_measure``.
+
+    ``headers=`` takes the on-disk header cells, for Unit C0 AD13's classifier
+    call sites, which must render the header text as found rather than
+    ``TRAJECTORY_COLS``.
+    """
+    return render_table(list(headers) if headers is not None else TRAJECTORY_COLS,
+                        rows, measure=trajectory_measure)

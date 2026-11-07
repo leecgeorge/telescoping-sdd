@@ -80,7 +80,8 @@ Every artifact phase above runs the same six-step loop. Only the drafting subage
 │  1. Delegate to specialist subagent (draft + self-review ≤5x)    │
 │  2. Calling Claude re-reviews the returned draft  (≤5 passes)    │
 │  3. Cross-document consistency check vs upstream approved docs   │
-│  4. Panel review — 3 personas in parallel, loop ≤5 passes:       │
+│  4. Panel review — 3 personas in parallel, loop ≤5 passes        │
+│     (passes after a loop's first may run fewer):                 │
 │        Addressed │ Deferred→ │ Accepted as risk │ User input     │
 │  5. validate_{blueprint|spec}.py  (sections, hashes, no [TBD])   │
 │  6. HUMAN REVIEW GATE → --approve <phase>  (content-hash locked) │
@@ -91,9 +92,9 @@ Every artifact phase above runs the same six-step loop. Only the drafting subage
 
 Only `spec-driven-dev` Phase 4 (Implement) skips the panel and gate — the calling Claude executes TDD directly so course-correction stays interactive.
 
-**Rough cost per panel phase:** one drafting-agent invocation plus up to 5 panel passes × 3 persona invocations (≈15 agent calls at the cap, usually fewer once HIGH concerns converge), then a human review gate. Budget accordingly — a full blueprint run is three such phases, and each `spec-driven-dev` feature is three more. For small or throwaway work, use lightweight mode (below) to collapse the panel to a single pass.
+**Rough cost per panel phase:** one drafting-agent invocation plus up to 5 panel passes × 3 persona invocations (≈15 agent calls at the cap, usually fewer: passes after a loop's first may run fewer panelists — `panel-review.md` § Tapered roster — and HIGH concerns converge), then a human review gate. Budget accordingly — a full blueprint run is three such phases, and each `spec-driven-dev` feature is three more. For small or throwaway work, use lightweight mode (below), or persist the `vibe` posture (`panel-review.md` § Rigour posture), to collapse the panel to a single pass.
 
-The loop above is calibrated for substantial, long-lived, multi-feature work. For a small one-off feature, throwaway prototype, or exploratory spike, tell the skill the work is small and ask for a lighter review — it runs the panel in opt-in **lightweight mode** (a single pass, no convergence loop or strict-bar/halt machinery). The default stays the full loop.
+The loop above is calibrated for substantial, long-lived, multi-feature work. For a small one-off feature, throwaway prototype, or exploratory spike, tell the skill the work is small and ask for a lighter review — it runs the panel in opt-in **lightweight mode** (a single pass, no convergence loop or strict-bar/halt machinery). The default stays the full loop, unless the project's persisted posture is `vibe`, which selects lightweight mode for every loop (`panel-review.md` § Rigour posture).
 
 ### Side-by-side
 

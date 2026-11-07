@@ -40,7 +40,9 @@ from trajectory import (  # noqa: E402
     STAMP_STRICT_BAR,
     TRAJECTORY_ELIDED_NOTES_RE,
     _strip_numeric_prefix,
+    parse_seats_record,
     parse_trajectory_rows,
+    seats_token_present,
 )
 
 MED_LOW_CAVEAT = (
@@ -81,6 +83,16 @@ YIELD_NOT_COST = (
 
 _ELIDED_LABEL = "…"
 
+# Unit D (R6, C6): notes for rows that are not comparable with full-roster rows.
+_CANONICAL_SEATS = 3
+_NOT_RUN = "— not run —"
+_UNRESOLVED_NOTE = "seats unresolved — not comparable"
+
+
+def _tapered_note(positions) -> str:
+    return (f"tapered (seats {','.join(str(p) for p in positions)}): "
+            "not comparable with full-roster rows for unique yield")
+
 
 @dataclass(frozen=True)
 class PassYield:
@@ -89,6 +101,11 @@ class PassYield:
     pass_label: str
     seats: Optional[List[Tuple[int, int, int]]]
     note: str
+    # Unit D DM10: canonical 1-based positions of a tapered row's dispatched
+    # seats (None for a full roster or a pre-feature row), and whether the
+    # row's unique yield is comparable with full-roster rows.
+    dispatched_positions: Optional[Tuple[int, ...]] = None
+    comparable: bool = False
 
 
 @dataclass(frozen=True)
@@ -159,7 +176,21 @@ def read_artifact_yield(path: Path) -> ArtifactYield:
             passes.append(PassYield(_ELIDED_LABEL, None, ""))
             continue
         seats = parse_panel_summary(notes)
-        passes.append(PassYield(row.cells.get("Pass", ""), seats, _note_for(row, seats)))
+        note = _note_for(row, seats)
+        positions = None
+        comparable = False
+        if seats is not None:
+            if seats_token_present(notes):
+                positions = parse_seats_record(notes)
+                extra = _tapered_note(positions) if positions else _UNRESOLVED_NOTE
+            elif len(seats) < _CANONICAL_SEATS:
+                extra = _UNRESOLVED_NOTE
+            else:
+                extra = ""
+                comparable = True
+            if extra:
+                note = f"{note}; {extra}" if note else extra
+        passes.append(PassYield(row.cells.get("Pass", ""), seats, note, positions, comparable))
     return ArtifactYield(str(path), tier, phase, elided, passes, "ok")
 
 
@@ -180,7 +211,11 @@ def _render_block(a: ArtifactYield) -> str:
     lines = [_header(a)]
     if not a.passes:
         return lines[0]
-    width = max((len(p.seats) for p in a.passes if p.seats), default=1)
+    width = max(
+        [len(p.seats) for p in a.passes if p.seats]
+        + [max(p.dispatched_positions) for p in a.passes if p.dispatched_positions],
+        default=1,
+    )
     lines.append("  " + "pass".ljust(_PASS_W)
                  + "".join(f"seat {k}".ljust(_SEAT_W) for k in range(1, width + 1)).rstrip())
     for p in a.passes:
@@ -189,6 +224,11 @@ def _render_block(a: ArtifactYield) -> str:
             note = f"{a.elided} earlier passes elided"
         elif p.seats is None:
             cells = ["— no data —"] * width
+            note = p.note
+        elif p.dispatched_positions:
+            by_pos = dict(zip(p.dispatched_positions, p.seats))
+            cells = [(f"{by_pos[k][0]}.{by_pos[k][1]}.{by_pos[k][2]}" if k in by_pos else _NOT_RUN)
+                     for k in range(1, width + 1)]
             note = p.note
         else:
             cells = [f"{h}.{m}.{lo}" for h, m, lo in p.seats]

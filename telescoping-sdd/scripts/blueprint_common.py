@@ -14,10 +14,11 @@ import os
 import re
 import sys
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Mapping, NamedTuple, Optional, Sequence, Tuple
+from typing import Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 # arch_config is a leaf module (no blueprint_common dependency), so this import
 # is one-directional. Used by the shared _resolve_marker_root_and_key (R2.1).
@@ -262,6 +263,53 @@ class ValidationResult:
             {"name": name, "status": severity, "detail": detail}
             for name, severity, detail in self.checks
         ]
+
+
+# ---------------------------------------------------------------------------
+# --fail-keys baseline (Unit D, AD6 / I4)
+# ---------------------------------------------------------------------------
+
+# Approval-state check names, excluded from the FAIL-key multiset by pattern
+# (the names embed a filename). An in-loop edit of a stamped artifact, or of an
+# upstream whose downstream is stamped, is expected to flip the staleness and
+# binding names, and the gate's re-stamp clears them; the three presence names
+# fail on every pass of an unapproved artifact and an in-loop edit cannot flip
+# them. One row per entry of design I4's exclusion table.
+APPROVAL_STATE_KEY_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"^.+ has Approval section$"),          # check_approval
+    re.compile(r"^.+ is approved$"),                   # check_approval
+    re.compile(r"^.+ approval hash present$"),         # check_approval
+    re.compile(r"^.+ hash basis is current$"),         # check_approval
+    re.compile(r"^.+ has not been modified since approval$"),  # check_approval
+    re.compile(r"^Previous phase \(.+\) approved before this phase$"),  # check_previous_phase_approved
+    re.compile(r"^.+ upstream binding current$"),      # check_previous_phase_approved, check_upstream_bindings
+)
+
+
+def fail_key_counts(results: Iterable[ValidationResult]) -> Counter:
+    """The multiset of FAIL check names across `results`, approval-state names
+    dropped. Pure.
+
+    The key is the check name exactly as passed to `ValidationResult.add`, never
+    parsed from printed output, so a name containing ` — ` stays one key and
+    names with per-instance ids stay distinct. A second instance of a failing
+    check raises its count.
+    """
+    counts: Counter = Counter()
+    for result in results:
+        for name, severity, _detail in result.checks:
+            if severity != Severity.FAIL:
+                continue
+            if any(p.match(name) for p in APPROVAL_STATE_KEY_PATTERNS):
+                continue
+            counts[name] += 1
+    return counts
+
+
+def fail_key_lines(counts: Mapping[str, int]) -> list[str]:
+    """`FAIL-KEY: <count> <json.dumps(key)>` lines, sorted by key. The JSON
+    encoding is lossless and leaves no raw tab, newline or escape byte."""
+    return [f"FAIL-KEY: {counts[k]} {json.dumps(k)}" for k in sorted(counts)]
 
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,10 @@ The structure below is that `## Assessment (human)` block:
 - Always provide specific remediation, not just "fix this"
 - Never mark something as low severity to avoid confrontation -- classify honestly
 
+## Write Location
+
+Write only to paths your dispatch gives you, plus your own memory directory if this file defines one. If you need a working file you were not given, do not choose a path: say so in your return. If your return contract restricts what you may return (the panelist personas, `panel-condenser`, `consistency-reader`), do not add that note to your return; state the need in the file your dispatch told you to write, if there is one.
+
 ## Exposure Doctrine Cross-Check
 
 When reviewing a Design artifact whose design touches a public surface (a new domain, route, port, or publicly-resolving endpoint), consult the Exposure Doctrine: verify the feature either ships its own hardening in the same feature or declares a present-tense observable gate acceptance criterion blocking the exposure until its hardening feature/task lands. If a public surface is exposed before its hardening with no such gate AC, raise a HIGH concern — an un-installed or un-hardened public surface reachable before its hardening is a FINDING, not an acceptable intermediate state.
