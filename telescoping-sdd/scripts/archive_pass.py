@@ -58,6 +58,7 @@ exclusive with each other and with `--skip`.
 Usage:
     archive_pass.py <artifact-path> --phase {1,2,3} [--skip <reason>]
                     [--strict-bar] [--cross-check] [--dry-run] [--check]
+                    [--panel-roster NAMES]
 
 `--phase` is required. It drives phase-dependent trigger logic:
   - Phase 1: unchanged (no [upstream] route; existing Deferred-driven
@@ -79,6 +80,17 @@ for HIGH-severity findings only. The strict-bar signal detector parses
 this substring across consecutive rows (since Latest is cleared after
 each archive).
 
+`--panel-roster NAMES` (this pass's dispatched panelists, in dispatch order,
+comma-separated; repeatable) additionally stamps a `panel=H.M.L,…` unique-yield
+token in the new row's Notes, before `tags=`: one `H.M.L` group per roster seat,
+counting the just-archived Latest rows whose Source names exactly that one
+panelist (merged and [SELF-CHECK] rows count for nobody; Disposition is not
+read). A roster that does not match the canonical `## Panelists per phase`
+order, or a Source naming a panelist outside the roster, suppresses the token
+with a stderr warning and changes nothing else. Omitting the flag stamps no
+token; `--skip` never stamps one. Every archive that clears Latest also appends
+the cleared rows to the `.sdd/panel-log.jsonl` sidecar (never read by the loop).
+
 Exit codes:
     0  success (empty Latest is a no-op unless --strict-bar/--cross-check)
     1  format violation in Latest pass detail, or conflicting mode flags
@@ -88,12 +100,14 @@ Exit codes:
 
 import argparse
 import difflib
+import json
 import os
 import re
 import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 # archive_pass.py is a sibling of blueprint_common.py in telescoping-sdd/scripts/,
 # so a bare import resolves when run as a CLI (script dir on sys.path) and under
@@ -106,6 +120,7 @@ from blueprint_common import (  # noqa: E402
     read_stored_hash,
     trim_trajectory_table,
     _is_ascii_int,
+    _resolve_marker_root_and_key,
     _is_valid_16_hex,
 )
 # Table helpers, terminal rules and stamp constants live in the trajectory leaf
@@ -125,6 +140,7 @@ from trajectory import (  # noqa: E402
     _UNESCAPED_PIPE,
     _strip_numeric_prefix,
     is_terminal_artifact,
+    notes_tokens,
     render_table,
     render_table_row,
     split_table_row,
@@ -192,6 +208,91 @@ SEPARATOR_PAT = re.compile(r"^\|[\s\-|:]+\|\s*$")
 H_DEFERRED = "### Deferred dispositions"
 DEFERRED_REDISPOSITION_PREFIX = "Defense: already routed to "
 PANEL_SECTION_ORDER = [H_TRAJECTORY, H_SEALED, H_DEFERRED, H_LATEST]
+
+# Unit C (AD10, DM2): artifact stem -> (tier, phase), and the canonical
+# dispatch roster per (tier, phase). CANONICAL_ROSTERS must equal each tier's
+# `## Panelists per phase` with the prefix removed (roster-parity test).
+ARTIFACT_STEMS = {
+    "SCOPE": ("blueprint", 1),
+    "ARCHITECTURE": ("blueprint", 2),
+    "PLAN": ("blueprint", 3),
+    "spec": ("sdd", 1),
+    "design": ("sdd", 2),
+    "tasks": ("sdd", 3),
+    "tasks-python": ("sdd", 3),
+    "tasks-java": ("sdd", 3),
+}
+_ROSTER_P1 = ("user-advocate", "devils-advocate", "pragmatist")
+_ROSTER_P3 = ("delivery-manager", "critic", "simplifier")
+CANONICAL_ROSTERS = {
+    ("sdd", 1): _ROSTER_P1,
+    ("blueprint", 1): _ROSTER_P1,
+    ("sdd", 2): ("architect", "testability-reviewer", "security-reviewer"),
+    ("blueprint", 2): ("architect", "ops-reviewer", "security-reviewer"),
+    ("sdd", 3): _ROSTER_P3,
+    ("blueprint", 3): _ROSTER_P3,
+}
+PANELIST_PREFIX = "telescoping-sdd:"
+
+
+def _normalize_panelist_name(name: str) -> str:
+    """Strip whitespace and one leading 'telescoping-sdd:' prefix. Case is kept."""
+    name = name.strip()
+    if name.startswith(PANELIST_PREFIX):
+        name = name[len(PANELIST_PREFIX):].strip()
+    return name
+
+
+def parse_panel_roster(values: Optional[list]) -> Optional[list]:
+    """Flatten `--panel-roster` values (append action) into an ordered name list.
+
+    Each value is split on ',', each element normalised, empties dropped.
+    Returns None when the flag was absent OR the result is empty (AD8).
+    Never raises.
+    """
+    if not values:
+        return None
+    roster = []
+    for value in values:
+        for element in str(value).split(","):
+            name = _normalize_panelist_name(element)
+            if name:
+                roster.append(name)
+    return roster or None
+
+
+def artifact_tier(path: Path) -> Optional[str]:
+    """'sdd' | 'blueprint' from ARTIFACT_STEMS, or None for an unknown stem."""
+    name = _strip_numeric_prefix(Path(path).name)
+    stem = name[:-3] if name.endswith(".md") else name
+    entry = ARTIFACT_STEMS.get(stem)
+    return entry[0] if entry else None
+
+
+def check_roster_order(roster: list, tier: Optional[str], phase: int) -> Optional[str]:
+    """Return the DM5 order warning, or None.
+
+    Canonical = CANONICAL_ROSTERS[(tier, phase)]. When tier is None and phase is
+    1 or 3, use the shared roster for that phase (identical across tiers) and
+    render the tier as 'shared'. When tier is None and phase is 2, return None
+    (silent skip, R4) whatever the roster's length or repeats. A mismatch is any
+    difference in list equality: order, set, length or a duplicate name. Pure.
+    """
+    if tier is None:
+        if phase == 2:
+            return None
+        canonical = CANONICAL_ROSTERS[("sdd", phase)]
+        tier_label = "shared"
+    else:
+        canonical = CANONICAL_ROSTERS[(tier, phase)]
+        tier_label = tier
+    if list(roster) == list(canonical):
+        return None
+    return (
+        f"warning: panel= not stamped — --panel-roster {','.join(roster)} does "
+        f"not match the canonical {tier_label} Phase {phase} order "
+        f"{','.join(canonical)} (## Panelists per phase)."
+    )
 
 DEF_PAT = re.compile(
     r"^-\s+`\[DEF-(\d+)\]`\s+\*\*(.+?)\*\*\s+→\s+(\S+)\s+\(pass\s+(\d+)\)\s+—\s+Routed because:\s+(.+)$"
@@ -487,6 +588,11 @@ def _starts_with_tag(concern, tag):
     return concern.lstrip().startswith(tag)
 
 
+def _is_self_check(row: dict) -> bool:
+    """True iff the row's Source contains '[SELF-CHECK]' (AD12)."""
+    return "[SELF-CHECK]" in row.get("Source", "")
+
+
 def _is_panel_tagged_high(row):
     """True if the row is a HIGH-severity panel-raised row eligible for
     tag-based trigger routing. Tags are a panel mechanism for routing
@@ -498,9 +604,7 @@ def _is_panel_tagged_high(row):
     """
     if "[HIGH]" not in row.get("Severity", ""):
         return False
-    if "[SELF-CHECK]" in row.get("Source", ""):
-        return False
-    return True
+    return not _is_self_check(row)
 
 
 def count_tags(rows):
@@ -533,6 +637,168 @@ def parse_tag_summary(notes):
         "upstream": int(m.group(2)),
         "contract": int(m.group(3)),
     }
+
+
+# Unit C (AD11, DM1, I4, I6): the `panel=H.M.L,…` per-seat unique-yield token.
+_SEVERITY_BUCKETS = {"HIGH": 0, "MED": 1, "LOW": 2}
+_SEVERITY_CORE_RE = re.compile(r"\[(HIGH|MED|LOW)\]")
+
+
+def _severity_bucket(severity_cell: str) -> Optional[int]:
+    """0/1/2 for the cell's single [HIGH]/[MED]/[LOW] tag; None if absent."""
+    m = _SEVERITY_CORE_RE.search(severity_cell or "")
+    return _SEVERITY_BUCKETS[m.group(1)] if m else None
+
+
+def count_panel_yield(rows: list, roster: list) -> tuple:
+    """Return (counts, unrecognised).
+
+    counts:       list of (h, m, l) tuples, one per roster seat, in roster order.
+    unrecognised: list of distinct (source_cell, name) pairs, in first-seen order.
+    For each row: skip if _is_self_check. Split Source on ',' and normalise each
+    name; drop empty names. If the list is empty, or any name is not in the
+    roster, record (cell, name) as unrecognised (cell, '' for an empty Source).
+    If exactly one name and it is in the roster, increment the bucket of the
+    FIRST seat holding that name; a later seat repeating the name stays
+    (0, 0, 0). Two or more names increment nobody. Disposition is never read.
+    Pure.
+    """
+    acc = [[0, 0, 0] for _ in roster]
+    unrecognised = []
+    seen = set()
+
+    def _note(pair):
+        if pair not in seen:
+            seen.add(pair)
+            unrecognised.append(pair)
+
+    for row in rows:
+        if _is_self_check(row):
+            continue
+        cell = row.get("Source", "")
+        names = [n for n in (_normalize_panelist_name(x) for x in cell.split(",")) if n]
+        if not names:
+            _note((cell, ""))
+            continue
+        unknown = [n for n in names if n not in roster]
+        for name in unknown:
+            _note((cell, name))
+        if unknown or len(names) != 1:
+            continue
+        bucket = _severity_bucket(row.get("Severity", ""))
+        if bucket is not None:
+            acc[roster.index(names[0])][bucket] += 1
+    return [tuple(c) for c in acc], unrecognised
+
+
+_N = r"[0-9]{1,9}"  # ASCII digits, bounded (never-raises)
+PANEL_TOKEN_RE = re.compile(rf"panel=({_N}\.{_N}\.{_N}(?:,{_N}\.{_N}\.{_N})*)")
+
+
+def format_panel_summary(counts: list) -> str:
+    """[(2, 1, 0), (0, 0, 1)] -> '2.1.0,0.0.1' (caller prepends 'panel=')."""
+    return ",".join(f"{h}.{m}.{l}" for h, m, l in counts)
+
+
+def parse_panel_summary(notes: str) -> Optional[list]:
+    """Return a list of (h, m, l) int tuples for the first token of
+    trajectory.notes_tokens(notes) that fullmatches PANEL_TOKEN_RE, or None.
+
+    notes_tokens cuts before the first 'halt vote' token, so text quoted inside
+    the halt vote is never read and neighbouring tokens are never consumed.
+    Never raises: the bounded ASCII grammar makes every group a safe int().
+    """
+    for tok in notes_tokens(notes or ""):
+        m = PANEL_TOKEN_RE.fullmatch(tok)
+        if m:
+            return [
+                tuple(int(n) for n in group.split("."))
+                for group in m.group(1).split(",")
+            ]
+    return None
+
+
+# Unit C (CP5, AD13-AD16, DM3, DM5, I7): the panel-log sidecar. One JSON line per
+# cleared Latest row, appended after a successful archive write. Nothing in the
+# loop reads it; it lives outside every artifact, so it touches no hash.
+PANEL_LOG_RELPATH = Path(".sdd") / "panel-log.jsonl"
+PANEL_LOG_SCHEMA = 1
+_SELF_CHECK_LETTER_RE = re.compile(r"\[SELF-CHECK\]\s*\(([a-f])\)")
+
+
+def derive_defect_shape(row: dict) -> list:
+    """Markers per AD16, in the fixed order scope, self-check, regression."""
+    shape = []
+    concern = row.get("Concern", "").lstrip()
+    for tag in ("contract", "detail", "upstream"):
+        if concern.startswith(f"[{tag}]"):
+            shape.append(f"scope:{tag}")
+            break
+    m = _SELF_CHECK_LETTER_RE.search(row.get("Source", ""))
+    if m:
+        shape.append(f"self-check:{m.group(1)}")
+    if "[REGRESSION]" in row.get("Severity", ""):
+        shape.append("regression")
+    return shape
+
+
+def build_panel_log_records(rows: list, *, artifact_key: str, pass_n: int,
+                            phase: int, date_iso: str, mode: str) -> list:
+    """One DM3 dict per row, in table order. Pure."""
+    records = []
+    for row in rows:
+        m = _SEVERITY_CORE_RE.search(row.get("Severity", ""))
+        records.append({
+            "schema": PANEL_LOG_SCHEMA,
+            "artifact": artifact_key,
+            "pass": pass_n,
+            "phase": phase,
+            "date": date_iso,
+            "mode": mode,
+            "severity": m.group(1) if m else "",
+            "regression": "[REGRESSION]" in row.get("Severity", ""),
+            "source": row.get("Source", ""),
+            "concern": row.get("Concern", ""),
+            "disposition": row.get("Disposition", ""),
+            "notes": row.get("Notes", ""),
+            "shape": derive_defect_shape(row),
+        })
+    return records
+
+
+def _panel_log_warning(path, exc) -> str:
+    return (
+        f"warning: panel-log append to {path} failed "
+        f"({exc.__class__.__name__}: {exc}); the artifact archive itself succeeded."
+    )
+
+
+def append_panel_log(root: Path, records: list) -> None:
+    """Append records as pure-ASCII JSON lines to root/PANEL_LOG_RELPATH.
+
+    mkdir(root/'.sdd'); open with mode 'a', encoding 'utf-8'; write all lines in
+    one write() call. If the file is non-empty and its last byte is not a
+    newline (a torn earlier append), the write starts with one newline. Catches
+    Exception and prints the DM5 warning. Never raises; no-op on no records.
+    """
+    if not records:
+        return
+    path = Path(root) / PANEL_LOG_RELPATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lead = ""
+        if path.exists() and path.stat().st_size > 0:
+            with open(path, "rb") as fh:
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    lead = "\n"
+        payload = lead + "".join(
+            json.dumps(rec, ensure_ascii=True) + "\n" for rec in records
+        )
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(payload)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never block (R7)
+        print(_panel_log_warning(path, exc), file=sys.stderr)
 
 
 def _is_normal_pass_row(row):
@@ -901,6 +1167,13 @@ def main():
              "Suppresses ### Deferred dispositions auto-insert and promotion; "
              "rejects Deferred-disposed rows in Latest.",
     )
+    parser.add_argument(
+        "--panel-roster", action="append", metavar="NAMES", default=None,
+        help="This pass's dispatched panelists in dispatch order, comma-separated "
+             "(bare names; a 'telescoping-sdd:' prefix is stripped). Stamps a "
+             "panel=H.M.L,... unique-yield token in Trajectory Notes. Omit to stamp "
+             "nothing. Ignored with --skip.",
+    )
     args = parser.parse_args()
 
     if sum(bool(x) for x in (args.skip, args.strict_bar, args.cross_check)) > 1:
@@ -1161,6 +1434,31 @@ def main():
             else:
                 tag_parts.append(STAMP_CONVERGED_SEALED)
                 tag_parts.append(f"sealed={sealed_high}")
+        # Unit C (CP4, AD9, AD11): the panel= unique-yield token, before tags=
+        # and outside its phase gate. A roster/Source mismatch warns on stderr
+        # and suppresses the token; nothing else changes.
+        roster = parse_panel_roster(args.panel_roster)
+        if roster is not None:
+            counts, unrecognised = count_panel_yield(latest_rows, roster)
+            order_warning = check_roster_order(roster, artifact_tier(art), args.phase)
+            roster_csv = ",".join(roster)
+            for cell, name in unrecognised:
+                if name == "":
+                    print(
+                        f"warning: panel= not stamped — Source {cell!r} is empty, "
+                        f"so the row cannot be attributed to --panel-roster {roster_csv}.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"warning: panel= not stamped — Source {cell!r} names "
+                        f"{name!r}, which is not in --panel-roster {roster_csv}.",
+                        file=sys.stderr,
+                    )
+            if order_warning:
+                print(order_warning, file=sys.stderr)
+            if not unrecognised and not order_warning:
+                tag_parts.append(f"panel={format_panel_summary(counts)}")
         # Stash tag counts for Phase 2/3 so detect_strict_bar_signal can read
         # them across passes (Latest is cleared after each archive).
         if args.phase in (2, 3):
@@ -1380,6 +1678,24 @@ def main():
         Notes=_with_token(new_traj_row["Notes"], compute_content_hash(new_content)),
     )
     write_or_diff(art, content, new_content, args.dry_run)
+
+    # Unit C (CP5, AD13): append the cleared rows to the panel-log sidecar, only
+    # after a successful write. Nothing here can change the exit code or stdout.
+    if latest_to_clear and latest_rows and not args.dry_run:
+        log_path = PANEL_LOG_RELPATH  # reported as-is if root resolution fails
+        try:
+            root, key = _resolve_marker_root_and_key(art, None)
+            log_path = root / PANEL_LOG_RELPATH
+            mode = (
+                "strict-bar" if args.strict_bar
+                else "cross-check" if args.cross_check
+                else "normal"
+            )
+            append_panel_log(root, build_panel_log_records(
+                latest_rows, artifact_key=key, pass_n=next_pass, phase=args.phase,
+                date_iso=new_traj_row["Date"], mode=mode))
+        except Exception as exc:  # noqa: BLE001 - never fail after the write (R7)
+            print(_panel_log_warning(log_path, exc), file=sys.stderr)
 
     # T7 (R7): count rerouted-deferral rows from this pass for trigger refinement
     rerouted_def_count = sum(1 for s in new_seals if s.get("rerouted_def", False))

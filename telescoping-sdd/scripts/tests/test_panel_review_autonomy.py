@@ -62,9 +62,11 @@ def test_phrase_in_both_copies(phrase: str) -> None:
 def test_section_anchor(path: Path) -> None:
     """`## Autonomy Boundary` sits between `## The Loop` and `## Panel Review section format`."""
     content = _read(path)
-    i_loop = content.index("## The Loop")
-    i_auto = content.index(HEADING)
-    i_fmt = content.index("## Panel Review section format")
+    # Anchor on heading lines: doctrine prose may cite a heading by name
+    # (e.g. Loop step 6 points to `## Panel Review section format`).
+    i_loop = content.index("\n## The Loop\n")
+    i_auto = content.index("\n" + HEADING + "\n")
+    i_fmt = content.index("\n## Panel Review section format\n")
     assert i_loop < i_auto < i_fmt, f"`{HEADING}` is mis-anchored in {path}"
 
 
